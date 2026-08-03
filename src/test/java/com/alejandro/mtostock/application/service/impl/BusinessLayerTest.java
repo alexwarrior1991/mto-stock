@@ -38,6 +38,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -55,6 +56,8 @@ import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
 class BusinessLayerTest {
+
+    private static final Pattern REST_CONTROLLER_ANNOTATION = Pattern.compile("@RestController(?!Advice)\\b");
 
     @Test
     void stockCalculationUsesMovementsAndReservationsWithoutStoredStock() {
@@ -203,7 +206,7 @@ class BusinessLayerTest {
 
     private static boolean containsRestController(Path path) {
         try {
-            return Files.readString(path).contains("@RestController");
+            return REST_CONTROLLER_ANNOTATION.matcher(Files.readString(path)).find();
         } catch (IOException exception) {
             throw new IllegalStateException(exception);
         }
