@@ -26,14 +26,14 @@ class OpenApiDocumentationConfigurationTest {
 
     @Test
     void documentedPathsCoverCurrentApiRoadmapWithoutControllers() {
-        assertTrue(openAPI.getPaths().containsKey("/api/v1/materials"));
-        assertTrue(openAPI.getPaths().containsKey("/api/v1/movements/entry"));
-        assertTrue(openAPI.getPaths().containsKey("/api/v1/movements/output"));
-        assertTrue(openAPI.getPaths().containsKey("/api/v1/movements/transfer"));
-        assertTrue(openAPI.getPaths().containsKey("/api/v1/reservations"));
-        assertTrue(openAPI.getPaths().containsKey("/api/v1/assemblies/{id}/availability"));
-        assertNotNull(openAPI.getPaths().get("/api/v1/materials").getGet());
-        assertNotNull(openAPI.getPaths().get("/api/v1/materials").getPost());
+        assertTrue(openAPI.getPaths().containsKey("/api/v1/inventory/materials"));
+        assertTrue(openAPI.getPaths().containsKey("/api/v1/inventory/movements/entry"));
+        assertTrue(openAPI.getPaths().containsKey("/api/v1/inventory/movements/output"));
+        assertTrue(openAPI.getPaths().containsKey("/api/v1/inventory/movements/transfer"));
+        assertTrue(openAPI.getPaths().containsKey("/api/v1/inventory/reservations"));
+        assertTrue(openAPI.getPaths().containsKey("/api/v1/inventory/assemblies/{id}/availability"));
+        assertNotNull(openAPI.getPaths().get("/api/v1/inventory/materials").getGet());
+        assertNotNull(openAPI.getPaths().get("/api/v1/inventory/materials").getPost());
     }
 
     @Test
@@ -50,7 +50,7 @@ class OpenApiDocumentationConfigurationTest {
 
     @Test
     void materialSearchDocumentsPageableAndFilters() {
-        var operation = openAPI.getPaths().get("/api/v1/materials").getGet();
+        var operation = openAPI.getPaths().get("/api/v1/inventory/materials").getGet();
 
         assertEquals("searchMaterials", operation.getOperationId());
         assertFalse(operation.getParameters().isEmpty());

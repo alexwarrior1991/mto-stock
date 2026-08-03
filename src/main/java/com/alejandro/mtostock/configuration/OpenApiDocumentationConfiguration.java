@@ -122,7 +122,7 @@ public class OpenApiDocumentationConfiguration {
 
     private static Paths paths() {
         return new Paths()
-                .addPathItem("/api/v1/materials", new PathItem()
+                .addPathItem("/api/v1/inventory/materials", new PathItem()
                         .get(searchOperation("Materials", "searchMaterials", "Search materials", "Searches the material catalogue using composable filters.", MaterialResponse.class,
                                 List.of(query("code", "string", "Material code filter.", "MAT-COPPER-50"),
                                         query("name", "string", "Material name or description filter.", "Copper"),
@@ -130,35 +130,35 @@ public class OpenApiDocumentationConfiguration {
                                         query("warehouseId", "string", "Warehouse UUID used by stock-related filters.", "018f60be-1b9a-7cc3-8c6b-2f93e8c6a001"),
                                         query("belowMinimum", "boolean", "Returns materials whose available stock is below the configured minimum.", "false"))))
                         .post(createOperation("Materials", "createMaterial", "Create material", "Creates a catalogue material. Material codes must be unique.", MaterialRequest.class, MaterialResponse.class, materialCreateExample())))
-                .addPathItem("/api/v1/materials/{id}", new PathItem()
+                .addPathItem("/api/v1/inventory/materials/{id}", new PathItem()
                         .get(findOperation("Materials", "findMaterialById", "Get material", "Returns one material by UUID.", MaterialResponse.class))
                         .put(updateOperation("Materials", "updateMaterial", "Update material", "Updates an existing material without changing audit metadata.", MaterialUpdateRequest.class, MaterialResponse.class))
                         .delete(deleteOperation("Materials", "deleteMaterial", "Delete material", "Deletes or deactivates a material when no inventory rule prevents it.")))
-                .addPathItem("/api/v1/materials/{id}/stock", new PathItem()
+                .addPathItem("/api/v1/inventory/materials/{id}/stock", new PathItem()
                         .get(operation("Materials", "getMaterialStock", "Get material stock", "Calculates physical, reserved and available stock from movements and reservations only.")
                                 .addParametersItem(pathId())
                                 .addParametersItem(query("warehouseId", "string", "Optional warehouse UUID. Omit it for global stock.", "018f60be-1b9a-7cc3-8c6b-2f93e8c6a001"))
                                 .responses(okWithErrors(MaterialStockResponse.class))))
-                .addPathItem("/api/v1/warehouses", cataloguePath("Warehouses", "Warehouse", WarehouseRequest.class, WarehouseResponse.class, warehouseCreateExample()))
-                .addPathItem("/api/v1/warehouses/{id}", catalogueItemPath("Warehouses", "Warehouse", WarehouseUpdateRequest.class, WarehouseResponse.class))
-                .addPathItem("/api/v1/suppliers", cataloguePath("Suppliers", "Supplier", SupplierRequest.class, SupplierResponse.class, supplierCreateExample()))
-                .addPathItem("/api/v1/suppliers/{id}", catalogueItemPath("Suppliers", "Supplier", SupplierUpdateRequest.class, SupplierResponse.class))
-                .addPathItem("/api/v1/projects", cataloguePath("Projects", "Project", ProjectRequest.class, ProjectResponse.class, projectCreateExample()))
-                .addPathItem("/api/v1/projects/{id}", catalogueItemPath("Projects", "Project", ProjectUpdateRequest.class, ProjectResponse.class))
-                .addPathItem("/api/v1/assemblies", new PathItem()
+                .addPathItem("/api/v1/inventory/warehouses", cataloguePath("Warehouses", "Warehouse", WarehouseRequest.class, WarehouseResponse.class, warehouseCreateExample()))
+                .addPathItem("/api/v1/inventory/warehouses/{id}", catalogueItemPath("Warehouses", "Warehouse", WarehouseUpdateRequest.class, WarehouseResponse.class))
+                .addPathItem("/api/v1/inventory/suppliers", cataloguePath("Suppliers", "Supplier", SupplierRequest.class, SupplierResponse.class, supplierCreateExample()))
+                .addPathItem("/api/v1/inventory/suppliers/{id}", catalogueItemPath("Suppliers", "Supplier", SupplierUpdateRequest.class, SupplierResponse.class))
+                .addPathItem("/api/v1/inventory/projects", cataloguePath("Projects", "Project", ProjectRequest.class, ProjectResponse.class, projectCreateExample()))
+                .addPathItem("/api/v1/inventory/projects/{id}", catalogueItemPath("Projects", "Project", ProjectUpdateRequest.class, ProjectResponse.class))
+                .addPathItem("/api/v1/inventory/assemblies", new PathItem()
                         .get(searchOperation("Assemblies", "searchAssemblies", "Search assemblies", "Searches virtual assemblies and BOM definitions.", AssemblyResponse.class,
                                 List.of(query("code", "string", "Assembly code filter.", "ASM-CAT-001"),
                                         query("name", "string", "Assembly name or description filter.", "Bracket"),
                                         query("active", "boolean", "Whether only active or inactive assemblies should be returned.", "true"))))
                         .post(createOperation("Assemblies", "createAssembly", "Create assembly", "Creates a virtual assembly with its bill of materials.", AssemblyRequest.class, AssemblyResponse.class, assemblyCreateExample())))
-                .addPathItem("/api/v1/assemblies/{id}", new PathItem()
+                .addPathItem("/api/v1/inventory/assemblies/{id}", new PathItem()
                         .get(findOperation("Assemblies", "findAssemblyById", "Get assembly", "Returns one assembly and its BOM components.", AssemblyResponse.class)))
-                .addPathItem("/api/v1/assemblies/{id}/availability", new PathItem()
+                .addPathItem("/api/v1/inventory/assemblies/{id}/availability", new PathItem()
                         .get(operation("Assemblies", "calculateAssemblyAvailability", "Calculate assembly availability", "Calculates maximum producible quantity, limiting component and missing quantities from component stock.")
                                 .addParametersItem(pathId())
                                 .addParametersItem(query("warehouseId", "string", "Warehouse UUID used for component stock availability.", "018f60be-1b9a-7cc3-8c6b-2f93e8c6a001"))
                                 .responses(okWithErrors(AssemblyAvailabilityResponse.class))))
-                .addPathItem("/api/v1/stock", new PathItem()
+                .addPathItem("/api/v1/inventory/stock", new PathItem()
                         .get(searchOperation("Stock Movements", "searchStockMovements", "Search stock movements", "Searches the append-only stock ledger with date, material, warehouse, project and user filters.", StockMovementResponse.class,
                                 List.of(query("movementType", "string", "Movement type filter.", "ENTRY"),
                                         query("warehouseId", "string", "Warehouse UUID filter.", "018f60be-1b9a-7cc3-8c6b-2f93e8c6a001"),
@@ -167,23 +167,23 @@ public class OpenApiDocumentationConfiguration {
                                         query("dateFrom", "string", "Inclusive movement date-time lower bound.", "2026-08-01T00:00:00Z"),
                                         query("dateTo", "string", "Inclusive movement date-time upper bound.", "2026-08-31T23:59:59Z"),
                                         query("user", "string", "Audit user filter.", "warehouse.operator")))))
-                .addPathItem("/api/v1/stock/low", new PathItem()
+                .addPathItem("/api/v1/inventory/stock/low", new PathItem()
                         .get(operation("Materials", "findLowStockMaterials", "Find low stock materials", "Returns materials whose calculated available stock is below the configured minimum level.")
                                 .addParametersItem(query("warehouseId", "string", "Optional warehouse UUID. Omit it for global stock.", "018f60be-1b9a-7cc3-8c6b-2f93e8c6a001"))
                                 .addParametersItem(page()).addParametersItem(size()).addParametersItem(sort())
                                 .responses(okPageWithErrors(MaterialResponse.class))))
-                .addPathItem("/api/v1/movements/entry", movementPath("registerStockEntry", "Register stock entry", "Creates a positive stock entry movement, optionally linked to a supplier.", StockMovementEntryRequest.class, stockEntryExample()))
-                .addPathItem("/api/v1/movements/output", movementPath("registerStockOutput", "Register stock output", "Creates a negative stock output movement, optionally linked to a project or reservation.", StockMovementOutputRequest.class, stockOutputExample()))
-                .addPathItem("/api/v1/movements/adjustment", movementPath("registerStockAdjustment", "Register stock adjustment", "Creates a positive or negative stock adjustment movement.", StockMovementAdjustmentRequest.class, stockAdjustmentExample()))
-                .addPathItem("/api/v1/movements/transfer", movementPath("registerStockTransfer", "Transfer stock", "Atomically creates outgoing and incoming transfer movements.", StockMovementTransferRequest.class, stockTransferExample()))
-                .addPathItem("/api/v1/reservations", new PathItem()
+                .addPathItem("/api/v1/inventory/movements/entry", movementPath("registerStockEntry", "Register stock entry", "Creates a positive stock entry movement, optionally linked to a supplier.", StockMovementEntryRequest.class, stockEntryExample()))
+                .addPathItem("/api/v1/inventory/movements/output", movementPath("registerStockOutput", "Register stock output", "Creates a negative stock output movement, optionally linked to a project or reservation.", StockMovementOutputRequest.class, stockOutputExample()))
+                .addPathItem("/api/v1/inventory/movements/adjustment", movementPath("registerStockAdjustment", "Register stock adjustment", "Creates a positive or negative stock adjustment movement.", StockMovementAdjustmentRequest.class, stockAdjustmentExample()))
+                .addPathItem("/api/v1/inventory/movements/transfer", movementPath("registerStockTransfer", "Transfer stock", "Atomically creates outgoing and incoming transfer movements.", StockMovementTransferRequest.class, stockTransferExample()))
+                .addPathItem("/api/v1/inventory/reservations", new PathItem()
                         .get(searchOperation("Reservations", "searchReservations", "Search reservations", "Searches reservations by warehouse, status, project and material.", ReservationResponse.class,
                                 List.of(query("warehouseId", "string", "Warehouse UUID filter.", "018f60be-1b9a-7cc3-8c6b-2f93e8c6a001"),
                                         query("status", "string", "Reservation status filter.", "ACTIVE"),
                                         query("projectId", "string", "Project UUID filter.", "018f60be-1b9a-7cc3-8c6b-2f93e8c6a010"),
                                         query("materialId", "string", "Material UUID filter.", "018f60be-1b9a-7cc3-8c6b-2f93e8c6a020"))))
                         .post(createOperation("Reservations", "createReservation", "Create reservation", "Reserves available stock without modifying physical stock.", ReservationRequest.class, ReservationResponse.class, reservationCreateExample())))
-                .addPathItem("/api/v1/reservations/{id}", new PathItem()
+                .addPathItem("/api/v1/inventory/reservations/{id}", new PathItem()
                         .get(findOperation("Reservations", "findReservationById", "Get reservation", "Returns one reservation by UUID.", ReservationResponse.class))
                         .put(updateOperation("Reservations", "updateReservation", "Update reservation", "Updates an active reservation when lifecycle rules allow it.", ReservationUpdateRequest.class, ReservationResponse.class))
                         .delete(deleteOperation("Reservations", "cancelReservation", "Cancel reservation", "Cancels an active reservation and releases reserved quantity.")));
@@ -537,7 +537,7 @@ public class OpenApiDocumentationConfiguration {
                   "status": %d,
                   "error": "%s",
                   "message": "%s",
-                  "path": "/api/v1/materials/018f60be-1b9a-7cc3-8c6b-2f93e8c6a001",
+                  "path": "/api/v1/inventory/materials/018f60be-1b9a-7cc3-8c6b-2f93e8c6a001",
                   "method": "GET",
                   "errorCode": "%s",
                   "correlationId": "corr-20260803-0001",

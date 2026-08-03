@@ -33,7 +33,7 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void notFoundBusinessExceptionReturnsStableErrorResponse() {
-        MockHttpServletRequest request = request("GET", "/api/v1/materials/" + UUID.randomUUID());
+        MockHttpServletRequest request = request("GET", "/api/v1/inventory/materials/" + UUID.randomUUID());
         request.addHeader("X-Correlation-Id", "corr-1");
         NotFoundException exception = new NotFoundException("Material", UUID.randomUUID());
 
@@ -55,7 +55,7 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void businessExceptionsUseSpecificStatusesAndCodes() {
-        MockHttpServletRequest request = request("POST", "/api/v1/materials");
+        MockHttpServletRequest request = request("POST", "/api/v1/inventory/materials");
 
         ResponseEntity<ApiErrorResponse> duplicateResponse = handler.handleDuplicateCode(new DuplicateCodeException("Material", "MAT-001"), request);
         ResponseEntity<ApiErrorResponse> reservationResponse = handler.handleReservation(new ReservationException("Reservation expired."), request);
@@ -70,7 +70,7 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void methodArgumentValidationReturnsEveryValidationError() throws NoSuchMethodException {
-        MockHttpServletRequest request = request("POST", "/api/v1/materials");
+        MockHttpServletRequest request = request("POST", "/api/v1/inventory/materials");
         Method method = GlobalExceptionHandlerTest.class.getDeclaredMethod("validatedEndpoint", SampleRequest.class);
         MethodParameter parameter = new MethodParameter(method, 0);
         SampleRequest target = new SampleRequest("", "x");
@@ -92,7 +92,7 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void constraintViolationReturnsEveryViolation() {
-        MockHttpServletRequest request = request("GET", "/api/v1/materials");
+        MockHttpServletRequest request = request("GET", "/api/v1/inventory/materials");
         Validator validator = Validation.buildDefaultValidatorFactory().getValidator();
         ConstraintViolationException exception = new ConstraintViolationException(validator.validate(new SampleRequest("", "x")));
 
@@ -109,7 +109,7 @@ class GlobalExceptionHandlerTest {
 
     @Test
     void unexpectedExceptionReturnsGenericMessageWithoutLeakingDetails() {
-        MockHttpServletRequest request = request("GET", "/api/v1/materials");
+        MockHttpServletRequest request = request("GET", "/api/v1/inventory/materials");
         RuntimeException exception = new RuntimeException("database password leaked detail");
 
         ResponseEntity<ApiErrorResponse> response = handler.handleException(exception, request);
