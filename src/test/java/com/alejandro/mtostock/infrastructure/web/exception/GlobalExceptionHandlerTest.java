@@ -63,7 +63,7 @@ class GlobalExceptionHandlerTest {
         assertEquals(HttpStatus.CONFLICT, duplicateResponse.getStatusCode());
         assertNotNull(duplicateResponse.getBody());
         assertEquals("MAT-409", duplicateResponse.getBody().errorCode());
-        assertEquals(HttpStatus.UNPROCESSABLE_ENTITY, reservationResponse.getStatusCode());
+        assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, reservationResponse.getStatusCode());
         assertNotNull(reservationResponse.getBody());
         assertEquals("RES-001", reservationResponse.getBody().errorCode());
     }
