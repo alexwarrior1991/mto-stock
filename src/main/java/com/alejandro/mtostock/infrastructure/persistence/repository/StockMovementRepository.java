@@ -27,7 +27,7 @@ public interface StockMovementRepository extends JpaRepository<StockMovement, UU
             from StockMovement movement
             where movement.material.id = :materialId
               and (:warehouseId is null or movement.warehouse.id = :warehouseId)
-              and (:asOf is null or movement.occurredAt <= :asOf)
+              and movement.occurredAt <= coalesce(:asOf, movement.occurredAt)
             """)
     BigDecimal calculateSignedQuantity(
             @Param("materialId") UUID materialId,

@@ -5,6 +5,10 @@ import com.alejandro.mtostock.application.dto.assembly.AssemblySummaryResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialSummaryResponse;
 import com.alejandro.mtostock.application.dto.stock.StockMovementTransferRequest;
 import com.alejandro.mtostock.application.dto.warehouse.WarehouseSummaryResponse;
+import com.alejandro.mtostock.application.exception.AssemblyException;
+import com.alejandro.mtostock.application.exception.InsufficientStockException;
+import com.alejandro.mtostock.application.exception.ReservationException;
+import com.alejandro.mtostock.application.exception.WarehouseException;
 import com.alejandro.mtostock.application.mapper.AssemblyMapper;
 import com.alejandro.mtostock.application.mapper.MaterialMapper;
 import com.alejandro.mtostock.application.mapper.StockMovementMapper;
@@ -25,6 +29,7 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.MaterialRepo
 import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ReservationRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.StockMovementRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.SupplierRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -43,6 +48,7 @@ import java.util.regex.Pattern;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -193,14 +199,130 @@ class BusinessLayerTest {
     }
 
     @Test
-    void businessPhaseDoesNotIntroduceRestControllers() throws IOException {
+    void stockCalculationReturnsZeroWhenRepositoriesHaveNoRows() {
+        StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
+        ReservationRepository reservationRepository = mock(ReservationRepository.class);
+        UUID materialId = UUID.randomUUID();
+        UUID warehouseId = UUID.randomUUID();
+        when(stockMovementRepository.calculateSignedQuantity(eq(materialId), eq(warehouseId), isNull(), anyCollection(), eq(BigDecimal.ZERO)))
+                .thenReturn(BigDecimal.ZERO);
+        when(reservationRepository.calculateActiveReservedQuantity(materialId, warehouseId, BigDecimal.ZERO)).thenReturn(BigDecimal.ZERO);
+        StockCalculationServiceImpl service = new StockCalculationServiceImpl(
+                stockMovementRepository,
+                reservationRepository,
+                mock(MaterialRepository.class),
+                mock(WarehouseRepository.class),
+                mock(MaterialMapper.class),
+                mock(WarehouseMapper.class)
+        );
+
+        assertEquals(BigDecimal.ZERO, service.calculateAvailableStock(materialId, warehouseId));
+    }
+
+    @Test
+    void bomCalculationRejectsAssembliesWithoutComponents() {
+        AssemblyRepository assemblyRepository = mock(AssemblyRepository.class);
+        WarehouseRepository warehouseRepository = mock(WarehouseRepository.class);
+        InventoryValidationService validationService = mock(InventoryValidationService.class);
+        Assembly assembly = Assembly.builder().code("ASM-EMPTY").name("Empty").build();
+        Warehouse warehouse = warehouse("WH-BOM");
+        setId(assembly, UUID.randomUUID());
+        when(assemblyRepository.findWithComponentsById(assembly.getId())).thenReturn(Optional.of(assembly));
+        when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
+        org.mockito.Mockito.doThrow(new AssemblyException("Assembly must contain at least one BOM component"))
+                .when(validationService).validateAssemblyHasComponents(assembly);
+        BOMCalculationServiceImpl service = new BOMCalculationServiceImpl(
+                assemblyRepository,
+                warehouseRepository,
+                mock(StockCalculationService.class),
+                validationService,
+                mock(AssemblyMapper.class),
+                mock(MaterialMapper.class),
+                mock(WarehouseMapper.class)
+        );
+
+        assertThrows(AssemblyException.class, () -> service.calculateAvailability(assembly.getId(), warehouse.getId()));
+    }
+
+    @Test
+    void reservationEngineRejectsLifecycleChangesForInactiveReservations() {
+        ReservationRepository reservationRepository = mock(ReservationRepository.class);
+        InventoryValidationService validationService = mock(InventoryValidationService.class);
+        Reservation reservation = reservation();
+        reservation.cancel(java.time.Instant.parse("2026-08-01T10:00:00Z"));
+        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        org.mockito.Mockito.doThrow(new ReservationException("Reservation is not active."))
+                .when(validationService).validateReservationCanChange(reservation);
+        ReservationEngineImpl service = new ReservationEngineImpl(
+                reservationRepository,
+                mock(MaterialRepository.class),
+                mock(WarehouseRepository.class),
+                mock(ProjectRepository.class),
+                validationService
+        );
+
+        assertThrows(ReservationException.class, () -> service.release(reservation.getId()));
+    }
+
+    @Test
+    void transferRejectsSameSourceAndTargetWarehouse() {
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        WarehouseRepository warehouseRepository = mock(WarehouseRepository.class);
+        StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
+        InventoryValidationService validationService = mock(InventoryValidationService.class);
+        Material material = material("MAT-SAME");
+        Warehouse warehouse = warehouse("WH-SAME");
+        StockMovementTransferRequest request = new StockMovementTransferRequest(
+                material.getId(),
+                warehouse.getId(),
+                warehouse.getId(),
+                BigDecimal.ONE,
+                null,
+                "TRF-SAME",
+                null
+        );
+        org.mockito.Mockito.doThrow(new WarehouseException("Source and destination warehouses must be different"))
+                .when(validationService).validateDifferentWarehouses(warehouse.getId(), warehouse.getId());
+        TransferServiceImpl service = new TransferServiceImpl(
+                materialRepository,
+                warehouseRepository,
+                stockMovementRepository,
+                mock(StockMovementMapper.class),
+                validationService
+        );
+
+        assertThrows(WarehouseException.class, () -> service.transfer(request));
+    }
+
+    @Test
+    void inventoryValidationRejectsInsufficientAvailableStock() {
+        StockCalculationService stockCalculationService = mock(StockCalculationService.class);
+        UUID materialId = UUID.randomUUID();
+        UUID warehouseId = UUID.randomUUID();
+        when(stockCalculationService.calculateAvailableStock(materialId, warehouseId)).thenReturn(new BigDecimal("1.000000"));
+        InventoryValidationServiceImpl service = new InventoryValidationServiceImpl(
+                mock(MaterialRepository.class),
+                mock(AssemblyRepository.class),
+                mock(WarehouseRepository.class),
+                mock(SupplierRepository.class),
+                mock(ProjectRepository.class),
+                stockCalculationService
+        );
+
+        assertThrows(InsufficientStockException.class,
+                () -> service.validateAvailableStock(materialId, warehouseId, new BigDecimal("2.000000")));
+    }
+
+    @Test
+    void restControllersRemainInInfrastructureWebLayer() throws IOException {
         Path mainSources = Path.of("src", "main", "java");
 
         try (var paths = Files.walk(mainSources)) {
             assertTrue(paths
                     .filter(Files::isRegularFile)
                     .filter(path -> path.toString().endsWith(".java"))
-                    .noneMatch(path -> containsRestController(path)));
+                    .filter(BusinessLayerTest::containsRestController)
+                    .allMatch(path -> path.toString().contains(Path.of("infrastructure", "web", "controller").toString())));
         }
     }
 

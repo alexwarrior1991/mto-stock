@@ -1,6 +1,7 @@
 package com.alejandro.mtostock.infrastructure.persistence.repository;
 
 import com.alejandro.mtostock.infrastructure.persistence.entity.Reservation;
+import com.alejandro.mtostock.infrastructure.persistence.entity.ReservationStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Query;
@@ -22,11 +23,16 @@ public interface ReservationRepository extends JpaRepository<Reservation, UUID>,
             from Reservation reservation
             where reservation.material.id = :materialId
               and (:warehouseId is null or reservation.warehouse.id = :warehouseId)
-              and reservation.status = com.alejandro.mtostock.infrastructure.persistence.entity.ReservationStatus.ACTIVE
+              and reservation.status = :status
             """)
-    BigDecimal calculateActiveReservedQuantity(
+    BigDecimal calculateReservedQuantityByStatus(
             @Param("materialId") UUID materialId,
             @Param("warehouseId") UUID warehouseId,
+            @Param("status") ReservationStatus status,
             @Param("zero") BigDecimal zero
     );
+
+    default BigDecimal calculateActiveReservedQuantity(UUID materialId, UUID warehouseId, BigDecimal zero) {
+        return calculateReservedQuantityByStatus(materialId, warehouseId, ReservationStatus.ACTIVE, zero);
+    }
 }

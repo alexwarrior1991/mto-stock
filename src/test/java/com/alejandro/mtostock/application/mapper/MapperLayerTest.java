@@ -17,7 +17,9 @@ import com.alejandro.mtostock.infrastructure.persistence.entity.ReservationStatu
 import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementType;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.ComponentScan;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.test.context.junit.jupiter.SpringJUnitConfig;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -29,10 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-@SpringBootTest(properties = {
-        "spring.autoconfigure.exclude=org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration,org.springframework.boot.hibernate.autoconfigure.HibernateJpaAutoConfiguration",
-        "spring.data.jpa.auditing.enabled=false"
-})
+@SpringJUnitConfig(MapperLayerTest.MapperTestConfiguration.class)
 class MapperLayerTest {
 
     @Autowired
@@ -48,6 +47,11 @@ class MapperLayerTest {
     private StockMovementMapper stockMovementMapper;
 
     private final EntityReferenceFactory references = new EntityReferenceFactory();
+
+    @Configuration
+    @ComponentScan(basePackageClasses = {MaterialMapper.class, EntityReferenceFactory.class})
+    static class MapperTestConfiguration {
+    }
 
     @Test
     void mapsAssemblyEntityToResponseWithNestedComponentsAndAuditMetadata() {
@@ -185,5 +189,33 @@ class MapperLayerTest {
         assertEquals(sourceWarehouseId, stockMovementMapper.toOutgoingTransferEntity(transfer).getWarehouse().getId());
         assertEquals(StockMovementType.INCOMING_TRANSFER, stockMovementMapper.toIncomingTransferEntity(transfer).getType());
         assertEquals(targetWarehouseId, stockMovementMapper.toIncomingTransferEntity(transfer).getWarehouse().getId());
+    }
+
+    @Test
+    void mapsNullCollectionsAndNullableAssociationsSafely() {
+        Assembly assembly = Assembly.builder()
+                .code("ASM-NULL")
+                .name("No components")
+                .components(null)
+                .build();
+
+        var response = assemblyMapper.toResponse(assembly);
+
+        assertNull(response.components());
+
+        var adjustment = stockMovementMapper.toAdjustmentEntity(new StockMovementAdjustmentRequest(
+                UUID.randomUUID(),
+                UUID.randomUUID(),
+                StockAdjustmentDirection.POSITIVE,
+                new BigDecimal("1.000000"),
+                null,
+                null,
+                null
+        ));
+
+        assertNull(adjustment.getSupplier());
+        assertNull(adjustment.getProject());
+        assertNull(adjustment.getExternalReference());
+        assertNull(adjustment.getNotes());
     }
 }
