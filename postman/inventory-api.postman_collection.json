@@ -1,0 +1,185 @@
+{
+  "info": {
+    "_postman_id": "0f642f24-06c2-4d98-b364-13b1473f2791",
+    "name": "MTO Stock Inventory API",
+    "description": "Postman Collection v2.1 for the MTO Stock Inventory API. Requests are organized by module and use environment variables for host, port, API version, and sample resource IDs.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "pm.test('response is successful', function () {",
+          "  pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+          "});",
+          "pm.test('response is JSON when body is present', function () {",
+          "  if (pm.response.text()) {",
+          "    pm.response.to.have.header('Content-Type');",
+          "    pm.expect(pm.response.headers.get('Content-Type')).to.include('application/json');",
+          "  }",
+          "});"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    { "key": "baseUrl", "value": "http://{{host}}:{{port}}/api/{{apiVersion}}/inventory" },
+    { "key": "apiVersion", "value": "v1" }
+  ],
+  "item": [
+    {
+      "name": "Materials",
+      "item": [
+        {
+          "name": "Create material",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"code\": \"MAT-COPPER-50\",\n  \"name\": \"Copper catenary wire 50 mm2\",\n  \"unitOfMeasure\": \"m\",\n  \"minimumStockLevel\": 250.000000\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/materials",
+            "description": "Creates a catalogue material."
+          }
+        },
+        {
+          "name": "Update material",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"code\": \"MAT-COPPER-50\",\n  \"name\": \"Copper catenary wire 50 mm2 - updated\",\n  \"unitOfMeasure\": \"m\",\n  \"minimumStockLevel\": 300.000000,\n  \"active\": true\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/materials/{{materialId}}"
+          }
+        },
+        { "name": "Get material", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/materials/{{materialId}}" } },
+        { "name": "Search materials", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/materials?name=Copper&active=true&page=0&size=20&sort=code,asc" } },
+        { "name": "Search low-stock materials", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/materials/low-stock?warehouseId={{warehouseId}}&page=0&size=20&sort=code,asc" } },
+        { "name": "Get material stock", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/materials/{{materialId}}/stock?warehouseId={{warehouseId}}" } },
+        { "name": "Get material movement history", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/materials/{{materialId}}/movements?warehouseId={{warehouseId}}&dateFrom=2026-08-01T00:00:00Z&dateTo=2026-08-31T23:59:59Z&page=0&size=20&sort=occurredAt,desc" } }
+      ]
+    },
+    {
+      "name": "Warehouses",
+      "item": [
+        {
+          "name": "Create warehouse",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"code\": \"WH-MAD-01\",\n  \"name\": \"Madrid central warehouse\",\n  \"active\": true\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/warehouses"
+          }
+        },
+        {
+          "name": "Update warehouse",
+          "request": {
+            "method": "PUT",
+            "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"code\": \"WH-MAD-01\",\n  \"name\": \"Madrid central warehouse - aisle A\",\n  \"active\": true\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/warehouses/{{warehouseId}}"
+          }
+        },
+        { "name": "Get warehouse", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/warehouses/{{warehouseId}}" } },
+        { "name": "List warehouses", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/warehouses?page=0&size=20&sort=code,asc" } },
+        { "name": "Get warehouse material stock", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/warehouses/{{warehouseId}}/inventory?materialId={{materialId}}" } },
+        {
+          "name": "Transfer stock from warehouses",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"materialId\": \"{{materialId}}\",\n  \"sourceWarehouseId\": \"{{warehouseId}}\",\n  \"targetWarehouseId\": \"{{targetWarehouseId}}\",\n  \"quantity\": 80.000000,\n  \"occurredAt\": \"2026-08-04T12:00:00Z\",\n  \"externalReference\": \"TRF-2026-00011\",\n  \"notes\": \"Rebalance stock for project start\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/warehouses/transfers"
+          }
+        }
+      ]
+    },
+    {
+      "name": "Stock Movements",
+      "item": [
+        {
+          "name": "Register stock entry",
+          "request": { "method": "POST", "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"materialId\": \"{{materialId}}\",\n  \"warehouseId\": \"{{warehouseId}}\",\n  \"supplierId\": \"{{supplierId}}\",\n  \"quantity\": 500.000000,\n  \"occurredAt\": \"2026-08-04T10:46:00Z\",\n  \"externalReference\": \"DEL-2026-00045\",\n  \"notes\": \"Supplier delivery for phase 1\"\n}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/movements/entries" }
+        },
+        {
+          "name": "Register stock output",
+          "request": { "method": "POST", "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"materialId\": \"{{materialId}}\",\n  \"warehouseId\": \"{{warehouseId}}\",\n  \"projectId\": \"{{projectId}}\",\n  \"reservationId\": null,\n  \"quantity\": 120.000000,\n  \"occurredAt\": \"2026-08-04T11:00:00Z\",\n  \"externalReference\": \"OUT-2026-00018\",\n  \"notes\": \"Issued to installation crew\"\n}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/movements/outputs" }
+        },
+        {
+          "name": "Register stock adjustment",
+          "request": { "method": "POST", "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"materialId\": \"{{materialId}}\",\n  \"warehouseId\": \"{{warehouseId}}\",\n  \"direction\": \"POSITIVE\",\n  \"quantity\": 5.000000,\n  \"occurredAt\": \"2026-08-04T11:30:00Z\",\n  \"externalReference\": \"ADJ-2026-00007\",\n  \"notes\": \"Inventory count correction\"\n}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/movements/adjustments" }
+        },
+        {
+          "name": "Transfer stock",
+          "request": { "method": "POST", "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"materialId\": \"{{materialId}}\",\n  \"sourceWarehouseId\": \"{{warehouseId}}\",\n  \"targetWarehouseId\": \"{{targetWarehouseId}}\",\n  \"quantity\": 80.000000,\n  \"occurredAt\": \"2026-08-04T12:00:00Z\",\n  \"externalReference\": \"TRF-2026-00011\",\n  \"notes\": \"Rebalance stock for project start\"\n}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/movements/transfers" }
+        },
+        { "name": "Get stock movement", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/movements/{{movementId}}" } },
+        { "name": "Search stock movements", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/movements?movementType=ENTRY&warehouseId={{warehouseId}}&materialId={{materialId}}&dateFrom=2026-08-01T00:00:00Z&dateTo=2026-08-31T23:59:59Z&page=0&size=20&sort=occurredAt,desc" } }
+      ]
+    },
+    {
+      "name": "Assemblies",
+      "item": [
+        {
+          "name": "Create assembly",
+          "request": { "method": "POST", "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"code\": \"ASM-BRACKET-001\",\n  \"name\": \"Catenary support bracket kit\",\n  \"components\": [\n    { \"materialId\": \"{{materialId}}\", \"quantity\": 2.000000 },\n    { \"materialId\": \"{{secondMaterialId}}\", \"quantity\": 4.000000 }\n  ]\n}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/assemblies" }
+        },
+        {
+          "name": "Update assembly",
+          "request": { "method": "PUT", "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"code\": \"ASM-BRACKET-001\",\n  \"name\": \"Catenary support bracket kit - reinforced\",\n  \"active\": true,\n  \"components\": [\n    { \"materialId\": \"{{materialId}}\", \"quantity\": 2.000000 },\n    { \"materialId\": \"{{secondMaterialId}}\", \"quantity\": 6.000000 }\n  ]\n}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/assemblies/{{assemblyId}}" }
+        },
+        { "name": "Get assembly", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/assemblies/{{assemblyId}}" } },
+        { "name": "Search assemblies", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/assemblies?name=Bracket&active=true&page=0&size=20&sort=code,asc" } },
+        { "name": "Calculate availability", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/assemblies/{{assemblyId}}/availability?warehouseId={{warehouseId}}" } },
+        { "name": "Calculate production capacity", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/assemblies/{{assemblyId}}/production-capacity?warehouseId={{warehouseId}}" } }
+      ]
+    },
+    {
+      "name": "Reservations",
+      "item": [
+        {
+          "name": "Create reservation",
+          "request": { "method": "POST", "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"materialId\": \"{{materialId}}\",\n  \"warehouseId\": \"{{warehouseId}}\",\n  \"projectId\": \"{{projectId}}\",\n  \"quantity\": 60.000000,\n  \"reservedAt\": \"2026-08-04T10:46:00Z\"\n}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/reservations" }
+        },
+        {
+          "name": "Update reservation",
+          "request": { "method": "PUT", "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"warehouseId\": \"{{warehouseId}}\",\n  \"projectId\": \"{{projectId}}\",\n  \"quantity\": 45.000000\n}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/reservations/{{reservationId}}" }
+        },
+        { "name": "Cancel reservation", "request": { "method": "DELETE", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/reservations/{{reservationId}}" } },
+        { "name": "Release reservation", "request": { "method": "POST", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/reservations/{{reservationId}}/release" } },
+        { "name": "Consume reservation", "request": { "method": "POST", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/reservations/{{reservationId}}/consume" } },
+        { "name": "Get reservation", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/reservations/{{reservationId}}" } },
+        { "name": "Search reservations", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/reservations?warehouseId={{warehouseId}}&status=ACTIVE&projectId={{projectId}}&materialId={{materialId}}&page=0&size=20&sort=reservedAt,desc" } }
+      ]
+    },
+    {
+      "name": "Suppliers",
+      "item": [
+        {
+          "name": "Create supplier",
+          "request": { "method": "POST", "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"code\": \"SUP-CAT-001\",\n  \"name\": \"Catenary Components Europe\",\n  \"active\": true\n}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/suppliers" }
+        },
+        {
+          "name": "Update supplier",
+          "request": { "method": "PUT", "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"code\": \"SUP-CAT-001\",\n  \"name\": \"Catenary Components Europe SL\",\n  \"active\": true\n}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/suppliers/{{supplierId}}" }
+        },
+        { "name": "Get supplier", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/suppliers/{{supplierId}}" } },
+        { "name": "List suppliers", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/suppliers?page=0&size=20&sort=code,asc" } }
+      ]
+    },
+    {
+      "name": "Projects",
+      "item": [
+        {
+          "name": "Create project",
+          "request": { "method": "POST", "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"code\": \"PRJ-AVE-2026-001\",\n  \"name\": \"High-speed catenary renewal section A\",\n  \"active\": true\n}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/projects" }
+        },
+        {
+          "name": "Update project",
+          "request": { "method": "PUT", "header": [{ "key": "Accept", "value": "application/json" }, { "key": "Content-Type", "value": "application/json" }], "body": { "mode": "raw", "raw": "{\n  \"code\": \"PRJ-AVE-2026-001\",\n  \"name\": \"High-speed catenary renewal section A - updated\",\n  \"active\": true\n}", "options": { "raw": { "language": "json" } } }, "url": "{{baseUrl}}/projects/{{projectId}}" }
+        },
+        { "name": "Get project", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/projects/{{projectId}}" } },
+        { "name": "List projects", "request": { "method": "GET", "header": [{ "key": "Accept", "value": "application/json" }], "url": "{{baseUrl}}/projects?page=0&size=20&sort=code,asc" } }
+      ]
+    }
+  ]
+}

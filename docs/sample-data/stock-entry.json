@@ -1,0 +1,9 @@
+{
+  "materialId": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a020",
+  "warehouseId": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a001",
+  "supplierId": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a030",
+  "quantity": 500.000000,
+  "occurredAt": "2026-08-04T10:46:00Z",
+  "externalReference": "DEL-2026-00045",
+  "notes": "Supplier delivery for phase 1"
+}

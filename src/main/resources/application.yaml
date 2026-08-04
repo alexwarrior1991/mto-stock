@@ -1,6 +1,37 @@
 spring:
   application:
     name: mto-stock
+  profiles:
+    default: ${SPRING_PROFILES_DEFAULT:dev}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info,metrics,prometheus}
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      show-details: ${MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS:when_authorized}
+    info:
+      access: unrestricted
+    metrics:
+      access: unrestricted
+    prometheus:
+      access: unrestricted
+  health:
+    rabbit:
+      enabled: ${MANAGEMENT_HEALTH_RABBIT_ENABLED:false}
+  info:
+    env:
+      enabled: true
+
+info:
+  app:
+    name: ${spring.application.name}
+    description: Make-to-order inventory and stock management API
+    version: ${APP_VERSION:0.0.1-SNAPSHOT}
 
 springdoc:
   api-docs:
@@ -12,4 +43,4 @@ springdoc:
     display-request-duration: true
     doc-expansion: none
     disable-swagger-default-url: true
-  show-actuator: false
+  show-actuator: ${SPRINGDOC_SHOW_ACTUATOR:false}

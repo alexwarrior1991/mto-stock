@@ -1,0 +1,14 @@
+{
+  "code": "ASM-BRACKET-001",
+  "name": "Catenary support bracket kit",
+  "components": [
+    {
+      "materialId": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a020",
+      "quantity": 2.000000
+    },
+    {
+      "materialId": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a021",
+      "quantity": 4.000000
+    }
+  ]
+}

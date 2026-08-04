@@ -1,0 +1,9 @@
+{
+  "materialId": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a020",
+  "sourceWarehouseId": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a001",
+  "targetWarehouseId": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a002",
+  "quantity": 80.000000,
+  "occurredAt": "2026-08-04T12:00:00Z",
+  "externalReference": "TRF-2026-00011",
+  "notes": "Rebalance stock for project start"
+}

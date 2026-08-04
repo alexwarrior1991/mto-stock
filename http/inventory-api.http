@@ -1,0 +1,338 @@
+### MTO Stock Inventory API - IntelliJ HTTP Client
+@host = localhost
+@port = 8080
+@apiVersion = v1
+@baseUrl = http://{{host}}:{{port}}/api/{{apiVersion}}/inventory
+@materialId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a020
+@secondMaterialId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a021
+@warehouseId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a001
+@targetWarehouseId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a002
+@projectId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a010
+@supplierId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a030
+@assemblyId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a040
+@movementId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a050
+@reservationId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a060
+
+### Materials - Create material
+POST {{baseUrl}}/materials
+Accept: application/json
+Content-Type: application/json
+
+{
+  "code": "MAT-COPPER-50",
+  "name": "Copper catenary wire 50 mm2",
+  "unitOfMeasure": "m",
+  "minimumStockLevel": 250.000000
+}
+
+### Materials - Update material
+PUT {{baseUrl}}/materials/{{materialId}}
+Accept: application/json
+Content-Type: application/json
+
+{
+  "code": "MAT-COPPER-50",
+  "name": "Copper catenary wire 50 mm2 - updated",
+  "unitOfMeasure": "m",
+  "minimumStockLevel": 300.000000,
+  "active": true
+}
+
+### Materials - Get material
+GET {{baseUrl}}/materials/{{materialId}}
+Accept: application/json
+
+### Materials - Search materials
+GET {{baseUrl}}/materials?name=Copper&active=true&page=0&size=20&sort=code,asc
+Accept: application/json
+
+### Materials - Low stock
+GET {{baseUrl}}/materials/low-stock?warehouseId={{warehouseId}}&page=0&size=20&sort=code,asc
+Accept: application/json
+
+### Materials - Get material stock
+GET {{baseUrl}}/materials/{{materialId}}/stock?warehouseId={{warehouseId}}
+Accept: application/json
+
+### Materials - Get material movements
+GET {{baseUrl}}/materials/{{materialId}}/movements?warehouseId={{warehouseId}}&dateFrom=2026-08-01T00:00:00Z&dateTo=2026-08-31T23:59:59Z&page=0&size=20&sort=occurredAt,desc
+Accept: application/json
+
+### Warehouses - Create warehouse
+POST {{baseUrl}}/warehouses
+Accept: application/json
+Content-Type: application/json
+
+{
+  "code": "WH-MAD-01",
+  "name": "Madrid central warehouse",
+  "active": true
+}
+
+### Warehouses - Update warehouse
+PUT {{baseUrl}}/warehouses/{{warehouseId}}
+Accept: application/json
+Content-Type: application/json
+
+{
+  "code": "WH-MAD-01",
+  "name": "Madrid central warehouse - aisle A",
+  "active": true
+}
+
+### Warehouses - Get warehouse
+GET {{baseUrl}}/warehouses/{{warehouseId}}
+Accept: application/json
+
+### Warehouses - List warehouses
+GET {{baseUrl}}/warehouses?page=0&size=20&sort=code,asc
+Accept: application/json
+
+### Warehouses - Get material inventory
+GET {{baseUrl}}/warehouses/{{warehouseId}}/inventory?materialId={{materialId}}
+Accept: application/json
+
+### Warehouses - Transfer stock
+POST {{baseUrl}}/warehouses/transfers
+Accept: application/json
+Content-Type: application/json
+
+{
+  "materialId": "{{materialId}}",
+  "sourceWarehouseId": "{{warehouseId}}",
+  "targetWarehouseId": "{{targetWarehouseId}}",
+  "quantity": 80.000000,
+  "occurredAt": "2026-08-04T12:00:00Z",
+  "externalReference": "TRF-2026-00011",
+  "notes": "Rebalance stock for project start"
+}
+
+### Stock Movements - Register entry
+POST {{baseUrl}}/movements/entries
+Accept: application/json
+Content-Type: application/json
+
+{
+  "materialId": "{{materialId}}",
+  "warehouseId": "{{warehouseId}}",
+  "supplierId": "{{supplierId}}",
+  "quantity": 500.000000,
+  "occurredAt": "2026-08-04T10:46:00Z",
+  "externalReference": "DEL-2026-00045",
+  "notes": "Supplier delivery for phase 1"
+}
+
+### Stock Movements - Register output
+POST {{baseUrl}}/movements/outputs
+Accept: application/json
+Content-Type: application/json
+
+{
+  "materialId": "{{materialId}}",
+  "warehouseId": "{{warehouseId}}",
+  "projectId": "{{projectId}}",
+  "reservationId": null,
+  "quantity": 120.000000,
+  "occurredAt": "2026-08-04T11:00:00Z",
+  "externalReference": "OUT-2026-00018",
+  "notes": "Issued to installation crew"
+}
+
+### Stock Movements - Register adjustment
+POST {{baseUrl}}/movements/adjustments
+Accept: application/json
+Content-Type: application/json
+
+{
+  "materialId": "{{materialId}}",
+  "warehouseId": "{{warehouseId}}",
+  "direction": "POSITIVE",
+  "quantity": 5.000000,
+  "occurredAt": "2026-08-04T11:30:00Z",
+  "externalReference": "ADJ-2026-00007",
+  "notes": "Inventory count correction"
+}
+
+### Stock Movements - Transfer stock
+POST {{baseUrl}}/movements/transfers
+Accept: application/json
+Content-Type: application/json
+
+{
+  "materialId": "{{materialId}}",
+  "sourceWarehouseId": "{{warehouseId}}",
+  "targetWarehouseId": "{{targetWarehouseId}}",
+  "quantity": 80.000000,
+  "occurredAt": "2026-08-04T12:00:00Z",
+  "externalReference": "TRF-2026-00011",
+  "notes": "Rebalance stock for project start"
+}
+
+### Stock Movements - Get movement
+GET {{baseUrl}}/movements/{{movementId}}
+Accept: application/json
+
+### Stock Movements - Search movements
+GET {{baseUrl}}/movements?movementType=ENTRY&warehouseId={{warehouseId}}&materialId={{materialId}}&dateFrom=2026-08-01T00:00:00Z&dateTo=2026-08-31T23:59:59Z&page=0&size=20&sort=occurredAt,desc
+Accept: application/json
+
+### Assemblies - Create assembly
+POST {{baseUrl}}/assemblies
+Accept: application/json
+Content-Type: application/json
+
+{
+  "code": "ASM-BRACKET-001",
+  "name": "Catenary support bracket kit",
+  "components": [
+    {
+      "materialId": "{{materialId}}",
+      "quantity": 2.000000
+    },
+    {
+      "materialId": "{{secondMaterialId}}",
+      "quantity": 4.000000
+    }
+  ]
+}
+
+### Assemblies - Update assembly
+PUT {{baseUrl}}/assemblies/{{assemblyId}}
+Accept: application/json
+Content-Type: application/json
+
+{
+  "code": "ASM-BRACKET-001",
+  "name": "Catenary support bracket kit - reinforced",
+  "active": true,
+  "components": [
+    {
+      "materialId": "{{materialId}}",
+      "quantity": 2.000000
+    },
+    {
+      "materialId": "{{secondMaterialId}}",
+      "quantity": 6.000000
+    }
+  ]
+}
+
+### Assemblies - Get assembly
+GET {{baseUrl}}/assemblies/{{assemblyId}}
+Accept: application/json
+
+### Assemblies - Search assemblies
+GET {{baseUrl}}/assemblies?name=Bracket&active=true&page=0&size=20&sort=code,asc
+Accept: application/json
+
+### Assemblies - Availability
+GET {{baseUrl}}/assemblies/{{assemblyId}}/availability?warehouseId={{warehouseId}}
+Accept: application/json
+
+### Assemblies - Production capacity
+GET {{baseUrl}}/assemblies/{{assemblyId}}/production-capacity?warehouseId={{warehouseId}}
+Accept: application/json
+
+### Reservations - Create reservation
+POST {{baseUrl}}/reservations
+Accept: application/json
+Content-Type: application/json
+
+{
+  "materialId": "{{materialId}}",
+  "warehouseId": "{{warehouseId}}",
+  "projectId": "{{projectId}}",
+  "quantity": 60.000000,
+  "reservedAt": "2026-08-04T10:46:00Z"
+}
+
+### Reservations - Update reservation
+PUT {{baseUrl}}/reservations/{{reservationId}}
+Accept: application/json
+Content-Type: application/json
+
+{
+  "warehouseId": "{{warehouseId}}",
+  "projectId": "{{projectId}}",
+  "quantity": 45.000000
+}
+
+### Reservations - Cancel reservation
+DELETE {{baseUrl}}/reservations/{{reservationId}}
+Accept: application/json
+
+### Reservations - Release reservation
+POST {{baseUrl}}/reservations/{{reservationId}}/release
+Accept: application/json
+
+### Reservations - Consume reservation
+POST {{baseUrl}}/reservations/{{reservationId}}/consume
+Accept: application/json
+
+### Reservations - Get reservation
+GET {{baseUrl}}/reservations/{{reservationId}}
+Accept: application/json
+
+### Reservations - Search reservations
+GET {{baseUrl}}/reservations?warehouseId={{warehouseId}}&status=ACTIVE&projectId={{projectId}}&materialId={{materialId}}&page=0&size=20&sort=reservedAt,desc
+Accept: application/json
+
+### Suppliers - Create supplier
+POST {{baseUrl}}/suppliers
+Accept: application/json
+Content-Type: application/json
+
+{
+  "code": "SUP-CAT-001",
+  "name": "Catenary Components Europe",
+  "active": true
+}
+
+### Suppliers - Update supplier
+PUT {{baseUrl}}/suppliers/{{supplierId}}
+Accept: application/json
+Content-Type: application/json
+
+{
+  "code": "SUP-CAT-001",
+  "name": "Catenary Components Europe SL",
+  "active": true
+}
+
+### Suppliers - Get supplier
+GET {{baseUrl}}/suppliers/{{supplierId}}
+Accept: application/json
+
+### Suppliers - List suppliers
+GET {{baseUrl}}/suppliers?page=0&size=20&sort=code,asc
+Accept: application/json
+
+### Projects - Create project
+POST {{baseUrl}}/projects
+Accept: application/json
+Content-Type: application/json
+
+{
+  "code": "PRJ-AVE-2026-001",
+  "name": "High-speed catenary renewal section A",
+  "active": true
+}
+
+### Projects - Update project
+PUT {{baseUrl}}/projects/{{projectId}}
+Accept: application/json
+Content-Type: application/json
+
+{
+  "code": "PRJ-AVE-2026-001",
+  "name": "High-speed catenary renewal section A - updated",
+  "active": true
+}
+
+### Projects - Get project
+GET {{baseUrl}}/projects/{{projectId}}
+Accept: application/json
+
+### Projects - List projects
+GET {{baseUrl}}/projects?page=0&size=20&sort=code,asc
+Accept: application/json

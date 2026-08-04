@@ -1,0 +1,7 @@
+{
+  "reservationId": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a060",
+  "endpoint": "/api/v1/inventory/reservations/018f60be-1b9a-7cc3-8c6b-2f93e8c6a060/consume",
+  "method": "POST",
+  "requestBody": null,
+  "expectedEffect": "Consumes the active reservation and creates the corresponding stock consumption operation through the backend business layer."
+}
