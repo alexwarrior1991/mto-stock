@@ -100,7 +100,7 @@ public class StockMovement extends AuditableEntity {
     @Column(name = "external_reference", length = 128)
     private String externalReference;
 
-    @Column(name = "notes")
+    @Column(name = "notes", columnDefinition = "text")
     private String notes;
 
     public BigDecimal signedQuantity() {
