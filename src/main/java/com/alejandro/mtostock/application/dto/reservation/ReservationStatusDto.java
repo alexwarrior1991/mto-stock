@@ -7,6 +7,7 @@ public enum ReservationStatusDto {
 
     ACTIVE,
     RELEASED,
+    CONSUMED,
     CANCELLED
 
 }

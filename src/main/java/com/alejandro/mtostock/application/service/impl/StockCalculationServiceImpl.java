@@ -8,8 +8,8 @@ import com.alejandro.mtostock.application.service.StockCalculationService;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
 import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementType;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
+import com.alejandro.mtostock.infrastructure.persistence.repository.InventoryBalanceRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.MaterialRepository;
-import com.alejandro.mtostock.infrastructure.persistence.repository.ReservationRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.StockMovementRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRepository;
 import lombok.RequiredArgsConstructor;
@@ -23,7 +23,7 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Calculates inventory balances from stock movements and active reservations only.
+ * Calculates current inventory balances from the balance projection and historical stock from movements.
  */
 @Service
 @ConditionalOnBean(StockMovementRepository.class)
@@ -36,8 +36,8 @@ class StockCalculationServiceImpl implements StockCalculationService {
             StockMovementType.INCOMING_TRANSFER
     );
 
+    private final InventoryBalanceRepository inventoryBalanceRepository;
     private final StockMovementRepository stockMovementRepository;
-    private final ReservationRepository reservationRepository;
     private final MaterialRepository materialRepository;
     private final WarehouseRepository warehouseRepository;
     private final MaterialMapper materialMapper;
@@ -46,19 +46,19 @@ class StockCalculationServiceImpl implements StockCalculationService {
     @Override
     @Transactional(readOnly = true)
     public BigDecimal calculatePhysicalStock(UUID materialId, UUID warehouseId) {
-        return calculateHistoricalStock(materialId, warehouseId, null);
+        return inventoryBalanceRepository.calculatePhysicalQuantity(materialId, warehouseId, BigDecimal.ZERO);
     }
 
     @Override
     @Transactional(readOnly = true)
     public BigDecimal calculateReservedStock(UUID materialId, UUID warehouseId) {
-        return reservationRepository.calculateActiveReservedQuantity(materialId, warehouseId, BigDecimal.ZERO);
+        return inventoryBalanceRepository.calculateReservedQuantity(materialId, warehouseId, BigDecimal.ZERO);
     }
 
     @Override
     @Transactional(readOnly = true)
     public BigDecimal calculateAvailableStock(UUID materialId, UUID warehouseId) {
-        return calculatePhysicalStock(materialId, warehouseId).subtract(calculateReservedStock(materialId, warehouseId));
+        return inventoryBalanceRepository.calculateAvailableQuantity(materialId, warehouseId, BigDecimal.ZERO);
     }
 
     @Override
@@ -94,7 +94,7 @@ class StockCalculationServiceImpl implements StockCalculationService {
                 .orElseThrow(() -> new NotFoundException("Warehouse", warehouseId));
         BigDecimal physical = calculatePhysicalStock(materialId, warehouseId);
         BigDecimal reserved = calculateReservedStock(materialId, warehouseId);
-        BigDecimal available = physical.subtract(reserved);
+        BigDecimal available = calculateAvailableStock(materialId, warehouseId);
         BigDecimal minimumStockLevel = material.getMinimumStockLevel();
         return new MaterialStockResponse(
                 materialMapper.toSummaryResponse(material),

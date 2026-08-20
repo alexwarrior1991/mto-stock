@@ -9,6 +9,7 @@ import com.alejandro.mtostock.application.dto.stock.StockMovementResponse;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.exception.ReservationException;
 import com.alejandro.mtostock.application.mapper.StockMovementMapper;
+import com.alejandro.mtostock.application.service.InventoryBalanceService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.ReservationEngine;
 import com.alejandro.mtostock.application.service.StockMovementService;
@@ -55,6 +56,7 @@ class StockMovementServiceImpl implements StockMovementService {
     private final ProjectRepository projectRepository;
     private final ReservationRepository reservationRepository;
     private final StockMovementMapper stockMovementMapper;
+    private final InventoryBalanceService inventoryBalanceService;
     private final InventoryValidationService inventoryValidationService;
     private final ReservationEngine reservationEngine;
 
@@ -70,6 +72,7 @@ class StockMovementServiceImpl implements StockMovementService {
         }
         normalizeOccurredAt(movement);
         StockMovement savedMovement = stockMovementRepository.save(movement);
+        inventoryBalanceService.increasePhysical(request.materialId(), request.warehouseId(), request.quantity());
         log.info("Stock entry registered for material {} in warehouse {}", movement.getMaterial().getCode(), movement.getWarehouse().getCode());
         return stockMovementMapper.toResponse(savedMovement);
     }
@@ -87,6 +90,9 @@ class StockMovementServiceImpl implements StockMovementService {
         Reservation reservation = request.reservationId() == null ? null : reservationRepository.findById(request.reservationId())
                 .orElseThrow(() -> new NotFoundException("Reservation", request.reservationId()));
         validateOutputStock(request, reservation);
+        if (reservation == null) {
+            inventoryBalanceService.decreasePhysicalAndAvailable(request.materialId(), request.warehouseId(), request.quantity());
+        }
         movement.setReservation(reservation);
         normalizeOccurredAt(movement);
         StockMovement savedMovement = stockMovementRepository.save(movement);
@@ -103,12 +109,15 @@ class StockMovementServiceImpl implements StockMovementService {
         StockMovement movement = stockMovementMapper.toAdjustmentEntity(request);
         attachMaterialAndWarehouse(movement, request.materialId(), request.warehouseId());
         if (request.direction() == StockAdjustmentDirection.NEGATIVE) {
-            inventoryValidationService.validateAvailableStock(request.materialId(), request.warehouseId(), request.quantity());
+            inventoryBalanceService.decreasePhysicalAndAvailable(request.materialId(), request.warehouseId(), request.quantity());
         } else {
             inventoryValidationService.validatePositiveQuantity(request.quantity());
         }
         normalizeOccurredAt(movement);
         StockMovement savedMovement = stockMovementRepository.save(movement);
+        if (request.direction() == StockAdjustmentDirection.POSITIVE) {
+            inventoryBalanceService.increasePhysical(request.materialId(), request.warehouseId(), request.quantity());
+        }
         log.info("Stock adjustment registered for material {} in warehouse {}", movement.getMaterial().getCode(), movement.getWarehouse().getCode());
         return stockMovementMapper.toResponse(savedMovement);
     }
@@ -144,7 +153,7 @@ class StockMovementServiceImpl implements StockMovementService {
 
     private void validateOutputStock(StockMovementOutputRequest request, Reservation reservation) {
         if (reservation == null) {
-            inventoryValidationService.validateAvailableStock(request.materialId(), request.warehouseId(), request.quantity());
+            inventoryValidationService.validatePositiveQuantity(request.quantity());
             return;
         }
         inventoryValidationService.validateReservationCanChange(reservation);

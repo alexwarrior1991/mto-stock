@@ -1,6 +1,7 @@
 package com.alejandro.mtostock.application.service.impl;
 
 import com.alejandro.mtostock.application.exception.NotFoundException;
+import com.alejandro.mtostock.application.service.InventoryBalanceService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.ReservationEngine;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
@@ -36,6 +37,7 @@ class ReservationEngineImpl implements ReservationEngine {
     private final MaterialRepository materialRepository;
     private final WarehouseRepository warehouseRepository;
     private final ProjectRepository projectRepository;
+    private final InventoryBalanceService inventoryBalanceService;
     private final InventoryValidationService inventoryValidationService;
 
     @Override
@@ -46,11 +48,7 @@ class ReservationEngineImpl implements ReservationEngine {
         inventoryValidationService.validatePositiveQuantity(reservation.getQuantity());
         inventoryValidationService.validateActive(reservation.getMaterial());
         inventoryValidationService.validateActive(reservation.getWarehouse());
-        inventoryValidationService.validateAvailableStock(
-                reservation.getMaterial().getId(),
-                reservation.getWarehouse().getId(),
-                reservation.getQuantity()
-        );
+        inventoryBalanceService.reserve(reservation.getMaterial().getId(), reservation.getWarehouse().getId(), reservation.getQuantity());
         Reservation savedReservation = reservationRepository.save(reservation);
         log.info("Reservation created for material {} in warehouse {}", reservation.getMaterial().getCode(), reservation.getWarehouse().getCode());
         return savedReservation;
@@ -65,13 +63,15 @@ class ReservationEngineImpl implements ReservationEngine {
         inventoryValidationService.validatePositiveQuantity(reservation.getQuantity());
         inventoryValidationService.validateActive(reservation.getMaterial());
         inventoryValidationService.validateActive(reservation.getWarehouse());
-        inventoryValidationService.validateAvailableStock(
+        inventoryBalanceService.releaseReserved(
+                existingReservation.getMaterial().getId(),
+                existingReservation.getWarehouse().getId(),
+                existingReservation.getQuantity()
+        );
+        inventoryBalanceService.reserve(
                 reservation.getMaterial().getId(),
                 reservation.getWarehouse().getId(),
-                reservation.getQuantity(),
-                reservation.getWarehouse().getId().equals(existingReservation.getWarehouse().getId())
-                        ? existingReservation.getQuantity()
-                        : java.math.BigDecimal.ZERO
+                reservation.getQuantity()
         );
         existingReservation.setWarehouse(reservation.getWarehouse());
         existingReservation.setProject(reservation.getProject());
@@ -86,6 +86,7 @@ class ReservationEngineImpl implements ReservationEngine {
         Reservation reservation = findReservation(id);
         inventoryValidationService.validateReservationCanChange(reservation);
         reservation.cancel(Instant.now());
+        inventoryBalanceService.releaseReserved(reservation.getMaterial().getId(), reservation.getWarehouse().getId(), reservation.getQuantity());
         log.info("Reservation {} cancelled", id);
         return reservation;
     }
@@ -96,6 +97,7 @@ class ReservationEngineImpl implements ReservationEngine {
         Reservation reservation = findReservation(id);
         inventoryValidationService.validateReservationCanChange(reservation);
         reservation.release(Instant.now());
+        inventoryBalanceService.releaseReserved(reservation.getMaterial().getId(), reservation.getWarehouse().getId(), reservation.getQuantity());
         log.info("Reservation {} released", id);
         return reservation;
     }
@@ -105,7 +107,8 @@ class ReservationEngineImpl implements ReservationEngine {
     public Reservation consume(UUID id) {
         Reservation reservation = findReservation(id);
         inventoryValidationService.validateReservationCanChange(reservation);
-        reservation.release(Instant.now());
+        reservation.consume(Instant.now());
+        inventoryBalanceService.consumeReserved(reservation.getMaterial().getId(), reservation.getWarehouse().getId(), reservation.getQuantity());
         log.info("Reservation {} consumed", id);
         return reservation;
     }

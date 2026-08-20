@@ -3,6 +3,8 @@ package com.alejandro.mtostock.application.service.impl;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyAvailabilityResponse;
 import com.alejandro.mtostock.application.dto.assembly.AssemblySummaryResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialSummaryResponse;
+import com.alejandro.mtostock.application.dto.stock.StockMovementEntryRequest;
+import com.alejandro.mtostock.application.dto.stock.StockMovementOutputRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementTransferRequest;
 import com.alejandro.mtostock.application.dto.warehouse.WarehouseSummaryResponse;
 import com.alejandro.mtostock.application.exception.AssemblyException;
@@ -13,7 +15,9 @@ import com.alejandro.mtostock.application.mapper.AssemblyMapper;
 import com.alejandro.mtostock.application.mapper.MaterialMapper;
 import com.alejandro.mtostock.application.mapper.StockMovementMapper;
 import com.alejandro.mtostock.application.mapper.WarehouseMapper;
+import com.alejandro.mtostock.application.service.InventoryBalanceService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
+import com.alejandro.mtostock.application.service.ReservationEngine;
 import com.alejandro.mtostock.application.service.StockCalculationService;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Assembly;
 import com.alejandro.mtostock.infrastructure.persistence.entity.AssemblyComponent;
@@ -25,6 +29,7 @@ import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovement;
 import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementType;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
 import com.alejandro.mtostock.infrastructure.persistence.repository.AssemblyRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.InventoryBalanceRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.MaterialRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ReservationRepository;
@@ -34,6 +39,7 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRep
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.data.domain.AuditorAware;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -56,7 +62,6 @@ import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -66,18 +71,22 @@ class BusinessLayerTest {
     private static final Pattern REST_CONTROLLER_ANNOTATION = Pattern.compile("@RestController(?!Advice)\\b");
 
     @Test
-    void stockCalculationUsesMovementsAndReservationsWithoutStoredStock() {
+    void stockCalculationReadsCurrentBalancesFromInventoryBalanceAndKeepsHistoricalFromMovements() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
         StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
-        ReservationRepository reservationRepository = mock(ReservationRepository.class);
         UUID materialId = UUID.randomUUID();
         UUID warehouseId = UUID.randomUUID();
+        when(inventoryBalanceRepository.calculatePhysicalQuantity(materialId, warehouseId, BigDecimal.ZERO))
+                .thenReturn(new BigDecimal("8.000000"));
+        when(inventoryBalanceRepository.calculateReservedQuantity(materialId, warehouseId, BigDecimal.ZERO))
+                .thenReturn(new BigDecimal("3.000000"));
+        when(inventoryBalanceRepository.calculateAvailableQuantity(materialId, warehouseId, BigDecimal.ZERO))
+                .thenReturn(new BigDecimal("5.000000"));
         when(stockMovementRepository.calculateSignedQuantity(eq(materialId), eq(warehouseId), isNull(), anyCollection(), eq(BigDecimal.ZERO)))
                 .thenReturn(new BigDecimal("8.000000"));
-        when(reservationRepository.calculateActiveReservedQuantity(materialId, warehouseId, BigDecimal.ZERO))
-                .thenReturn(new BigDecimal("3.000000"));
         StockCalculationServiceImpl service = new StockCalculationServiceImpl(
+                inventoryBalanceRepository,
                 stockMovementRepository,
-                reservationRepository,
                 mock(MaterialRepository.class),
                 mock(WarehouseRepository.class),
                 mock(MaterialMapper.class),
@@ -87,7 +96,8 @@ class BusinessLayerTest {
         assertEquals(new BigDecimal("8.000000"), service.calculatePhysicalStock(materialId, warehouseId));
         assertEquals(new BigDecimal("3.000000"), service.calculateReservedStock(materialId, warehouseId));
         assertEquals(new BigDecimal("5.000000"), service.calculateAvailableStock(materialId, warehouseId));
-        verify(stockMovementRepository, times(2)).calculateSignedQuantity(eq(materialId), eq(warehouseId), isNull(), anyCollection(), eq(BigDecimal.ZERO));
+        assertEquals(new BigDecimal("8.000000"), service.calculateHistoricalStock(materialId, warehouseId, null));
+        verify(stockMovementRepository).calculateSignedQuantity(eq(materialId), eq(warehouseId), isNull(), anyCollection(), eq(BigDecimal.ZERO));
     }
 
     @Test
@@ -134,8 +144,9 @@ class BusinessLayerTest {
     }
 
     @Test
-    void reservationEngineConsumesActiveReservationByReleasingIt() {
+    void reservationEngineConsumesActiveReservationWithConsumedStatus() {
         ReservationRepository reservationRepository = mock(ReservationRepository.class);
+        InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
         InventoryValidationService validationService = mock(InventoryValidationService.class);
         Reservation reservation = reservation();
         when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
@@ -144,14 +155,78 @@ class BusinessLayerTest {
                 mock(MaterialRepository.class),
                 mock(WarehouseRepository.class),
                 mock(ProjectRepository.class),
+                inventoryBalanceService,
                 validationService
         );
 
         Reservation consumedReservation = service.consume(reservation.getId());
 
-        assertEquals(ReservationStatus.RELEASED, consumedReservation.getStatus());
+        assertEquals(ReservationStatus.CONSUMED, consumedReservation.getStatus());
         assertNotNull(consumedReservation.getReleasedAt());
         verify(validationService).validateReservationCanChange(reservation);
+        verify(inventoryBalanceService).consumeReserved(reservation.getMaterial().getId(), reservation.getWarehouse().getId(), reservation.getQuantity());
+    }
+
+    @Test
+    void reservationEngineReleaseFreesReservedBalanceWithoutMovement() {
+        ReservationRepository reservationRepository = mock(ReservationRepository.class);
+        InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
+        InventoryValidationService validationService = mock(InventoryValidationService.class);
+        Reservation reservation = reservation();
+        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        ReservationEngineImpl service = new ReservationEngineImpl(
+                reservationRepository,
+                mock(MaterialRepository.class),
+                mock(WarehouseRepository.class),
+                mock(ProjectRepository.class),
+                inventoryBalanceService,
+                validationService
+        );
+
+        Reservation releasedReservation = service.release(reservation.getId());
+
+        assertEquals(ReservationStatus.RELEASED, releasedReservation.getStatus());
+        verify(inventoryBalanceService).releaseReserved(reservation.getMaterial().getId(), reservation.getWarehouse().getId(), reservation.getQuantity());
+    }
+
+    @Test
+    void reservationEngineUpdateReleasesPreviousBalanceAndReservesNewBalance() {
+        ReservationRepository reservationRepository = mock(ReservationRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        WarehouseRepository warehouseRepository = mock(WarehouseRepository.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
+        InventoryValidationService validationService = mock(InventoryValidationService.class);
+        Reservation existingReservation = reservation();
+        Material material = existingReservation.getMaterial();
+        Warehouse oldWarehouse = existingReservation.getWarehouse();
+        Warehouse newWarehouse = warehouse("WH-NEW");
+        Project project = existingReservation.getProject();
+        Reservation requestedReservation = Reservation.builder()
+                .material(material)
+                .warehouse(newWarehouse)
+                .project(project)
+                .quantity(new BigDecimal("5.000000"))
+                .build();
+        when(reservationRepository.findById(existingReservation.getId())).thenReturn(Optional.of(existingReservation));
+        when(materialRepository.findById(material.getId())).thenReturn(Optional.of(material));
+        when(warehouseRepository.findById(newWarehouse.getId())).thenReturn(Optional.of(newWarehouse));
+        when(projectRepository.findById(project.getId())).thenReturn(Optional.of(project));
+        ReservationEngineImpl service = new ReservationEngineImpl(
+                reservationRepository,
+                materialRepository,
+                warehouseRepository,
+                projectRepository,
+                inventoryBalanceService,
+                validationService
+        );
+
+        Reservation updatedReservation = service.update(existingReservation.getId(), requestedReservation);
+
+        assertSame(newWarehouse, updatedReservation.getWarehouse());
+        assertEquals(new BigDecimal("5.000000"), updatedReservation.getQuantity());
+        verify(inventoryBalanceService).releaseReserved(material.getId(), oldWarehouse.getId(), new BigDecimal("2.000000"));
+        verify(inventoryBalanceService).reserve(material.getId(), newWarehouse.getId(), new BigDecimal("5.000000"));
     }
 
     @Test
@@ -160,6 +235,7 @@ class BusinessLayerTest {
         WarehouseRepository warehouseRepository = mock(WarehouseRepository.class);
         StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
         StockMovementMapper stockMovementMapper = mock(StockMovementMapper.class);
+        InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
         InventoryValidationService validationService = mock(InventoryValidationService.class);
         Material material = material("MAT-TRF");
         Warehouse sourceWarehouse = warehouse("WH-SRC");
@@ -186,6 +262,7 @@ class BusinessLayerTest {
                 warehouseRepository,
                 stockMovementRepository,
                 stockMovementMapper,
+                inventoryBalanceService,
                 validationService
         );
 
@@ -195,21 +272,106 @@ class BusinessLayerTest {
         assertSame(incomingMovement, outgoingMovement.getRelatedMovement());
         assertSame(outgoingMovement, incomingMovement.getRelatedMovement());
         assertNotNull(TransferServiceImpl.class.getDeclaredMethod("transfer", StockMovementTransferRequest.class).getAnnotation(Transactional.class));
-        verify(validationService).validateAvailableStock(material.getId(), sourceWarehouse.getId(), request.quantity());
+        verify(inventoryBalanceService).decreasePhysicalAndAvailable(material.getId(), sourceWarehouse.getId(), request.quantity());
+        verify(inventoryBalanceService).increasePhysical(material.getId(), targetWarehouse.getId(), request.quantity());
+    }
+
+    @Test
+    void stockMovementEntryIncreasesPhysicalAndAvailableBalance() {
+        StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        WarehouseRepository warehouseRepository = mock(WarehouseRepository.class);
+        StockMovementMapper stockMovementMapper = mock(StockMovementMapper.class);
+        InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
+        InventoryValidationService validationService = mock(InventoryValidationService.class);
+        Material material = material("MAT-ENT");
+        Warehouse warehouse = warehouse("WH-ENT");
+        StockMovementEntryRequest request = new StockMovementEntryRequest(
+                material.getId(),
+                warehouse.getId(),
+                null,
+                new BigDecimal("6.000000"),
+                null,
+                "ENT-1",
+                null
+        );
+        StockMovement movement = movement(StockMovementType.ENTRY, request.quantity());
+        when(stockMovementMapper.toEntryEntity(request)).thenReturn(movement);
+        when(materialRepository.findById(material.getId())).thenReturn(Optional.of(material));
+        when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
+        when(stockMovementRepository.save(movement)).thenReturn(movement);
+        StockMovementServiceImpl service = new StockMovementServiceImpl(
+                stockMovementRepository,
+                materialRepository,
+                warehouseRepository,
+                mock(SupplierRepository.class),
+                mock(ProjectRepository.class),
+                mock(ReservationRepository.class),
+                stockMovementMapper,
+                inventoryBalanceService,
+                validationService,
+                mock(ReservationEngine.class)
+        );
+
+        service.registerEntry(request);
+
+        verify(stockMovementRepository).save(movement);
+        verify(inventoryBalanceService).increasePhysical(material.getId(), warehouse.getId(), request.quantity());
+    }
+
+    @Test
+    void stockMovementOutputWithoutReservationDecreasesPhysicalAndAvailableBalance() {
+        StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        WarehouseRepository warehouseRepository = mock(WarehouseRepository.class);
+        StockMovementMapper stockMovementMapper = mock(StockMovementMapper.class);
+        InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
+        InventoryValidationService validationService = mock(InventoryValidationService.class);
+        Material material = material("MAT-OUT");
+        Warehouse warehouse = warehouse("WH-OUT");
+        StockMovementOutputRequest request = new StockMovementOutputRequest(
+                material.getId(),
+                warehouse.getId(),
+                null,
+                null,
+                new BigDecimal("2.000000"),
+                null,
+                "OUT-1",
+                null
+        );
+        StockMovement movement = movement(StockMovementType.OUTPUT, request.quantity());
+        when(stockMovementMapper.toOutputEntity(request)).thenReturn(movement);
+        when(materialRepository.findById(material.getId())).thenReturn(Optional.of(material));
+        when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
+        when(stockMovementRepository.save(movement)).thenReturn(movement);
+        StockMovementServiceImpl service = new StockMovementServiceImpl(
+                stockMovementRepository,
+                materialRepository,
+                warehouseRepository,
+                mock(SupplierRepository.class),
+                mock(ProjectRepository.class),
+                mock(ReservationRepository.class),
+                stockMovementMapper,
+                inventoryBalanceService,
+                validationService,
+                mock(ReservationEngine.class)
+        );
+
+        service.registerOutput(request);
+
+        verify(inventoryBalanceService).decreasePhysicalAndAvailable(material.getId(), warehouse.getId(), request.quantity());
+        verify(stockMovementRepository).save(movement);
     }
 
     @Test
     void stockCalculationReturnsZeroWhenRepositoriesHaveNoRows() {
-        StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
-        ReservationRepository reservationRepository = mock(ReservationRepository.class);
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
         UUID materialId = UUID.randomUUID();
         UUID warehouseId = UUID.randomUUID();
-        when(stockMovementRepository.calculateSignedQuantity(eq(materialId), eq(warehouseId), isNull(), anyCollection(), eq(BigDecimal.ZERO)))
-                .thenReturn(BigDecimal.ZERO);
-        when(reservationRepository.calculateActiveReservedQuantity(materialId, warehouseId, BigDecimal.ZERO)).thenReturn(BigDecimal.ZERO);
+        when(inventoryBalanceRepository.calculateAvailableQuantity(materialId, warehouseId, BigDecimal.ZERO)).thenReturn(BigDecimal.ZERO);
         StockCalculationServiceImpl service = new StockCalculationServiceImpl(
-                stockMovementRepository,
-                reservationRepository,
+                inventoryBalanceRepository,
+                mock(StockMovementRepository.class),
                 mock(MaterialRepository.class),
                 mock(WarehouseRepository.class),
                 mock(MaterialMapper.class),
@@ -258,6 +420,7 @@ class BusinessLayerTest {
                 mock(MaterialRepository.class),
                 mock(WarehouseRepository.class),
                 mock(ProjectRepository.class),
+                mock(InventoryBalanceService.class),
                 validationService
         );
 
@@ -288,6 +451,7 @@ class BusinessLayerTest {
                 warehouseRepository,
                 stockMovementRepository,
                 mock(StockMovementMapper.class),
+                mock(InventoryBalanceService.class),
                 validationService
         );
 
@@ -311,6 +475,67 @@ class BusinessLayerTest {
 
         assertThrows(InsufficientStockException.class,
                 () -> service.validateAvailableStock(materialId, warehouseId, new BigDecimal("2.000000")));
+    }
+
+    @Test
+    void inventoryBalanceServiceEntryCreatesBalanceAndIncreasesPhysicalAndAvailable() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        AuditorAware<String> auditorAware = () -> Optional.of("test-user");
+        UUID materialId = UUID.randomUUID();
+        UUID warehouseId = UUID.randomUUID();
+        BigDecimal quantity = new BigDecimal("7.000000");
+        when(inventoryBalanceRepository.increasePhysical(materialId, warehouseId, quantity, "test-user")).thenReturn(1);
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, auditorAware);
+
+        service.increasePhysical(materialId, warehouseId, quantity);
+
+        verify(inventoryBalanceRepository).insertZeroBalanceIfMissing(materialId, warehouseId, "test-user");
+        verify(inventoryBalanceRepository).increasePhysical(materialId, warehouseId, quantity, "test-user");
+    }
+
+    @Test
+    void inventoryBalanceServiceOutputRejectsInsufficientProjectedAvailableStock() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        AuditorAware<String> auditorAware = () -> Optional.of("test-user");
+        UUID materialId = UUID.randomUUID();
+        UUID warehouseId = UUID.randomUUID();
+        BigDecimal quantity = new BigDecimal("3.000000");
+        when(inventoryBalanceRepository.decreasePhysicalAndAvailable(materialId, warehouseId, quantity, "test-user")).thenReturn(0);
+        when(inventoryBalanceRepository.calculateAvailableQuantity(materialId, warehouseId, BigDecimal.ZERO)).thenReturn(BigDecimal.ONE);
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, auditorAware);
+
+        assertThrows(InsufficientStockException.class,
+                () -> service.decreasePhysicalAndAvailable(materialId, warehouseId, quantity));
+    }
+
+    @Test
+    void inventoryBalanceServiceFallsBackToSystemWhenAuditorIsEmpty() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        AuditorAware<String> auditorAware = Optional::empty;
+        UUID materialId = UUID.randomUUID();
+        UUID warehouseId = UUID.randomUUID();
+        BigDecimal quantity = new BigDecimal("2.000000");
+        when(inventoryBalanceRepository.reserve(materialId, warehouseId, quantity, "system")).thenReturn(1);
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, auditorAware);
+
+        service.reserve(materialId, warehouseId, quantity);
+
+        verify(inventoryBalanceRepository).reserve(materialId, warehouseId, quantity, "system");
+    }
+
+    @Test
+    void inventoryBalanceServiceFallsBackToSystemWhenAuditorIsBlank() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        AuditorAware<String> auditorAware = () -> Optional.of("   ");
+        UUID materialId = UUID.randomUUID();
+        UUID warehouseId = UUID.randomUUID();
+        BigDecimal quantity = new BigDecimal("2.000000");
+        when(inventoryBalanceRepository.releaseReserved(materialId, warehouseId, quantity, "system")).thenReturn(1);
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, auditorAware);
+
+        service.releaseReserved(materialId, warehouseId, quantity);
+
+        verify(inventoryBalanceRepository).releaseReserved(materialId, warehouseId, quantity, "system");
     }
 
     @Test

@@ -7,6 +7,7 @@ public enum ReservationStatus {
 
     ACTIVE,
     RELEASED,
+    CONSUMED,
     CANCELLED
 
 }

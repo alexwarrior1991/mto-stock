@@ -3,6 +3,7 @@ package com.alejandro.mtostock.application.service.impl;
 import com.alejandro.mtostock.application.dto.stock.StockMovementTransferRequest;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.mapper.StockMovementMapper;
+import com.alejandro.mtostock.application.service.InventoryBalanceService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.TransferService;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
@@ -35,6 +36,7 @@ class TransferServiceImpl implements TransferService {
     private final WarehouseRepository warehouseRepository;
     private final StockMovementRepository stockMovementRepository;
     private final StockMovementMapper stockMovementMapper;
+    private final InventoryBalanceService inventoryBalanceService;
     private final InventoryValidationService inventoryValidationService;
 
     @Override
@@ -50,7 +52,8 @@ class TransferServiceImpl implements TransferService {
         inventoryValidationService.validateActive(material);
         inventoryValidationService.validateActive(sourceWarehouse);
         inventoryValidationService.validateActive(targetWarehouse);
-        inventoryValidationService.validateAvailableStock(material.getId(), sourceWarehouse.getId(), request.quantity());
+        inventoryBalanceService.decreasePhysicalAndAvailable(material.getId(), sourceWarehouse.getId(), request.quantity());
+        inventoryBalanceService.increasePhysical(material.getId(), targetWarehouse.getId(), request.quantity());
 
         StockMovement outgoingMovement = stockMovementMapper.toOutgoingTransferEntity(request);
         StockMovement incomingMovement = stockMovementMapper.toIncomingTransferEntity(request);

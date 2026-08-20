@@ -92,6 +92,10 @@ public class Reservation extends AuditableEntity {
         changeTerminalStatus(ReservationStatus.RELEASED, releaseTime);
     }
 
+    public void consume(Instant consumptionTime) {
+        changeTerminalStatus(ReservationStatus.CONSUMED, consumptionTime);
+    }
+
     public void cancel(Instant cancellationTime) {
         changeTerminalStatus(ReservationStatus.CANCELLED, cancellationTime);
     }
