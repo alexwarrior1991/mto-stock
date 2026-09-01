@@ -27,6 +27,7 @@ Main variables:
 - `KEYCLOAK_AUDIENCE`, `KEYCLOAK_AUDIENCE_VALIDATION_ENABLED`: audience expected in the token, and whether it is enforced
 - `APP_SECURITY_EXPOSE_API_DOCS`: publish Swagger UI and the OpenAPI document without a token
 - `APP_CORS_ALLOWED_ORIGIN`: browser origin allowed to call the API
+- `KC_BOOTSTRAP_ADMIN_USERNAME`, `KC_BOOTSTRAP_ADMIN_PASSWORD`, `KEYCLOAK_PORT`, `KEYCLOAK_MANAGEMENT_PORT`: the Keycloak container of the local Compose stack
 
 ## Spring profiles
 
@@ -106,9 +107,18 @@ realm roles** that group them, so what a profile can do changes in Keycloak with
 source document behind it: without its own permission, anyone who could register an output could
 also make it disappear from the balance.
 
-Suggested composite realm profiles: `mto-stock-viewer` (`stock-read`), `mto-stock-operator`
-(`stock-read`, `stock-write`), `mto-stock-admin` (all four `stock-*`) and `mto-stock-ops`
-(`ops-metrics`, `ops-write`).
+Business profiles are composite realm roles that group them:
+
+| Realm profile | Groups |
+|---|---|
+| `mto-warehouse-viewer` | `stock-read` |
+| `mto-warehouse-operator` | `stock-read`, `stock-write` |
+| `mto-warehouse-admin` | the operator ones plus `stock-delete` and `stock-adjust` |
+
+The realm is shared with `mto-configuration` — same users, same issuer — and its definition is
+versioned in [`keycloak/`](keycloak/), which also documents how to load it, what the two import
+files are for, and the one cross-repo step (`mto-frontend` needs an audience mapper for
+`mto-stock-api`). `KeycloakAuthorizationIT` checks the whole thing against a real Keycloak.
 
 ### Protected and public endpoints
 
@@ -128,15 +138,17 @@ Rejections use the same `ApiErrorResponse` payload as any other API error: `401`
 
 ### Authenticating
 
-Get a token from Keycloak and send it as a bearer token:
+`docker compose up` starts a Keycloak on `http://localhost:8082` with the realm already imported and
+three development users (`almacen.lector`, `almacen.operario`, `almacen.responsable`), all with
+password `local`. Get a token and send it as a bearer token:
 
 ```bash
 TOKEN=$(curl -s -X POST \
   "http://auth.mto.local:8082/realms/mto/protocol/openid-connect/token" \
   -d "grant_type=password" \
-  -d "client_id=mto-stock-frontend" \
-  -d "username=warehouse.operator" \
-  -d "password=your_password" | jq -r .access_token)
+  -d "client_id=mto-frontend" \
+  -d "username=almacen.operario" \
+  -d "password=local" | jq -r .access_token)
 
 # 200: reading needs stock-read
 curl -H "Authorization: Bearer $TOKEN" \
@@ -145,7 +157,7 @@ curl -H "Authorization: Bearer $TOKEN" \
 # 401: no token at all
 curl -i http://localhost:8080/api/v1/inventory/materials
 
-# 403: a stock-read token cannot write
+# 403: use a token for almacen.lector instead - reading does not grant writing
 curl -i -X POST -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"code":"MAT-1","name":"Copper wire","unitOfMeasure":"m","minimumStockLevel":10}' \
@@ -154,7 +166,9 @@ curl -i -X POST -H "Authorization: Bearer $TOKEN" \
 
 The Keycloak client that requests the token needs an **audience mapper** adding `mto-stock-api` to
 the token's `aud`, otherwise the API rejects it: without that check, a token minted for another
-application in the same realm would be accepted here.
+application in the same realm would be accepted here. See [`keycloak/README.md`](keycloak/README.md)
+— a missing mapper is the failure that looks intermittent, because Keycloak supplies the audience on
+its own only for users who hold roles in the client.
 
 The authenticated username also becomes the author recorded in the JPA audit columns.
 
@@ -195,3 +209,11 @@ On Windows PowerShell:
 ```
 
 Some persistence tests use Testcontainers, so Docker must be available when executing the full suite.
+
+`KeycloakAuthorizationIT` runs the authorization rules against a real Keycloak and is executed by
+Failsafe during `./mvnw verify`. Without Docker it is skipped rather than failed:
+
+```bash
+./mvnw verify -Dit.test=KeycloakAuthorizationIT -Dtest=NONE \
+  -Dsurefire.failIfNoSpecifiedTests=false -Dfailsafe.failIfNoSpecifiedTests=false
+```

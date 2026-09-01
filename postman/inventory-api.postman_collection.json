@@ -47,7 +47,7 @@
   "item": [
     {
       "name": "Auth",
-      "description": "The API is an OAuth2 resource server: it validates the tokens Keycloak issues, it does not issue any. Run this request first; the test script stores the access token in the accessToken variable that every other request sends as a bearer.",
+      "description": "The API is an OAuth2 resource server: it validates the tokens Keycloak issues, it does not issue any. Run this request first; the test script stores the access token in the accessToken variable that every other request sends as a bearer. The default user is almacen.operario / local, from the realm that docker-compose imports; almacen.lector and almacen.responsable are the read-only and admin ones. See keycloak/README.md.",
       "item": [
         {
           "name": "Get access token from Keycloak",
@@ -926,7 +926,7 @@
               }
             },
             "url": "{{baseUrl}}/materials",
-            "description": "Run it with a token holding only stock-read: writing needs stock-write and answers AUTH-403."
+            "description": "Run it with a token for almacen.lector: writing needs stock-write and answers AUTH-403."
           }
         },
         {
@@ -953,7 +953,7 @@
               }
             },
             "url": "{{baseUrl}}/movements/adjustments",
-            "description": "An adjustment needs both halves: stock-write from the path rule and stock-adjust from the controller annotation."
+            "description": "An adjustment needs both halves: stock-write from the path rule and stock-adjust from the controller annotation. A token for almacen.operario stops here; almacen.responsable passes."
           }
         }
       ]

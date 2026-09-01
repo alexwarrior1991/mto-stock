@@ -159,6 +159,14 @@
 
     <build>
         <plugins>
+            <!-- Sin esta declaracion failsafe no se activa: el parent de Boot le da version,
+                 executions y configuracion en su pluginManagement, pero mientras el plugin no
+                 se declare aqui nadie ejecuta las clases *IT, que surefire no incluye. La unica
+                 por ahora es KeycloakAuthorizationIT, que levanta un Keycloak real. -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+            </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>

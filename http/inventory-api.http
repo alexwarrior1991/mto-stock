@@ -14,13 +14,16 @@
 @reservationId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a060
 @keycloakUrl = http://auth.mto.local:8082
 @realm = mto
-@clientId = mto-stock-frontend
-@username = warehouse.operator
-@password = change-me
+@clientId = mto-frontend
+@username = almacen.operario
+@password = local
 
 ### Auth - Get access token from Keycloak
 # La API no emite tokens: los emite Keycloak y aqui solo se validan. Ejecuta esta peticion primero;
 # el token queda en {{accessToken}} y lo usan todas las demas.
+# Los usuarios de arriba son los del realm local que importa docker-compose (keycloak/README.md):
+# almacen.lector (solo lectura), almacen.operario (lectura y escritura) y almacen.responsable
+# (ademas cancela reservas y ajusta inventario). Todos con contrasena 'local'.
 POST {{keycloakUrl}}/realms/{{realm}}/protocol/openid-connect/token
 Content-Type: application/x-www-form-urlencoded
 
@@ -401,7 +404,7 @@ GET {{baseUrl}}/materials
 Accept: application/json
 
 ### Security - 403 with an insufficient role
-# Ejecutalo con un token que solo tenga stock-read: escribir pide stock-write y devuelve AUTH-403.
+# Ejecutalo con un token de almacen.lector: escribir pide stock-write y devuelve AUTH-403.
 POST {{baseUrl}}/materials
 Authorization: Bearer {{accessToken}}
 Accept: application/json
@@ -416,7 +419,7 @@ Content-Type: application/json
 
 ### Security - 403 adjusting without stock-adjust
 # El ajuste necesita las dos mitades: stock-write por la ruta y stock-adjust por la anotacion del
-# controlador. Un token con solo stock-write se queda aqui.
+# controlador. Un token de almacen.operario se queda aqui; almacen.responsable pasa.
 POST {{baseUrl}}/movements/adjustments
 Authorization: Bearer {{accessToken}}
 Accept: application/json

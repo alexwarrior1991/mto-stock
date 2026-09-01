@@ -20,6 +20,50 @@ services:
     networks:
       - mto-stock-network
 
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1
+    container_name: mto-stock-keycloak
+    restart: unless-stopped
+    # Keycloak 26 usa hostname v2: el puerto va dentro de la URL de --hostname, no en un
+    # --hostname-port aparte. Con la URL completa, el modo estricto (el de por defecto) es justo
+    # lo que se quiere: fija el 'iss' de los tokens a http://auth.mto.local:8082 sea cual sea la
+    # cabecera Host de la peticion. Un emisor que variase segun quien llama no coincidiria con
+    # KEYCLOAK_ISSUER_URI y la validacion fallaria.
+    #
+    # --import-realm carga /opt/keycloak/data/import al arrancar, de modo que el realm queda listo
+    # sin tocar la consola. Si el realm ya existe, no lo pisa.
+    command: start-dev --hostname=http://auth.mto.local:8082 --import-realm
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KC_BOOTSTRAP_ADMIN_USERNAME:-admin}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KC_BOOTSTRAP_ADMIN_PASSWORD:?KC_BOOTSTRAP_ADMIN_PASSWORD must be set}
+      KC_HTTP_ENABLED: "true"
+      # Habilita /health/ready en el puerto de management (9000), que es lo unico que dice de
+      # verdad si Keycloak ya sirve el realm.
+      KC_HEALTH_ENABLED: "true"
+    volumes:
+      - ./keycloak/mto-realm-local.json:/opt/keycloak/data/import/mto-realm-local.json:ro
+    ports:
+      - "${KEYCLOAK_PORT:-8082}:8080"
+      - "${KEYCLOAK_MANAGEMENT_PORT:-9000}:9000"
+    # Un socket abierto en el 8080 no significa que el realm este disponible: Keycloak acepta
+    # conexiones bastante antes de servir el JWK Set, y la app arrancaria contra un Keycloak que
+    # todavia no responde. Se sondea /health/ready en el puerto de management.
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/localhost/9000 &&
+          printf 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"UP"' <&3
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      # Keycloak tarda en la primera arrancada (migracion de esquema); sin esto los primeros
+      # sondeos cuentan como fallo.
+      start_period: 30s
+    networks:
+      - mto-stock-network
+
   app:
     build:
       context: .
@@ -29,6 +73,8 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+      keycloak:
         condition: service_healthy
     environment:
       SPRING_PROFILES_ACTIVE: ${SPRING_PROFILES_ACTIVE:-prod}
@@ -49,6 +95,11 @@ services:
       LOGGING_LEVEL_ROOT: ${LOGGING_LEVEL_ROOT:-INFO}
       LOGGING_LEVEL_APP: ${LOGGING_LEVEL_APP:-INFO}
       JAVA_OPTS: ${JAVA_OPTS:-}
+    # El 'iss' del token es http://auth.mto.local:8082 y la app tiene que poder resolver ese mismo
+    # nombre para descargar el JWK Set: es el mismo string el que viaja en el token y el que se
+    # valida, asi que no vale apuntar a 'keycloak:8080' desde dentro de la red.
+    extra_hosts:
+      - "auth.mto.local:host-gateway"
     ports:
       - "${APP_PORT:-8080}:${SERVER_PORT:-8080}"
     healthcheck:
