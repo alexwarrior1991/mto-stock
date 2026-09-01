@@ -138,52 +138,62 @@ y aborta si algo ya existe. Para reejecutarlo sobre un realm que ya tiene parte 
 
 ## Después de importar
 
-Cuatro cosas que el fichero no puede traer, y dos de ellas son cruzadas con el otro repositorio.
+Dos cosas que el fichero no puede traer. Las otras dos, que eran cruzadas con el otro repositorio,
+**ya están hechas allí** y quedan descritas más abajo para saber qué se aplica y cuándo.
 
-1. **Añadir el *audience mapper* de `mto-stock-api` al cliente `mto-frontend`.** Es un cambio en un
-   cliente que define `mto-configuration`, así que va en un pull request contra
-   `mto-configuration/keycloak/mto-realm.json`, junto al mapper que ese cliente ya tiene para
-   `mto-configuration-api`:
-
-   ```json
-   {
-     "name": "audiencia-mto-stock-api",
-     "protocol": "openid-connect",
-     "protocolMapper": "oidc-audience-mapper",
-     "config": {
-       "included.client.audience": "mto-stock-api",
-       "access.token.claim": "true",
-       "id.token.claim": "false"
-     }
-   }
-   ```
-
-   En un servidor ya en marcha: Clients → `mto-frontend` → Client scopes → `mto-frontend-dedicated`
-   → Add mapper → By configuration → Audience.
-
-2. **Extender el perfil `mto-ops` con los roles de Actuator de `mto-stock`.** Ese perfil lo define
-   `mto-configuration` y agrupa sus `ops-metrics` y `ops-write`; quien explota la plataforma explota
-   las dos aplicaciones, así que el mismo perfil debe llevar también los de `mto-stock-api`. Va en
-   el mismo pull request que el punto anterior, añadiendo a sus `composites`:
-
-   ```json
-   "mto-stock-api": ["stock-read", "ops-metrics", "ops-write"]
-   ```
-
-   `mto-stock-partial-import.json` no lo toca a propósito: una importación parcial que incluyera
-   `mto-ops` reescribiría el perfil entero y se llevaría por delante los permisos de
-   `mto-configuration`. Los perfiles de almacén (`mto-warehouse-*`) sí van ahí porque son nuevos y
-   nadie más los define. En `mto-realm-local.json` el `mto-ops` ya viene resuelto, porque en el
-   stack local no hay otra aplicación con la que compartirlo.
-
-3. **Decidir qué puede hacer `mto-configuration` en el almacén.** Su cuenta de servicio
+1. **Decidir qué puede hacer `mto-configuration` en el almacén.** Su cuenta de servicio
    `mto-configuration-svc` ya lleva un *audience mapper* que nombra a `mto-stock-api`, de modo que
    puede pedir tokens dirigidos a esta API. Pero llega sin permisos: hay que asignarle a mano los
    roles de cliente que necesite (Clients → `mto-configuration-svc` → Service accounts roles). No se
    conceden aquí a propósito — qué puede tocar un servicio en el almacén de otro es una decisión, no
    un valor por defecto.
 
-4. **Crear los usuarios y asignarles su perfil.** El fichero de importación parcial no trae ninguno.
+2. **Crear los usuarios y asignarles su perfil.** El fichero de importación parcial no trae ninguno.
+
+## Lo que aporta `mto-configuration`
+
+Los dos objetos que cruzan las dos aplicaciones —el cliente `mto-frontend` y el perfil `mto-ops`—
+los define el otro repositorio, y allí ya está hecho lo que `mto-stock` necesita de ellos.
+
+### La audiencia del frontal
+
+`mto-configuration/keycloak/mto-realm.json` da a `mto-frontend` un *audience mapper* hacia
+`mto-stock-api`, junto al que ya tenía para su propia API. Sin él, un token del navegador puede
+llegar aquí sin `mto-stock-api` en `aud`.
+
+Conviene saber que **no es lo único que pone la audiencia**: el mapper *audience resolve* del scope
+`roles`, que Keycloak asigna de serie, ya añade a `aud` todo cliente en el que el usuario tenga
+algún rol. Quien tiene permisos de almacén entra por esa vía aunque falte el mapper explícito. Lo
+que aporta el explícito es la garantía —el resolutor se cae si se acota el scope del token o el
+*full scope* del cliente— y que la falta de permisos se vea como un **403** y no como un **401
+"invalid token"**, que manda a depurar el emisor cuando el problema era otro.
+
+### El perfil de explotación
+
+`mto-ops` agrupa `ops-metrics` y `ops-write`, pero los permisos son roles de **cliente** y cada
+aplicación solo lee los del suyo: `ops-metrics` existe dos veces, una en `mto-configuration-api` y
+otra en `mto-stock-api`. Un `mto-ops` que solo lleve los de la otra aplicación recibe un 403 en el
+Actuator de esta.
+
+Lo que lo cubre es `mto-configuration/keycloak/mto-ops-cross-service.json`, una importación parcial
+que redefine `mto-ops` con los roles de las dos APIs. Se aplica **después** de
+`mto-stock-partial-import.json`, cuando el cliente `mto-stock-api` ya existe en el realm.
+
+> **Un compuesto solo puede nombrar roles de clientes que existan en el realm que se está
+> importando.** Keycloak aborta la importación entera con *App doesn't exist in role definitions*.
+> Por eso el `mto-ops` que cubre las dos aplicaciones no puede vivir dentro de `mto-realm.json` —el
+> fichero que **crea** el realm, cuando `mto-stock-api` todavía no está— y va en un fichero aparte.
+> Es la misma razón por la que `mto-stock-partial-import.json` lleva dentro el cliente
+> `mto-stock-api` además de los perfiles que lo nombran, y por la que en `mto-realm-local.json` el
+> `mto-ops` viene resuelto con solo los roles de esta aplicación: en el stack local no hay otra.
+
+Los *audience mapper* no tienen esa restricción: su destino se resuelve al emitir el token, no al
+importar, así que sí pueden nombrar un cliente que aún no existe.
+
+Y `mto-ops` sigue sin ir en `mto-stock-partial-import.json` a propósito: una importación parcial
+reescribe el rol entero, de modo que incluirlo aquí se llevaría por delante los permisos de
+`mto-configuration`. Los perfiles de almacén (`mto-warehouse-*`) sí van ahí porque son nuevos y
+nadie más los define.
 
 ## El error más fácil de cometer
 
