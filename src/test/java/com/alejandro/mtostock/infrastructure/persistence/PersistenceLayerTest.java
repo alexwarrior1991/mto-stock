@@ -55,12 +55,12 @@ class PersistenceLayerTest {
         UUID materialId = UUID.randomUUID();
 
         Specification<Material> materialSpecification = Specification.where(MaterialSpecification.codeContains("MAT"))
-                .and(MaterialSpecification.descriptionContains("wire"))
+                .and(MaterialSpecification.nameContains("wire"))
                 .and(MaterialSpecification.activeEquals(true))
                 .and(MaterialSpecification.storedInWarehouse(warehouseId))
                 .and(MaterialSpecification.stockBelowMinimum(warehouseId));
         Specification<Assembly> assemblySpecification = Specification.where(AssemblySpecification.codeContains("ASM"))
-                .and(AssemblySpecification.descriptionContains("section"))
+                .and(AssemblySpecification.nameContains("section"))
                 .and(AssemblySpecification.activeEquals(true));
         Specification<StockMovement> stockMovementSpecification = Specification.where(StockMovementSpecification.typeEquals(StockMovementType.ENTRY))
                 .and(StockMovementSpecification.warehouseIdEquals(warehouseId))

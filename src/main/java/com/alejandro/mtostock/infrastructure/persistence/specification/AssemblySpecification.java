@@ -19,10 +19,6 @@ public final class AssemblySpecification {
         return SpecificationUtils.containsIgnoreCase("name", name);
     }
 
-    public static Specification<Assembly> descriptionContains(String description) {
-        return nameContains(description);
-    }
-
     public static Specification<Assembly> activeEquals(Boolean active) {
         return SpecificationUtils.equalsBoolean("active", active);
     }

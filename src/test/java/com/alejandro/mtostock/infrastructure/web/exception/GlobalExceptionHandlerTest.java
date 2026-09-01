@@ -69,6 +69,16 @@ class GlobalExceptionHandlerTest {
     }
 
     @Test
+    void aggregateNamesUsedByServicesKeepTheirSpecificNotFoundErrorCodes() {
+        MockHttpServletRequest request = request("GET", "/api/v1/inventory/movements/" + UUID.randomUUID());
+
+        assertEquals("STK-404", errorCodeOfNotFound("Stock movement", request));
+        assertEquals("WH-404", errorCodeOfNotFound("Source warehouse", request));
+        assertEquals("WH-404", errorCodeOfNotFound("Target warehouse", request));
+        assertEquals("APP-404", errorCodeOfNotFound("Unknown aggregate", request));
+    }
+
+    @Test
     void methodArgumentValidationReturnsEveryValidationError() throws NoSuchMethodException {
         MockHttpServletRequest request = request("POST", "/api/v1/inventory/materials");
         Method method = GlobalExceptionHandlerTest.class.getDeclaredMethod("validatedEndpoint", SampleRequest.class);
@@ -125,6 +135,12 @@ class GlobalExceptionHandlerTest {
 
     @SuppressWarnings("unused")
     private static void validatedEndpoint(SampleRequest request) {
+    }
+
+    private String errorCodeOfNotFound(String aggregate, MockHttpServletRequest request) {
+        ApiErrorResponse body = handler.handleNotFound(new NotFoundException(aggregate, UUID.randomUUID()), request).getBody();
+        assertNotNull(body);
+        return body.errorCode();
     }
 
     private static MockHttpServletRequest request(String method, String path) {

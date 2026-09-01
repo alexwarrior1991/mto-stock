@@ -73,6 +73,7 @@ class ReservationEngineImpl implements ReservationEngine {
                 reservation.getWarehouse().getId(),
                 reservation.getQuantity()
         );
+        existingReservation.setMaterial(reservation.getMaterial());
         existingReservation.setWarehouse(reservation.getWarehouse());
         existingReservation.setProject(reservation.getProject());
         existingReservation.setQuantity(reservation.getQuantity());
