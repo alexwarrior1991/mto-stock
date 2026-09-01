@@ -17,14 +17,17 @@ import java.util.Map;
  */
 final class BusinessErrorCodeResolver {
 
-    private static final Map<String, String> AGGREGATE_PREFIXES = Map.of(
-            "Assembly", "ASM",
-            "Material", "MAT",
-            "Project", "PRJ",
-            "Reservation", "RES",
-            "StockMovement", "STK",
-            "Supplier", "SUP",
-            "Warehouse", "WH"
+    private static final Map<String, String> AGGREGATE_PREFIXES = Map.ofEntries(
+            Map.entry("Assembly", "ASM"),
+            Map.entry("Material", "MAT"),
+            Map.entry("Project", "PRJ"),
+            Map.entry("Reservation", "RES"),
+            Map.entry("StockMovement", "STK"),
+            Map.entry("Stock movement", "STK"),
+            Map.entry("Supplier", "SUP"),
+            Map.entry("Warehouse", "WH"),
+            Map.entry("Source warehouse", "WH"),
+            Map.entry("Target warehouse", "WH")
     );
 
     private BusinessErrorCodeResolver() {
