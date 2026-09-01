@@ -3,6 +3,7 @@ package com.alejandro.mtostock.infrastructure.persistence.repository;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Assembly;
 import com.alejandro.mtostock.infrastructure.persistence.entity.AssemblyComponent;
 import com.alejandro.mtostock.infrastructure.persistence.entity.AuditableEntity;
+import com.alejandro.mtostock.infrastructure.persistence.entity.InventoryBalance;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Reservation;
@@ -117,6 +118,35 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
     }
 
     @Test
+    void lowStockFilterReadsAvailableQuantityFromTheInventoryBalanceProjection() {
+        Material lowMaterial = material("MAT-LOW", "Below minimum material");
+        lowMaterial.setMinimumStockLevel(new BigDecimal("10.000000"));
+        Material stockedMaterial = material("MAT-STOCKED", "Above minimum material");
+        stockedMaterial.setMinimumStockLevel(new BigDecimal("10.000000"));
+        Material reservedMaterial = material("MAT-RESERVED", "Fully reserved material");
+        reservedMaterial.setMinimumStockLevel(new BigDecimal("10.000000"));
+        persist(lowMaterial);
+        persist(stockedMaterial);
+        persist(reservedMaterial);
+        Warehouse warehouse = persist(warehouse("WH-LOW"));
+        // No stock_movement rows at all: the filter must answer from the projection, and the reserved
+        // material must count as low even though its physical quantity is above the minimum.
+        persist(balance(lowMaterial, warehouse, "5.000000", "0.000000"));
+        persist(balance(stockedMaterial, warehouse, "20.000000", "0.000000"));
+        persist(balance(reservedMaterial, warehouse, "20.000000", "15.000000"));
+        flushAndClear();
+
+        assertEquals(
+                java.util.List.of("MAT-LOW", "MAT-RESERVED"),
+                lowStockCodes(MaterialSpecification.stockBelowMinimum(warehouse.getId()))
+        );
+        assertEquals(
+                java.util.List.of("MAT-LOW", "MAT-RESERVED"),
+                lowStockCodes(MaterialSpecification.stockBelowMinimum(null))
+        );
+    }
+
+    @Test
     void relationshipsAndDatabaseConstraintsAreEnforced() {
         Material material = persist(material("MAT-REL", "Relationship material"));
         Warehouse warehouse = persist(warehouse("WH-REL"));
@@ -131,6 +161,13 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
             persist(material("MAT-REL", "Duplicate material"));
             entityManager.flush();
         });
+    }
+
+    private java.util.List<String> lowStockCodes(org.springframework.data.jpa.domain.Specification<Material> specification) {
+        return materialRepository.findAll(specification).stream()
+                .map(Material::getCode)
+                .sorted()
+                .toList();
     }
 
     private <T> T persist(T entity) {
@@ -189,6 +226,21 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
         audit(component);
         assembly.addComponent(component);
         return assembly;
+    }
+
+    private static InventoryBalance balance(Material material,
+                                            Warehouse warehouse,
+                                            String physicalQuantity,
+                                            String reservedQuantity) {
+        BigDecimal physical = new BigDecimal(physicalQuantity);
+        BigDecimal reserved = new BigDecimal(reservedQuantity);
+        return InventoryBalance.builder()
+                .material(material)
+                .warehouse(warehouse)
+                .physicalQuantity(physical)
+                .reservedQuantity(reserved)
+                .availableQuantity(physical.subtract(reserved))
+                .build();
     }
 
     private static StockMovement movement(Material material,

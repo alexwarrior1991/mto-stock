@@ -1,12 +1,9 @@
 package com.alejandro.mtostock.infrastructure.persistence.specification;
 
+import com.alejandro.mtostock.infrastructure.persistence.entity.InventoryBalance;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
-import com.alejandro.mtostock.infrastructure.persistence.entity.Reservation;
-import com.alejandro.mtostock.infrastructure.persistence.entity.ReservationStatus;
 import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovement;
-import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementType;
 import jakarta.persistence.criteria.CriteriaBuilder;
-import jakarta.persistence.criteria.Expression;
 import jakarta.persistence.criteria.Predicate;
 import jakarta.persistence.criteria.Root;
 import jakarta.persistence.criteria.Subquery;
@@ -16,7 +13,7 @@ import java.math.BigDecimal;
 import java.util.UUID;
 
 /**
- * Composable Specifications for material catalogue searches and movement-derived stock filters.
+ * Composable Specifications for material catalogue searches and projection-derived stock filters.
  */
 public final class MaterialSpecification {
 
@@ -51,62 +48,36 @@ public final class MaterialSpecification {
         };
     }
 
+    /**
+     * Matches materials whose projected available stock is below their configured minimum level.
+     *
+     * <p>Reads {@code inventory_balance}, the same projection {@code StockCalculationService} serves stock
+     * reads from, so this filter cannot drift from the stock reported for an individual material.
+     */
     public static Specification<Material> stockBelowMinimum(UUID warehouseId) {
         return (root, query, criteriaBuilder) -> {
-            Subquery<BigDecimal> stockMovementQuantity = query.subquery(BigDecimal.class);
-            Root<StockMovement> stockMovement = stockMovementQuantity.from(StockMovement.class);
-            Expression<BigDecimal> movementQuantity = stockMovement.get("quantity");
-            Expression<BigDecimal> signedMovementQuantity = criteriaBuilder.<BigDecimal>selectCase()
-                    .when(stockMovement.get("type").in(
-                            StockMovementType.ENTRY,
-                            StockMovementType.POSITIVE_ADJUSTMENT,
-                            StockMovementType.INCOMING_TRANSFER
-                    ), movementQuantity)
-                    .otherwise(criteriaBuilder.neg(movementQuantity));
-            stockMovementQuantity.select(criteriaBuilder.coalesce(criteriaBuilder.sum(signedMovementQuantity), BigDecimal.ZERO))
-                    .where(materialWarehousePredicates(root, stockMovement, warehouseId, criteriaBuilder));
-
-            Subquery<BigDecimal> activeReservationQuantity = query.subquery(BigDecimal.class);
-            Root<Reservation> reservation = activeReservationQuantity.from(Reservation.class);
-            activeReservationQuantity.select(criteriaBuilder.coalesce(criteriaBuilder.sum(reservation.get("quantity")), BigDecimal.ZERO))
-                    .where(reservationPredicates(root, reservation, warehouseId, criteriaBuilder));
-
-            Expression<BigDecimal> availableQuantity = criteriaBuilder.diff(stockMovementQuantity, activeReservationQuantity);
+            Subquery<BigDecimal> availableQuantity = query.subquery(BigDecimal.class);
+            Root<InventoryBalance> inventoryBalance = availableQuantity.from(InventoryBalance.class);
+            availableQuantity
+                    .select(criteriaBuilder.coalesce(criteriaBuilder.sum(inventoryBalance.get("availableQuantity")), BigDecimal.ZERO))
+                    .where(balancePredicates(root, inventoryBalance, warehouseId, criteriaBuilder));
             return criteriaBuilder.lessThan(availableQuantity, root.get("minimumStockLevel"));
         };
     }
 
-    private static Predicate[] materialWarehousePredicates(
+    private static Predicate[] balancePredicates(
             Root<Material> material,
-            Root<StockMovement> stockMovement,
+            Root<InventoryBalance> inventoryBalance,
             UUID warehouseId,
             CriteriaBuilder criteriaBuilder
     ) {
-        Predicate materialPredicate = criteriaBuilder.equal(stockMovement.get("material"), material);
+        Predicate materialPredicate = criteriaBuilder.equal(inventoryBalance.get("material").get("id"), material.get("id"));
         if (warehouseId == null) {
             return new Predicate[]{materialPredicate};
         }
         return new Predicate[]{
                 materialPredicate,
-                criteriaBuilder.equal(stockMovement.get("warehouse").get("id"), warehouseId)
-        };
-    }
-
-    private static Predicate[] reservationPredicates(
-            Root<Material> material,
-            Root<Reservation> reservation,
-            UUID warehouseId,
-            CriteriaBuilder criteriaBuilder
-    ) {
-        Predicate materialPredicate = criteriaBuilder.equal(reservation.get("material"), material);
-        Predicate activePredicate = criteriaBuilder.equal(reservation.get("status"), ReservationStatus.ACTIVE);
-        if (warehouseId == null) {
-            return new Predicate[]{materialPredicate, activePredicate};
-        }
-        return new Predicate[]{
-                materialPredicate,
-                activePredicate,
-                criteriaBuilder.equal(reservation.get("warehouse").get("id"), warehouseId)
+                criteriaBuilder.equal(inventoryBalance.get("warehouse").get("id"), warehouseId)
         };
     }
 }
