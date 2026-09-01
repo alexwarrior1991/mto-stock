@@ -16,9 +16,10 @@ This guide documents the current Inventory API contract for frontend development
 
 ## Authentication
 
-- Current status: no authentication is required by the documented controllers.
-- Current client behavior: send requests without `Authorization` unless the target environment adds a gateway or proxy requirement.
-- Future JWT support: reserve an API client interceptor/middleware that can add `Authorization: Bearer <jwt>` to every request. Keep login/token refresh logic isolated from inventory service modules.
+- Current status: every endpoint under `/api/v1/inventory` requires a Keycloak-issued JWT. The API is an OAuth2 resource server: it validates tokens and never issues them, so there is no login endpoint to call here.
+- Current client behavior: obtain the token from Keycloak and add `Authorization: Bearer <jwt>` to every request through an API client interceptor/middleware. Keep login and token refresh isolated from the inventory service modules.
+- Public endpoints: `/actuator/health`, `/actuator/health/**` and `/actuator/info`; `/v3/api-docs/**` and `/swagger-ui/**` only where the deployment sets `APP_SECURITY_EXPOSE_API_DOCS=true`.
+- Authorization: reads need the `stock-read` client role, writes need `stock-write`, cancelling a reservation needs `stock-delete`, and registering an inventory adjustment needs `stock-adjust` on top of `stock-write`. The token's `aud` must contain `mto-stock-api`.
 
 ## Request and response conventions
 
@@ -96,6 +97,8 @@ All API errors use this shape:
 - `200 OK`: request succeeded.
 - `201 Created`: resource or movement created.
 - `400 Bad Request`: malformed query parameter, invalid JSON, or validation failure.
+- `401 Unauthorized`: missing, expired or otherwise invalid bearer token. Error code `AUTH-401`; the `WWW-Authenticate` header says whether the token has to be refreshed or the user re-authenticated.
+- `403 Forbidden`: the token is valid but the user lacks the role the operation requires. Error code `AUTH-403`.
 - `404 Not Found`: referenced resource was not found.
 - `409 Conflict`: duplicate business key or insufficient stock.
 - `422 Unprocessable Entity`: domain rule violation, such as invalid BOM or reservation lifecycle rule.
@@ -106,7 +109,7 @@ All API errors use this shape:
 - Request: `Accept: application/json`
 - Request with body: `Content-Type: application/json`
 - Optional tracing: `X-Correlation-Id: <client-generated-id>` if supported by the deployment.
-- Future auth: `Authorization: Bearer <jwt>`.
+- Auth: `Authorization: Bearer <jwt>` on every request to `/api/v1/inventory`.
 
 ## Content-Type
 

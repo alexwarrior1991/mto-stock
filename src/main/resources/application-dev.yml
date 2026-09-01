@@ -21,6 +21,16 @@ spring:
     properties:
       hibernate:
         format_sql: ${JPA_FORMAT_SQL:true}
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://auth.mto.local:8082/realms/mto}
+
+app:
+  security:
+    # Entorno de desarrollo: la documentacion interactiva es la forma habitual de probar la API.
+    expose-api-docs: ${APP_SECURITY_EXPOSE_API_DOCS:true}
 
 management:
   endpoint:

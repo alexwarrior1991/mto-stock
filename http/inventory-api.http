@@ -12,9 +12,30 @@
 @assemblyId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a040
 @movementId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a050
 @reservationId = 018f60be-1b9a-7cc3-8c6b-2f93e8c6a060
+@keycloakUrl = http://auth.mto.local:8082
+@realm = mto
+@clientId = mto-frontend
+@username = almacen.operario
+@password = local
+
+### Auth - Get access token from Keycloak
+# La API no emite tokens: los emite Keycloak y aqui solo se validan. Ejecuta esta peticion primero;
+# el token queda en {{accessToken}} y lo usan todas las demas.
+# Los usuarios de arriba son los del realm local que importa docker-compose (keycloak/README.md):
+# almacen.lector (solo lectura), almacen.operario (lectura y escritura) y almacen.responsable
+# (ademas cancela reservas y ajusta inventario). Todos con contrasena 'local'.
+POST {{keycloakUrl}}/realms/{{realm}}/protocol/openid-connect/token
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=password&client_id={{clientId}}&username={{username}}&password={{password}}
+
+> {%
+    client.global.set("accessToken", response.body.access_token);
+%}
 
 ### Materials - Create material
 POST {{baseUrl}}/materials
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -27,6 +48,7 @@ Content-Type: application/json
 
 ### Materials - Update material
 PUT {{baseUrl}}/materials/{{materialId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -40,26 +62,32 @@ Content-Type: application/json
 
 ### Materials - Get material
 GET {{baseUrl}}/materials/{{materialId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Materials - Search materials
 GET {{baseUrl}}/materials?name=Copper&active=true&page=0&size=20&sort=code,asc
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Materials - Low stock
 GET {{baseUrl}}/materials/low-stock?warehouseId={{warehouseId}}&page=0&size=20&sort=code,asc
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Materials - Get material stock
 GET {{baseUrl}}/materials/{{materialId}}/stock?warehouseId={{warehouseId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Materials - Get material movements
 GET {{baseUrl}}/materials/{{materialId}}/movements?warehouseId={{warehouseId}}&dateFrom=2026-08-01T00:00:00Z&dateTo=2026-08-31T23:59:59Z&page=0&size=20&sort=occurredAt,desc
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Warehouses - Create warehouse
 POST {{baseUrl}}/warehouses
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -71,6 +99,7 @@ Content-Type: application/json
 
 ### Warehouses - Update warehouse
 PUT {{baseUrl}}/warehouses/{{warehouseId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -82,18 +111,22 @@ Content-Type: application/json
 
 ### Warehouses - Get warehouse
 GET {{baseUrl}}/warehouses/{{warehouseId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Warehouses - List warehouses
 GET {{baseUrl}}/warehouses?page=0&size=20&sort=code,asc
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Warehouses - Get material inventory
 GET {{baseUrl}}/warehouses/{{warehouseId}}/inventory?materialId={{materialId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Warehouses - Transfer stock
 POST {{baseUrl}}/warehouses/transfers
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -109,6 +142,7 @@ Content-Type: application/json
 
 ### Stock Movements - Register entry
 POST {{baseUrl}}/movements/entries
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -124,6 +158,7 @@ Content-Type: application/json
 
 ### Stock Movements - Register output
 POST {{baseUrl}}/movements/outputs
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -140,6 +175,7 @@ Content-Type: application/json
 
 ### Stock Movements - Register adjustment
 POST {{baseUrl}}/movements/adjustments
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -155,6 +191,7 @@ Content-Type: application/json
 
 ### Stock Movements - Transfer stock
 POST {{baseUrl}}/movements/transfers
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -170,14 +207,17 @@ Content-Type: application/json
 
 ### Stock Movements - Get movement
 GET {{baseUrl}}/movements/{{movementId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Stock Movements - Search movements
 GET {{baseUrl}}/movements?movementType=ENTRY&warehouseId={{warehouseId}}&materialId={{materialId}}&dateFrom=2026-08-01T00:00:00Z&dateTo=2026-08-31T23:59:59Z&page=0&size=20&sort=occurredAt,desc
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Assemblies - Create assembly
 POST {{baseUrl}}/assemblies
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -198,6 +238,7 @@ Content-Type: application/json
 
 ### Assemblies - Update assembly
 PUT {{baseUrl}}/assemblies/{{assemblyId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -219,22 +260,27 @@ Content-Type: application/json
 
 ### Assemblies - Get assembly
 GET {{baseUrl}}/assemblies/{{assemblyId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Assemblies - Search assemblies
 GET {{baseUrl}}/assemblies?name=Bracket&active=true&page=0&size=20&sort=code,asc
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Assemblies - Availability
 GET {{baseUrl}}/assemblies/{{assemblyId}}/availability?warehouseId={{warehouseId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Assemblies - Production capacity
 GET {{baseUrl}}/assemblies/{{assemblyId}}/production-capacity?warehouseId={{warehouseId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Reservations - Create reservation
 POST {{baseUrl}}/reservations
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -248,6 +294,7 @@ Content-Type: application/json
 
 ### Reservations - Update reservation
 PUT {{baseUrl}}/reservations/{{reservationId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -259,26 +306,32 @@ Content-Type: application/json
 
 ### Reservations - Cancel reservation
 DELETE {{baseUrl}}/reservations/{{reservationId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Reservations - Release reservation
 POST {{baseUrl}}/reservations/{{reservationId}}/release
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Reservations - Consume reservation
 POST {{baseUrl}}/reservations/{{reservationId}}/consume
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Reservations - Get reservation
 GET {{baseUrl}}/reservations/{{reservationId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Reservations - Search reservations
 GET {{baseUrl}}/reservations?warehouseId={{warehouseId}}&status=ACTIVE&projectId={{projectId}}&materialId={{materialId}}&page=0&size=20&sort=reservedAt,desc
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Suppliers - Create supplier
 POST {{baseUrl}}/suppliers
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -290,6 +343,7 @@ Content-Type: application/json
 
 ### Suppliers - Update supplier
 PUT {{baseUrl}}/suppliers/{{supplierId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -301,14 +355,17 @@ Content-Type: application/json
 
 ### Suppliers - Get supplier
 GET {{baseUrl}}/suppliers/{{supplierId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Suppliers - List suppliers
 GET {{baseUrl}}/suppliers?page=0&size=20&sort=code,asc
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Projects - Create project
 POST {{baseUrl}}/projects
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -320,6 +377,7 @@ Content-Type: application/json
 
 ### Projects - Update project
 PUT {{baseUrl}}/projects/{{projectId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 Content-Type: application/json
 
@@ -331,8 +389,55 @@ Content-Type: application/json
 
 ### Projects - Get project
 GET {{baseUrl}}/projects/{{projectId}}
+Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Projects - List projects
 GET {{baseUrl}}/projects?page=0&size=20&sort=code,asc
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
+### Security - 401 without a token
+# La cadena de filtros responde antes de llegar al controlador, con el mismo ApiErrorResponse que
+# cualquier otro error de la API y errorCode AUTH-401.
+GET {{baseUrl}}/materials
+Accept: application/json
+
+### Security - 403 with an insufficient role
+# Ejecutalo con un token de almacen.lector: escribir pide stock-write y devuelve AUTH-403.
+POST {{baseUrl}}/materials
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+Content-Type: application/json
+
+{
+  "code": "MAT-COPPER-51",
+  "name": "Copper catenary wire 51 mm2",
+  "unitOfMeasure": "m",
+  "minimumStockLevel": 250.000000
+}
+
+### Security - 403 adjusting without stock-adjust
+# El ajuste necesita las dos mitades: stock-write por la ruta y stock-adjust por la anotacion del
+# controlador. Un token de almacen.operario se queda aqui; almacen.responsable pasa.
+POST {{baseUrl}}/movements/adjustments
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+Content-Type: application/json
+
+{
+  "materialId": "{{materialId}}",
+  "warehouseId": "{{warehouseId}}",
+  "quantity": 5.000000,
+  "direction": "POSITIVE",
+  "reason": "Stock count correction"
+}
+
+### Actuator - Health stays public
+GET http://{{host}}:{{port}}/actuator/health
+Accept: application/json
+
+### Actuator - Metrics require the ops-metrics role
+GET http://{{host}}:{{port}}/actuator/metrics
+Authorization: Bearer {{accessToken}}
 Accept: application/json

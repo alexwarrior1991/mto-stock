@@ -1,0 +1,87 @@
+{
+  "roles": {
+    "client": {
+      "mto-stock-api": [
+        {
+          "name": "stock-read",
+          "description": "Consulta del catalogo, del stock derivado, del historico de movimientos y de las reservas"
+        },
+        {
+          "name": "stock-write",
+          "description": "Alta y modificacion del catalogo y operaciones ordinarias de almacen: entradas, salidas, transferencias y reservas"
+        },
+        {
+          "name": "stock-delete",
+          "description": "Cancelacion de reservas"
+        },
+        {
+          "name": "stock-adjust",
+          "description": "Ajustes de inventario. Se pide ADEMAS de stock-write: es la unica escritura que corrige el saldo sin documento con el que contrastarlo"
+        },
+        {
+          "name": "ops-metrics",
+          "description": "Lectura de los endpoints de Actuator de mto-stock"
+        },
+        {
+          "name": "ops-write",
+          "description": "Operaciones de Actuator de mto-stock que modifican estado"
+        }
+      ]
+    },
+    "realm": [
+      {
+        "name": "mto-warehouse-viewer",
+        "description": "Consulta de almacen: existencias, movimientos y reservas",
+        "composite": true,
+        "composites": {
+          "client": {
+            "mto-stock-api": [
+              "stock-read"
+            ]
+          }
+        }
+      },
+      {
+        "name": "mto-warehouse-operator",
+        "description": "Trabajo diario de almacen: entradas, salidas, transferencias y reservas",
+        "composite": true,
+        "composites": {
+          "client": {
+            "mto-stock-api": [
+              "stock-read",
+              "stock-write"
+            ]
+          }
+        }
+      },
+      {
+        "name": "mto-warehouse-admin",
+        "description": "Responsables del almacen: ademas del trabajo diario, cancelan reservas y ajustan inventario tras un recuento",
+        "composite": true,
+        "composites": {
+          "client": {
+            "mto-stock-api": [
+              "stock-read",
+              "stock-write",
+              "stock-delete",
+              "stock-adjust"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "mto-stock-api",
+      "name": "API de stock MTO",
+      "description": "Resource server. No inicia ningun flujo: existe para declarar los permisos como roles de cliente y para ser la audiencia de los tokens.",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false
+    }
+  ]
+}

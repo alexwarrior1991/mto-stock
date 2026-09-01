@@ -12,6 +12,7 @@ import com.alejandro.mtostock.infrastructure.persistence.entity.ReservationStatu
 import com.alejandro.mtostock.infrastructure.web.exception.GlobalExceptionHandler;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.data.domain.PageRequest;
@@ -38,6 +39,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 @WebMvcTest(ReservationController.class)
 @Import(GlobalExceptionHandler.class)
+// Sin la cadena de filtros: lo que se prueba aqui es el contrato HTTP del controlador. Quien decide
+// que rol necesita cada verbo es ApiAuthorizationRulesTest, contra controladores sonda.
+@AutoConfigureMockMvc(addFilters = false)
 class ReservationControllerMockMvcTest {
 
     @Autowired

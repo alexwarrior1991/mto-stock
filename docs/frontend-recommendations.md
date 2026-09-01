@@ -68,7 +68,7 @@ Use the same idea in non-TypeScript projects: keep `api`, `domain`, `state`, `fe
   - `baseUrl`
   - `Accept: application/json`
   - `Content-Type: application/json` for body requests
-  - future `Authorization: Bearer <jwt>` header
+  - `Authorization: Bearer <jwt>` header, from the Keycloak token
   - optional correlation/request ID
 - Return typed promises or observable streams with a consistent shape.
 - Normalize errors once in the shared client instead of duplicating error parsing in components.
@@ -149,4 +149,4 @@ type ApiError = {
   - `ProjectRequest`, `ProjectResponse`
 - Keep numeric quantities as decimal-safe values. If the UI performs arithmetic, use a decimal library instead of binary floating-point where precision matters.
 - Keep timestamps as strings at the DTO boundary and convert only in presentation or date utilities.
-- Do not assume authentication is absent forever. Design the HTTP client so JWT support can be added without touching each service.
+- Authentication is a Keycloak-issued JWT sent on every request. Attach it in the shared HTTP client, not in each service, and handle `401` by refreshing or re-authenticating rather than surfacing it as a generic failure.

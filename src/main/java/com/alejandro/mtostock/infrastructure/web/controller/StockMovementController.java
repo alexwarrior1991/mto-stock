@@ -9,6 +9,7 @@ import com.alejandro.mtostock.application.dto.stock.StockMovementResponse;
 import com.alejandro.mtostock.application.dto.stock.StockMovementTransferRequest;
 import com.alejandro.mtostock.application.service.StockMovementService;
 import com.alejandro.mtostock.application.service.WarehouseService;
+import com.alejandro.mtostock.configuration.security.SecurityRoles;
 import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementType;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -24,6 +25,7 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.web.PageableDefault;
 import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -94,6 +96,10 @@ public class StockMovementController {
 
     /**
      * Registers a stock adjustment.
+     *
+     * <p>Exige {@code STOCK_ADJUST} ademas del {@code STOCK_WRITE} que la cadena de filtros pide a
+     * cualquier POST bajo la API: un ajuste es la unica escritura que corrige el saldo sin un
+     * documento con el que contrastarlo despues.</p>
      */
     @Operation(summary = "Register stock adjustment", description = "Creates a positive or negative stock adjustment movement.")
     @ApiResponses({
@@ -103,6 +109,7 @@ public class StockMovementController {
             @ApiResponse(responseCode = "422", description = "Domain rule violation", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
             @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
     })
+    @PreAuthorize("hasRole('" + SecurityRoles.STOCK_ADJUST + "')")
     @PostMapping("/adjustments")
     public ResponseEntity<StockMovementResponse> adjustment(@Valid @RequestBody StockMovementAdjustmentRequest request) {
         LOGGER.debug("HTTP request to register stock adjustment materialId={} warehouseId={}", request.materialId(), request.warehouseId());

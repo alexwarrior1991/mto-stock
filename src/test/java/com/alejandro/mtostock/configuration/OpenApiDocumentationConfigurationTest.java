@@ -13,7 +13,7 @@ class OpenApiDocumentationConfigurationTest {
     private final OpenAPI openAPI = new OpenApiDocumentationConfiguration().mtoStockOpenApi();
 
     @Test
-    void openApiMetadataServersTagsAndSecurityPlaceholderAreConfigured() {
+    void openApiMetadataServersTagsAndBearerRequirementAreConfigured() {
         assertEquals("Catenary Warehouse Management API", openAPI.getInfo().getTitle());
         assertEquals("v1", openAPI.getInfo().getVersion());
         assertTrue(openAPI.getInfo().getDescription().contains("Railway Catenary Construction Projects"));
@@ -21,7 +21,12 @@ class OpenApiDocumentationConfigurationTest {
         assertTrue(openAPI.getTags().stream().anyMatch(tag -> tag.getName().equals("Materials")));
         assertTrue(openAPI.getTags().stream().anyMatch(tag -> tag.getName().equals("Stock Movements")));
         assertTrue(openAPI.getComponents().getSecuritySchemes().containsKey("bearerAuth"));
-        assertTrue(openAPI.getSecurity() == null || openAPI.getSecurity().isEmpty());
+        // Requisito global, no marcador de posicion: un endpoint nuevo se documenta como protegido
+        // salvo que lo anule explicitamente.
+        assertEquals(1, openAPI.getSecurity().size());
+        assertTrue(openAPI.getSecurity().getFirst().containsKey("bearerAuth"));
+        assertTrue(openAPI.getComponents().getResponses().containsKey("Unauthorized"));
+        assertTrue(openAPI.getComponents().getResponses().containsKey("Forbidden"));
     }
 
     @Test

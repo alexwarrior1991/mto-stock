@@ -19,6 +19,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.ObjectError;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -196,6 +198,41 @@ public class GlobalExceptionHandler {
                 "Invalid request parameter.",
                 "REQ-400",
                 List.of(new ValidationError(exception.getName(), "must be a valid " + typeName)),
+                request
+        );
+    }
+
+    /**
+     * Returns 401 for every authentication failure, including the ones the security filter chain
+     * delegates here through {@code RestAuthenticationEntryPoint} before any controller is reached.
+     * Handling the whole {@link AuthenticationException} hierarchy matters: a request with no token
+     * at all would otherwise fall into the catch-all handler and be reported as a 500.
+     */
+    @ExceptionHandler(AuthenticationException.class)
+    public ResponseEntity<ApiErrorResponse> handleAuthentication(AuthenticationException exception, HttpServletRequest request) {
+        LOGGER.warn("Unauthenticated request to {} {}: {}", request.getMethod(), request.getRequestURI(), exception.getMessage());
+        return clientErrorResponse(
+                HttpStatus.UNAUTHORIZED,
+                "Authentication is required to access this resource.",
+                "AUTH-401",
+                List.of(),
+                request
+        );
+    }
+
+    /**
+     * Returns 403 because the caller is authenticated but lacks the role the endpoint requires.
+     * Both the path rules of the filter chain and {@code @PreAuthorize} land here, so the client
+     * sees the same payload whichever of the two rejected the request.
+     */
+    @ExceptionHandler(AccessDeniedException.class)
+    public ResponseEntity<ApiErrorResponse> handleAccessDenied(AccessDeniedException exception, HttpServletRequest request) {
+        LOGGER.warn("Access denied for {} {}: {}", request.getMethod(), request.getRequestURI(), exception.getMessage());
+        return clientErrorResponse(
+                HttpStatus.FORBIDDEN,
+                "The authenticated user is not allowed to perform this operation.",
+                "AUTH-403",
+                List.of(),
                 request
         );
     }

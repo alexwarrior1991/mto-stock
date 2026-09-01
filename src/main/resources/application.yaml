@@ -3,6 +3,14 @@ spring:
     name: mto-stock
   profiles:
     default: ${SPRING_PROFILES_DEFAULT:dev}
+  # La API es un resource server: no emite tokens ni guarda usuarios, solo valida los que emite
+  # Keycloak. El JWK Set se descarga de forma perezosa, con lo que un Keycloak que aun no responde
+  # no impide arrancar.
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://auth.mto.local:8082/realms/mto}
 
 management:
   endpoints:
@@ -44,3 +52,39 @@ springdoc:
     doc-expansion: none
     disable-swagger-default-url: true
   show-actuator: ${SPRINGDOC_SHOW_ACTUATOR:false}
+
+app:
+  security:
+    # Cliente de Keycloak que representa a esta API. Sus roles de cliente son los permisos que
+    # comprueban la cadena de filtros y las anotaciones de seguridad de metodo.
+    client-id: ${KEYCLOAK_CLIENT_ID:mto-stock-api}
+    # Claim que se usa como nombre del principal, y por tanto como autor en las columnas de auditoria.
+    principal-claim: preferred_username
+    audience-validation-enabled: ${KEYCLOAK_AUDIENCE_VALIDATION_ENABLED:true}
+    # Si la validacion de audiencia esta activa y este valor llega vacio, la aplicacion no arranca:
+    # sin audiencia la API aceptaria cualquier token emitido por el realm, incluido el del frontal
+    # de otra aplicacion.
+    required-audience: ${KEYCLOAK_AUDIENCE:mto-stock-api}
+    # Publicar /swagger-ui y /v3/api-docs sin autenticacion. Cerrado por defecto para que un entorno
+    # desplegado nuevo no exponga el catalogo completo de endpoints por olvido: los perfiles de
+    # desarrollo lo abren explicitamente.
+    expose-api-docs: ${APP_SECURITY_EXPOSE_API_DOCS:false}
+    cors:
+      allowed-origins:
+        - ${APP_CORS_ALLOWED_ORIGIN:http://localhost:4200}
+      allowed-methods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      allowed-headers:
+        - Authorization
+        - Content-Type
+        - X-Correlation-Id
+      exposed-headers:
+        - Location
+        - X-Correlation-Id
+      allow-credentials: false
+      max-age: ${APP_CORS_MAX_AGE:3600}
