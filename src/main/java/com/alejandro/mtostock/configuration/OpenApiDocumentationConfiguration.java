@@ -43,6 +43,7 @@ import io.swagger.v3.oas.models.parameters.Parameter;
 import io.swagger.v3.oas.models.parameters.RequestBody;
 import io.swagger.v3.oas.models.responses.ApiResponse;
 import io.swagger.v3.oas.models.responses.ApiResponses;
+import io.swagger.v3.oas.models.security.SecurityRequirement;
 import io.swagger.v3.oas.models.security.SecurityScheme;
 import io.swagger.v3.oas.models.servers.Server;
 import io.swagger.v3.oas.models.tags.Tag;
@@ -68,6 +69,9 @@ public class OpenApiDocumentationConfiguration {
     public OpenAPI mtoStockOpenApi() {
         return new OpenAPI()
                 .info(apiInfo())
+                // Requisito global: cada operacion documentada pide el bearer salvo que lo anule
+                // explicitamente, de modo que anadir un endpoint nuevo no lo publica como abierto.
+                .security(List.of(new SecurityRequirement().addList(BEARER_AUTH)))
                 .servers(List.of(
                         new Server().url("http://localhost:8080").description("Local development server"),
                         new Server().url("https://api.example.com").description("Production server placeholder")
@@ -110,8 +114,10 @@ public class OpenApiDocumentationConfiguration {
                         .type(SecurityScheme.Type.HTTP)
                         .scheme("bearer")
                         .bearerFormat("JWT")
-                        .description("JWT bearer authentication placeholder. Authentication is not enforced yet."))
+                        .description("Keycloak-issued JWT access token. Send it as \"Authorization: Bearer <token>\"."))
                 .addResponses("BadRequest", errorResponse("Invalid request, validation failure or malformed JSON.", HttpStatus.BAD_REQUEST))
+                .addResponses("Unauthorized", errorResponse("Missing, expired or otherwise invalid bearer token.", HttpStatus.UNAUTHORIZED))
+                .addResponses("Forbidden", errorResponse("The authenticated user lacks the role required by this operation.", HttpStatus.FORBIDDEN))
                 .addResponses("NotFound", errorResponse("The requested resource or business aggregate was not found.", HttpStatus.NOT_FOUND))
                 .addResponses("Conflict", errorResponse("The request conflicts with current business state, such as duplicate codes or insufficient stock.", HttpStatus.CONFLICT))
                 .addResponses("UnprocessableContent", errorResponse("The request is syntactically valid but violates a domain rule.", HttpStatus.UNPROCESSABLE_CONTENT))
@@ -226,6 +232,8 @@ public class OpenApiDocumentationConfiguration {
                 .responses(new ApiResponses()
                         .addApiResponse("201", response("Created.", responseType))
                         .addApiResponse("400", refResponse("BadRequest"))
+                        .addApiResponse("401", refResponse("Unauthorized"))
+                        .addApiResponse("403", refResponse("Forbidden"))
                         .addApiResponse("404", refResponse("NotFound"))
                         .addApiResponse("409", refResponse("Conflict"))
                         .addApiResponse("422", refResponse("UnprocessableContent"))
@@ -245,6 +253,8 @@ public class OpenApiDocumentationConfiguration {
                 .responses(new ApiResponses()
                         .addApiResponse("204", new ApiResponse().description("Deleted or cancelled successfully. No content is returned."))
                         .addApiResponse("400", refResponse("BadRequest"))
+                        .addApiResponse("401", refResponse("Unauthorized"))
+                        .addApiResponse("403", refResponse("Forbidden"))
                         .addApiResponse("404", refResponse("NotFound"))
                         .addApiResponse("409", refResponse("Conflict"))
                         .addApiResponse("422", refResponse("UnprocessableContent"))
@@ -263,6 +273,8 @@ public class OpenApiDocumentationConfiguration {
         return new ApiResponses()
                 .addApiResponse("200", response("Successful response.", responseType))
                 .addApiResponse("400", refResponse("BadRequest"))
+                .addApiResponse("401", refResponse("Unauthorized"))
+                .addApiResponse("403", refResponse("Forbidden"))
                 .addApiResponse("404", refResponse("NotFound"))
                 .addApiResponse("409", refResponse("Conflict"))
                 .addApiResponse("422", refResponse("UnprocessableContent"))
@@ -273,6 +285,8 @@ public class OpenApiDocumentationConfiguration {
         return new ApiResponses()
                 .addApiResponse("200", pageResponse("Successful pageable response containing " + responseType.getSimpleName() + " items."))
                 .addApiResponse("400", refResponse("BadRequest"))
+                .addApiResponse("401", refResponse("Unauthorized"))
+                .addApiResponse("403", refResponse("Forbidden"))
                 .addApiResponse("404", refResponse("NotFound"))
                 .addApiResponse("409", refResponse("Conflict"))
                 .addApiResponse("422", refResponse("UnprocessableContent"))
