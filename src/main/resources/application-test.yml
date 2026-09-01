@@ -32,6 +32,13 @@ app:
     audience-validation-enabled: ${KEYCLOAK_AUDIENCE_VALIDATION_ENABLED:false}
     expose-api-docs: ${APP_SECURITY_EXPOSE_API_DOCS:true}
 
+  # Los tests no dependen de un broker real: sin estos beans nadie abre una conexion. El cableado
+  # del canal se comprueba en MessagingLayerTest, que monta el contexto minimo que necesita.
+  rabbitmq:
+    enabled: ${APP_RABBITMQ_ENABLED:false}
+    master-data:
+      listener-enabled: ${APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED:false}
+
 management:
   endpoint:
     health:

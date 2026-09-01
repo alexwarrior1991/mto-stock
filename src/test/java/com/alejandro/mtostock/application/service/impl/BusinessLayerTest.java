@@ -8,6 +8,9 @@ import com.alejandro.mtostock.application.dto.material.MaterialRequest;
 import com.alejandro.mtostock.application.dto.material.MaterialStockResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialSummaryResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialUpdateRequest;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedEvent;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
 import com.alejandro.mtostock.application.dto.stock.StockAdjustmentDirection;
 import com.alejandro.mtostock.application.dto.stock.StockMovementAdjustmentRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementEntryRequest;
@@ -27,6 +30,7 @@ import com.alejandro.mtostock.application.mapper.StockMovementMapper;
 import com.alejandro.mtostock.application.mapper.WarehouseMapper;
 import com.alejandro.mtostock.application.service.BOMCalculationService;
 import com.alejandro.mtostock.application.service.InventoryBalanceService;
+import com.alejandro.mtostock.application.service.MasterDataEventHandler;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.ReservationEngine;
 import com.alejandro.mtostock.application.service.StockCalculationService;
@@ -60,11 +64,14 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -1223,6 +1230,46 @@ class BusinessLayerTest {
         );
 
         assertThrows(AssemblyException.class, () -> service.validateComponentAvailability(assembly.getId(), warehouse.getId()));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // LoggingMasterDataEventHandler
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * El manejador inicial de eventos de datos maestros no toca nada todavia: la logica de negocio
+     * esta pendiente y su punto de entrada es MasterDataEventHandler. Lo que si tiene que cumplir
+     * es no lanzar, porque una excepcion aqui manda el mensaje a la DLQ.
+     */
+    @Test
+    void masterDataEventIsHandledWithoutTouchingStock() {
+        MasterDataEventHandler handler = new LoggingMasterDataEventHandler();
+
+        assertDoesNotThrow(() -> handler.handle(masterDataMessage(Map.of("code", "BCN-SANTS"))));
+
+        // No hay colaborador que verificar y es justo lo que se comprueba: el manejador inicial no
+        // declara ninguna dependencia, asi que no puede escribir en base de datos ni llamar a un
+        // servicio de stock aunque se cuele la llamada.
+        assertEquals(0, LoggingMasterDataEventHandler.class.getDeclaredConstructors()[0].getParameterCount());
+    }
+
+    /** {@code values} es un mapa abierto del emisor: puede llegar vacio o directamente ausente. */
+    @Test
+    void masterDataEventWithoutValuesIsHandledWithoutFailing() {
+        MasterDataEventHandler handler = new LoggingMasterDataEventHandler();
+
+        assertDoesNotThrow(() -> handler.handle(masterDataMessage(null)));
+    }
+
+    private static MasterDataChangedMessage masterDataMessage(Map<String, Object> values) {
+        return new MasterDataChangedMessage(
+                UUID.randomUUID(),
+                "station-42",
+                "mto-configuration",
+                Instant.now(),
+                "MASTER_DATA_STATION_UPDATED",
+                new MasterDataChangedEvent("station", "42", MasterDataOperation.UPDATED, values),
+                "hash");
     }
 
     @Test

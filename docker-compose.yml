@@ -20,6 +20,36 @@ services:
     networks:
       - mto-stock-network
 
+  # Broker del stack local. Es la MISMA version de imagen que usa mto-configuration a proposito:
+  # el canal se prueba de punta a punta entre los dos servicios, y una diferencia de version del
+  # broker es una variable mas que explicar cuando algo no llega.
+  #
+  # Si ya tienes en marcha el RabbitMQ de mto-configuration, comenta este servicio y apunta
+  # SPRING_RABBITMQ_HOST a ese broker: son el mismo exchange y las mismas colas.
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    container_name: mto-stock-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:?RABBITMQ_DEFAULT_USER must be set}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?RABBITMQ_DEFAULT_PASS must be set}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_DEFAULT_VHOST:-/}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    # Un socket abierto en el 5672 no significa que el broker acepte ya declaraciones: se sondea
+    # con rabbitmq-diagnostics, que es lo que responde cuando el nodo esta de verdad listo.
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    networks:
+      - mto-stock-network
+
   keycloak:
     image: quay.io/keycloak/keycloak:26.1
     container_name: mto-stock-keycloak
@@ -74,6 +104,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
       keycloak:
         condition: service_healthy
     environment:
@@ -83,6 +115,13 @@ services:
       DATABASE_USERNAME: ${DATABASE_USERNAME:?DATABASE_USERNAME must be set}
       DATABASE_PASSWORD: ${DATABASE_PASSWORD:?DATABASE_PASSWORD must be set}
       SPRING_FLYWAY_ENABLED: ${SPRING_FLYWAY_ENABLED:-true}
+      SPRING_RABBITMQ_HOST: ${SPRING_RABBITMQ_HOST:-rabbitmq}
+      SPRING_RABBITMQ_PORT: ${SPRING_RABBITMQ_PORT:-5672}
+      SPRING_RABBITMQ_USERNAME: ${SPRING_RABBITMQ_USERNAME:?SPRING_RABBITMQ_USERNAME must be set}
+      SPRING_RABBITMQ_PASSWORD: ${SPRING_RABBITMQ_PASSWORD:?SPRING_RABBITMQ_PASSWORD must be set}
+      SPRING_RABBITMQ_VIRTUAL_HOST: ${SPRING_RABBITMQ_VIRTUAL_HOST:-/}
+      APP_RABBITMQ_ENABLED: ${APP_RABBITMQ_ENABLED:-true}
+      APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED: ${APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED:-true}
       KEYCLOAK_ISSUER_URI: ${KEYCLOAK_ISSUER_URI:?KEYCLOAK_ISSUER_URI must be set}
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:?KEYCLOAK_CLIENT_ID must be set}
       KEYCLOAK_AUDIENCE: ${KEYCLOAK_AUDIENCE:?KEYCLOAK_AUDIENCE must be set}
@@ -113,6 +152,7 @@ services:
 
 volumes:
   postgres_data:
+  rabbitmq_data:
 
 networks:
   mto-stock-network:

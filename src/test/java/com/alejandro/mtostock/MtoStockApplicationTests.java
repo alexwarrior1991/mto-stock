@@ -16,7 +16,11 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 @SpringBootTest(properties = {
         "spring.autoconfigure.exclude=org.springframework.boot.jdbc.autoconfigure.DataSourceAutoConfiguration,org.springframework.boot.hibernate.autoconfigure.HibernateJpaAutoConfiguration",
-        "spring.data.jpa.auditing.enabled=false"
+        "spring.data.jpa.auditing.enabled=false",
+        // El contexto se monta con el perfil por defecto (dev), donde el canal de RabbitMQ esta
+        // activo. Aqui se apaga porque no hay broker: el cableado del canal se comprueba en
+        // MessagingLayerTest, que no necesita ninguno.
+        "app.rabbitmq.enabled=false"
 })
 class MtoStockApplicationTests {
 

@@ -27,10 +27,23 @@ spring:
         jwt:
           issuer-uri: ${KEYCLOAK_ISSUER_URI:http://auth.mto.local:8082/realms/mto}
 
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    port: ${SPRING_RABBITMQ_PORT:5672}
+    username: ${SPRING_RABBITMQ_USERNAME:guest}
+    password: ${SPRING_RABBITMQ_PASSWORD:guest}
+
 app:
   security:
     # Entorno de desarrollo: la documentacion interactiva es la forma habitual de probar la API.
     expose-api-docs: ${APP_SECURITY_EXPOSE_API_DOCS:true}
+
+  rabbitmq:
+    # Con el broker del docker-compose levantado, la topologia se declara y el consumidor escucha.
+    # Si no se quiere levantar RabbitMQ, APP_RABBITMQ_ENABLED=false y la aplicacion arranca igual.
+    enabled: ${APP_RABBITMQ_ENABLED:true}
+    master-data:
+      listener-enabled: ${APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED:true}
 
 management:
   endpoint:

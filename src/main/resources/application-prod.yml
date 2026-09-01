@@ -32,6 +32,15 @@ spring:
           # preferible a arrancar apuntando a un emisor de ejemplo y que nadie se entere.
           issuer-uri: ${KEYCLOAK_ISSUER_URI}
 
+  # Sin valores por defecto a proposito: un broker mal configurado tiene que impedir el arranque en
+  # lugar de dejar el servicio en marcha sin consumir nada, que es un fallo silencioso.
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST}
+    port: ${SPRING_RABBITMQ_PORT:5672}
+    username: ${SPRING_RABBITMQ_USERNAME}
+    password: ${SPRING_RABBITMQ_PASSWORD}
+    virtual-host: ${SPRING_RABBITMQ_VIRTUAL_HOST:/}
+
 app:
   security:
     client-id: ${KEYCLOAK_CLIENT_ID}
@@ -42,6 +51,11 @@ app:
     cors:
       allowed-origins:
         - ${APP_CORS_ALLOWED_ORIGIN}
+
+  rabbitmq:
+    enabled: ${APP_RABBITMQ_ENABLED:true}
+    master-data:
+      listener-enabled: ${APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED:true}
 
 management:
   endpoint:

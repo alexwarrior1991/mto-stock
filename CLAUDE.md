@@ -50,7 +50,25 @@ Stock is never stored directly on `material`/`warehouse`. It is derived from an 
 - `reservation.status` (`ACTIVE`/`RELEASED`/`CANCELLED`/`CONSUMED`) drives `reserved_quantity`; only `ACTIVE` reservations reduce availability.
 - Assemblies never have stock — availability is computed on demand from the BOM (`assembly_component`) against current component stock (`BOMCalculationService`).
 
+### Messaging
+
+`mto-stock` consumes the master data change events that `mto-configuration` publishes to RabbitMQ
+(`mto.master-data.exchange`, routing key `mto.master-data.#`, own queue `mto.stock.master-data.queue`
+with its own DLX/DLQ). The consumer currently **only logs**: no business logic yet.
+
+- `configuration/rabbitmq` — `MasterDataRabbitProperties` (`app.rabbitmq.master-data.*`) and
+  `RabbitMqConfiguration` (topology, JSON converter, listener factory). The whole block is gated on
+  `app.rabbitmq.enabled`, the consumer additionally on `app.rabbitmq.master-data.listener-enabled`;
+  with the first off the application starts without a broker, which is what the tests rely on.
+- `infrastructure/messaging/rabbitmq` — contract names/headers and the thin `MasterDataEventConsumer`.
+- `application/dto/messaging` + `application/service/MasterDataEventHandler` — the message contract
+  and **the extension point where the business logic goes**; `LoggingMasterDataEventHandler` is the
+  placeholder implementation.
+
+The message contract is owned by `mto-configuration` — check `docs/06-messaging.md` (and that
+repository's `README_MESSAGING.md`) before changing anything under `application/dto/messaging`.
+
 ### Testing
 
 - `PostgreSQLTestContainer` (in `support/`) is the shared base for integration tests needing a real Postgres (`postgres:16-alpine` via Testcontainers) with Flyway migrations applied — extend it rather than mocking the datasource for repository/persistence tests.
-- Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` (repositories), `MapperLayerTest` (mappers), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class.
+- Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` (repositories), `MapperLayerTest` (mappers), `MessagingLayerTest` (RabbitMQ contract, consumer and topology), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class.

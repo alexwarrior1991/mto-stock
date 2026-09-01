@@ -28,6 +28,10 @@ Main variables:
 - `APP_SECURITY_EXPOSE_API_DOCS`: publish Swagger UI and the OpenAPI document without a token
 - `APP_CORS_ALLOWED_ORIGIN`: browser origin allowed to call the API
 - `KC_BOOTSTRAP_ADMIN_USERNAME`, `KC_BOOTSTRAP_ADMIN_PASSWORD`, `KEYCLOAK_PORT`, `KEYCLOAK_MANAGEMENT_PORT`: the Keycloak container of the local Compose stack
+- `SPRING_RABBITMQ_HOST`, `SPRING_RABBITMQ_PORT`, `SPRING_RABBITMQ_USERNAME`, `SPRING_RABBITMQ_PASSWORD`, `SPRING_RABBITMQ_VIRTUAL_HOST`: broker this API consumes master data events from
+- `APP_RABBITMQ_ENABLED`: declare the messaging topology and wire the consumer; `false` starts the application without a broker
+- `APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED`: consume from the queue; `false` still declares it, so events accumulate
+- `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`, `RABBITMQ_PORT`, `RABBITMQ_MANAGEMENT_PORT`: the RabbitMQ container of the local Compose stack
 
 ## Spring profiles
 
@@ -66,7 +70,9 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The Compose stack starts PostgreSQL and the application on a dedicated Docker network, keeps PostgreSQL data in the `postgres_data` volume and waits for the database health check before starting the API.
+The Compose stack starts PostgreSQL, Keycloak, RabbitMQ and the application on a dedicated Docker network, keeps PostgreSQL and RabbitMQ data in the `postgres_data` and `rabbitmq_data` volumes, and waits for every dependency health check before starting the API.
+
+RabbitMQ publishes AMQP on `5672` and its management UI on <http://localhost:15672>. If the broker of `mto-configuration` is already running, comment the `rabbitmq` service out and point `SPRING_RABBITMQ_HOST` at it instead of starting a second one: it is the same exchange and the same queues.
 
 Useful commands:
 
@@ -76,6 +82,24 @@ docker compose ps
 docker compose down
 docker compose down -v
 ```
+
+## Messaging
+
+This API consumes the master data change events that `mto-configuration` publishes to RabbitMQ. It
+binds its own queue `mto.stock.master-data.queue` to the publisher's topic exchange
+`mto.master-data.exchange` with the routing key `mto.master-data.#`, and dead-letters what it cannot
+process to `mto.stock.master-data.queue.dlq`.
+
+**Right now the consumer only logs the events it receives** — no database writes, no calls into the
+stock services. The business logic is pending and its entry point is
+`application/service/MasterDataEventHandler`.
+
+Turn the channel off with `APP_RABBITMQ_ENABLED=false` (no topology, no consumer, no connection: the
+application starts without a broker) or keep the topology and stop consuming with
+`APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED=false`. The test suite never needs a broker.
+
+See `docs/06-messaging.md` for the message contract, the full variable list, how to publish a test
+message from the management UI, and where to add the business logic.
 
 ## Database migrations
 
