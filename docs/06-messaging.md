@@ -39,11 +39,12 @@ Each message also carries AMQP headers, mirrored in `MasterDataMessageHeaders`:
 | `eventType` | Same value as in the payload, so a router does not need to open the body |
 | `aggregateType`, `aggregateId` | Entity and id that changed |
 | `sequenceNumber` | Per-aggregate order. Delivery is *at-least-once* and a redrive can replay something older |
-| `messageSignature`, `messageSignatureAlgorithm` | Signature over the bytes actually delivered — the only integrity check a consumer can redo |
+| `messageSignature`, `messageSignatureAlgorithm` | Signature over the bytes actually delivered — the only integrity check a consumer can redo, verified before the message is used |
 
 `messageHash` inside the payload is **not** a signature: the publisher computes it on the object
 before serializing, so verifying it would mean deserializing and re-serializing, and that round trip
-does not preserve identity (a `BigDecimal` of `1.50` comes back as `1.5`). Use the header instead.
+does not preserve identity (a `BigDecimal` of `1.50` comes back as `1.5`). The header is what gets
+verified — see *Integrity* below.
 
 ## Topology
 
@@ -89,6 +90,8 @@ policy instead of adding arguments here.
 | `APP_RABBITMQ_MASTER_DATA_ROUTING_KEY` | `mto.master-data.#` | Binding pattern |
 | `APP_RABBITMQ_MASTER_DATA_DEAD_LETTER_EXCHANGE` / `_QUEUE` / `_ROUTING_KEY` | `…queue.dlx` / `…queue.dlq` / `…queue.dlq` | Dead letter objects |
 | `MANAGEMENT_HEALTH_RABBIT_ENABLED` | `false` | Include the broker in `/actuator/health`. Off by default so a missing broker does not report the API as down |
+| `MESSAGING_SIGNATURE_SECRET` | *(empty)* | Shared secret; **the same value** as in `mto-configuration`. Empty means plain SHA-256 |
+| `MESSAGING_SIGNATURE_MODE` | `OPTIONAL` | `DISABLED`, `OPTIONAL` or `REQUIRED` — see *Integrity* |
 
 ### Turning the listener off
 
@@ -395,15 +398,51 @@ inbox, so a tie is never something older.
 Ordering is per synchronized row. A second entity handler that needs the same guard adds its own
 watermark column the same way.
 
-### Transport concerns still open
+### Integrity: the signature
 
-- **Integrity.** Verifying `messageSignature` requires sharing `app.messaging.signature.secret`
-  with `mto-configuration`.
+Every message carries a `messageSignature` header computed over the bytes actually sent, and
+`messageSignatureAlgorithm` saying how. The consumer recomputes it before doing anything with the
+message; a mismatch is rejected straight to the DLQ, without retries and without reaching the inbox.
+Recording as applied something whose origin is unknown would be the opposite of the point.
+
+This is the only integrity check a consumer can redo. The `messageHash` *inside* the payload is
+computed on the object before serializing, so verifying it would mean deserializing and
+re-serializing — and that round trip does not preserve identity.
+
+| `app.messaging.signature.secret` | Signature | What it protects against |
+| --- | --- | --- |
+| Shared with `mto-configuration` | HMAC-SHA256 | Tampering: whoever alters a message cannot recompute it |
+| Empty (default) | Plain SHA-256 | Corruption only — anyone who changes the content can recompute the hash |
+
+`app.messaging.signature.mode` decides how strict this is:
+
+| Mode | A bad signature | A message that cannot be verified |
+| --- | --- | --- |
+| `DISABLED` | Accepted | Accepted |
+| `OPTIONAL` (default) | **Rejected** | Accepted, with a warning logged once |
+| `REQUIRED` | **Rejected** | **Rejected** |
+
+"Cannot be verified" means either no signature at all, or one made with an algorithm this service
+cannot compute — which happens when the two sides do not share the same secret: the publisher signs
+with HMAC, this service can only manage SHA-256, and every comparison fails. That is a half-finished
+configuration, not a forged message, and treating it as the latter would send **every valid
+message** to the DLQ. Hence the default of `OPTIONAL`: a signature that does not match is always
+rejected, but a message that cannot be checked does not take the consumer down.
+
+Set `MESSAGING_SIGNATURE_SECRET` to the same value on both services and switch
+`MESSAGING_SIGNATURE_MODE` to `REQUIRED` — that is how it should end up in production. Note that
+`REQUIRED` also rejects messages published by hand from the management UI, since those carry no
+signature; use `OPTIONAL` while testing that way.
+
+The comparison is constant-time. Comparing signatures with `equals` leaks information: how long it
+takes to return says how many leading characters the sender got right, and a valid signature can be
+guessed byte by byte from that.
 
 | Layer | Class | Role |
 | --- | --- | --- |
 | `configuration/rabbitmq` | `MasterDataRabbitProperties` | Typed names of the topology |
 | `configuration/rabbitmq` | `RabbitMqConfiguration` | Exchange, queue, bindings, DLX/DLQ, converter, listener factory |
+| `configuration/messaging` | `MessagePayloadSignatureVerifier`, `MessageSignatureProperties`, `MessageSignatureMode` | Recomputes the signature over the received bytes |
 | `infrastructure/messaging/rabbitmq` | `MasterDataRabbitMqNames`, `MasterDataMessageHeaders` | The contract's names, split by owner |
 | `infrastructure/messaging/rabbitmq` | `MasterDataEventConsumer` | Thin listener: logs metadata and delegates |
 | `application/dto/messaging` | `MasterDataChangedMessage`, `MasterDataChangedEvent`, `MasterDataOperation` | The message contract |

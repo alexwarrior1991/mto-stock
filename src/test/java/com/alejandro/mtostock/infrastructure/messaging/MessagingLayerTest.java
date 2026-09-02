@@ -6,6 +6,10 @@ import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
 import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
 import com.alejandro.mtostock.application.service.MasterDataEventProcessor;
+import com.alejandro.mtostock.configuration.messaging.MessagePayloadSignatureVerifier;
+import com.alejandro.mtostock.configuration.messaging.MessagingConfiguration;
+import com.alejandro.mtostock.configuration.messaging.MessageSignatureMode;
+import com.alejandro.mtostock.configuration.messaging.MessageSignatureProperties;
 import com.alejandro.mtostock.configuration.rabbitmq.MasterDataRabbitProperties;
 import com.alejandro.mtostock.configuration.rabbitmq.RabbitMqConfiguration;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.InboxMessageCommandFactory;
@@ -34,7 +38,12 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.json.JsonMapper;
 
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+import java.util.Optional;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -86,9 +95,17 @@ class MessagingLayerTest {
               "messageHash": "9f2c1b0d5a8e7f6c4b3a2d1e0f9c8b7a6d5e4f3c2b1a0918273645546372819a"
             }""";
 
+    private static final String SECRET = "un-secreto-compartido";
+
+    /** Los tests que no van de firmas no la comprueban: cada uno prueba una cosa. */
+    private static final MessagePayloadSignatureVerifier NO_SIGNATURE_CHECK =
+            new MessagePayloadSignatureVerifier(
+                    new MessageSignatureProperties(null, MessageSignatureMode.DISABLED));
+
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(RabbitAutoConfiguration.class, JacksonAutoConfiguration.class))
-            .withUserConfiguration(RabbitMqConfiguration.class, TestHandlerConfiguration.class)
+            .withUserConfiguration(RabbitMqConfiguration.class, MessagingConfiguration.class,
+                    TestHandlerConfiguration.class)
             // Sin esto el contenedor de listeners arranca y se pone a reintentar la conexion contra
             // un broker que en un test no existe: hilos y ruido para no comprobar nada mas.
             .withPropertyValues("spring.rabbitmq.listener.simple.auto-startup=false");
@@ -152,7 +169,7 @@ class MessagingLayerTest {
         RecordingProcessor processor = new RecordingProcessor(InboxProcessingResult.PROCESSED);
         MasterDataChangedMessage message = convert(PUBLISHED_MESSAGE_JSON);
 
-        new MasterDataEventConsumer(processor).onMasterDataChanged(message, rawMessage());
+        new MasterDataEventConsumer(processor, NO_SIGNATURE_CHECK).onMasterDataChanged(message, rawMessage());
 
         assertEquals(1, processor.handled.size());
         assertSame(message, processor.handled.getFirst());
@@ -169,7 +186,7 @@ class MessagingLayerTest {
         RecordingProcessor processor = new RecordingProcessor(InboxProcessingResult.DUPLICATE_SKIPPED);
         MasterDataChangedMessage message = convert(PUBLISHED_MESSAGE_JSON);
 
-        assertDoesNotThrow(() -> new MasterDataEventConsumer(processor).onMasterDataChanged(message, rawMessage()));
+        assertDoesNotThrow(() -> new MasterDataEventConsumer(processor, NO_SIGNATURE_CHECK).onMasterDataChanged(message, rawMessage()));
     }
 
     /**
@@ -184,7 +201,7 @@ class MessagingLayerTest {
                 "MASTER_DATA_STATION_UPDATED", null, "hash");
 
         assertThrows(AmqpRejectAndDontRequeueException.class,
-                () -> new MasterDataEventConsumer(processor).onMasterDataChanged(withoutData, rawMessage()));
+                () -> new MasterDataEventConsumer(processor, NO_SIGNATURE_CHECK).onMasterDataChanged(withoutData, rawMessage()));
 
         assertTrue(processor.handled.isEmpty());
     }
@@ -202,9 +219,9 @@ class MessagingLayerTest {
                 new MasterDataChangedEvent("station", "42", null, Map.of()));
 
         assertThrows(AmqpRejectAndDontRequeueException.class,
-                () -> new MasterDataEventConsumer(processor).onMasterDataChanged(withoutEntityName, rawMessage()));
+                () -> new MasterDataEventConsumer(processor, NO_SIGNATURE_CHECK).onMasterDataChanged(withoutEntityName, rawMessage()));
         assertThrows(AmqpRejectAndDontRequeueException.class,
-                () -> new MasterDataEventConsumer(processor).onMasterDataChanged(withoutOperation, rawMessage()));
+                () -> new MasterDataEventConsumer(processor, NO_SIGNATURE_CHECK).onMasterDataChanged(withoutOperation, rawMessage()));
 
         assertTrue(processor.handled.isEmpty());
     }
@@ -221,7 +238,7 @@ class MessagingLayerTest {
         MasterDataChangedMessage message = convert(PUBLISHED_MESSAGE_JSON);
 
         IllegalStateException exception = assertThrows(IllegalStateException.class,
-                () -> new MasterDataEventConsumer(failing).onMasterDataChanged(message, rawMessage()));
+                () -> new MasterDataEventConsumer(failing, NO_SIGNATURE_CHECK).onMasterDataChanged(message, rawMessage()));
 
         assertEquals("database is down", exception.getMessage());
     }
@@ -329,6 +346,133 @@ class MessagingLayerTest {
         InboxMessageCommand command = InboxMessageCommandFactory.from(withoutOrigin, rawMessage());
 
         assertEquals("unknown", command.sourceService());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Firma del mensaje
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * Se firma igual que en el emisor —HMAC-SHA256 sobre los bytes que viajan, en hexadecimal— para
+     * que lo que se comprueba aqui sea el contrato y no una reimplementacion de si mismo.
+     */
+    @Test
+    void aMessageSignedWithTheSharedSecretIsAccepted() {
+        MessagePayloadSignatureVerifier verifier = verifier(SECRET, MessageSignatureMode.REQUIRED);
+        byte[] body = PUBLISHED_MESSAGE_JSON.getBytes(StandardCharsets.UTF_8);
+
+        assertTrue(verifier.rejectionReason(body, hmac(SECRET, body), "HMAC-SHA256").isEmpty());
+    }
+
+    /** Un byte cambiado por el camino ya no cuadra, y eso no depende del modo. */
+    @Test
+    void aTamperedPayloadIsRejectedEvenWhenSignaturesAreOptional() {
+        MessagePayloadSignatureVerifier verifier = verifier(SECRET, MessageSignatureMode.OPTIONAL);
+        byte[] original = PUBLISHED_MESSAGE_JSON.getBytes(StandardCharsets.UTF_8);
+        byte[] tampered = PUBLISHED_MESSAGE_JSON.replace("Barcelona Sants", "Barcelona Nord")
+                .getBytes(StandardCharsets.UTF_8);
+
+        Optional<String> rejection = verifier.rejectionReason(tampered, hmac(SECRET, original), "HMAC-SHA256");
+
+        assertTrue(rejection.isPresent());
+        assertTrue(rejection.get().contains("does not match"));
+    }
+
+    /** Sin secreto el emisor firma con SHA-256 simple, y eso si se puede recalcular aqui. */
+    @Test
+    void aMessageSignedWithoutASharedSecretIsVerifiedWithPlainSha256() {
+        MessagePayloadSignatureVerifier verifier = verifier("", MessageSignatureMode.REQUIRED);
+        byte[] body = PUBLISHED_MESSAGE_JSON.getBytes(StandardCharsets.UTF_8);
+
+        assertTrue(verifier.rejectionReason(body, sha256(body), "SHA-256").isEmpty());
+    }
+
+    /**
+     * El desastre a evitar: el emisor firma con HMAC porque tiene secreto y aqui no lo hay, con lo
+     * que ninguna comparacion cuadra. Eso no es un mensaje manipulado, es configuracion a medias, y
+     * tratarlo como lo primero mandaria TODOS los mensajes validos a la DLQ.
+     */
+    @Test
+    void anAlgorithmThisServiceCannotComputeIsAcceptedWhenOptionalAndRejectedWhenRequired() {
+        byte[] body = PUBLISHED_MESSAGE_JSON.getBytes(StandardCharsets.UTF_8);
+        String signature = hmac(SECRET, body);
+
+        assertTrue(verifier("", MessageSignatureMode.OPTIONAL)
+                .rejectionReason(body, signature, "HMAC-SHA256").isEmpty());
+
+        Optional<String> rejection = verifier("", MessageSignatureMode.REQUIRED)
+                .rejectionReason(body, signature, "HMAC-SHA256");
+        assertTrue(rejection.isPresent());
+        assertTrue(rejection.get().contains("app.messaging.signature.secret"));
+    }
+
+    /** Un mensaje publicado a mano para probar no tiene por que tumbar el consumo. */
+    @Test
+    void anUnsignedMessageIsAcceptedWhenOptionalAndRejectedWhenRequired() {
+        byte[] body = PUBLISHED_MESSAGE_JSON.getBytes(StandardCharsets.UTF_8);
+
+        assertTrue(verifier(SECRET, MessageSignatureMode.OPTIONAL)
+                .rejectionReason(body, null, null).isEmpty());
+        assertTrue(verifier(SECRET, MessageSignatureMode.REQUIRED)
+                .rejectionReason(body, null, null).isPresent());
+        assertTrue(verifier(SECRET, MessageSignatureMode.DISABLED)
+                .rejectionReason(body, null, null).isEmpty());
+    }
+
+    /** Con la comprobacion apagada no se mira nada, ni siquiera una firma que no cuadra. */
+    @Test
+    void nothingIsCheckedWhenVerificationIsDisabled() {
+        byte[] body = PUBLISHED_MESSAGE_JSON.getBytes(StandardCharsets.UTF_8);
+
+        assertTrue(verifier(SECRET, MessageSignatureMode.DISABLED)
+                .rejectionReason(body, "una firma que no vale nada", "HMAC-SHA256").isEmpty());
+    }
+
+    /** El secreto no puede acabar en un log ni dentro del mensaje de una excepcion. */
+    @Test
+    void thePropertiesNeverPrintTheSecret() {
+        String printed = new MessageSignatureProperties(SECRET, MessageSignatureMode.REQUIRED).toString();
+
+        assertFalse(printed.contains(SECRET));
+        assertTrue(printed.contains("***"));
+    }
+
+    /** El listener rechaza sin reintentos: los mismos bytes no van a empezar a cuadrar. */
+    @Test
+    void aMessageThatFailsVerificationGoesToTheDeadLetterQueueWithoutReachingTheProcessor() {
+        RecordingProcessor processor = new RecordingProcessor(InboxProcessingResult.PROCESSED);
+        MasterDataEventConsumer consumer = new MasterDataEventConsumer(
+                processor, verifier(SECRET, MessageSignatureMode.REQUIRED));
+        Message raw = rawMessage();
+        raw.getMessageProperties().setHeader(MasterDataMessageHeaders.SIGNATURE, "no es la firma");
+        raw.getMessageProperties().setHeader(MasterDataMessageHeaders.SIGNATURE_ALGORITHM, "HMAC-SHA256");
+
+        assertThrows(AmqpRejectAndDontRequeueException.class,
+                () -> consumer.onMasterDataChanged(convert(PUBLISHED_MESSAGE_JSON), raw));
+
+        assertTrue(processor.handled.isEmpty());
+    }
+
+    private static MessagePayloadSignatureVerifier verifier(String secret, MessageSignatureMode mode) {
+        return new MessagePayloadSignatureVerifier(new MessageSignatureProperties(secret, mode));
+    }
+
+    private static String hmac(String secret, byte[] payload) {
+        try {
+            Mac mac = Mac.getInstance("HmacSHA256");
+            mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), "HmacSHA256"));
+            return HexFormat.of().formatHex(mac.doFinal(payload));
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
+    }
+
+    private static String sha256(byte[] payload) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(payload));
+        } catch (Exception exception) {
+            throw new IllegalStateException(exception);
+        }
     }
 
     // ---------------------------------------------------------------------------------------

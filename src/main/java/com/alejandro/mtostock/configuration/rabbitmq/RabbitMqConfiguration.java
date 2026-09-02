@@ -1,6 +1,7 @@
 package com.alejandro.mtostock.configuration.rabbitmq;
 
 import com.alejandro.mtostock.application.service.MasterDataEventProcessor;
+import com.alejandro.mtostock.configuration.messaging.MessagePayloadSignatureVerifier;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.MasterDataEventConsumer;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.MasterDataRabbitMqNames;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.RabbitListenerContainerFactoryNames;
@@ -163,12 +164,14 @@ public class RabbitMqConfiguration {
     @ConditionalOnProperty(
             prefix = "app.rabbitmq.master-data", name = "listener-enabled",
             havingValue = "true", matchIfMissing = true)
-    public MasterDataEventConsumer masterDataEventConsumer(MasterDataEventProcessor masterDataEventProcessor) {
+    public MasterDataEventConsumer masterDataEventConsumer(
+            MasterDataEventProcessor masterDataEventProcessor,
+            MessagePayloadSignatureVerifier signatureVerifier) {
         LOGGER.info("Master data consumer enabled: queue={}, boundTo={} with routingKey={}, "
                         + "deadLetterQueue={} via {} with routingKey={}",
                 properties.queue(), properties.exchange(), properties.routingKey(),
                 properties.deadLetterQueue(), properties.deadLetterExchange(), properties.deadLetterRoutingKey());
 
-        return new MasterDataEventConsumer(masterDataEventProcessor);
+        return new MasterDataEventConsumer(masterDataEventProcessor, signatureVerifier);
     }
 }

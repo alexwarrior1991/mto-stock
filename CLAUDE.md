@@ -96,6 +96,13 @@ Consumption is idempotent through an **inbox** (`inbox_message`, added in
 - `payload` is `json`, not `jsonb`, so the stored bytes stay identical to what arrived and keep
   matching `payload_hash`.
 
+`configuration/messaging` verifies the `messageSignature` header over the received bytes before the
+consumer uses the message (`app.messaging.signature.secret` — the same value as in
+`mto-configuration` — plus `.mode`: `DISABLED`/`OPTIONAL`/`REQUIRED`). A bad signature is always
+rejected to the DLQ; a message that *cannot* be verified (unsigned, or signed with an algorithm this
+side cannot compute because the secrets differ) is only rejected under `REQUIRED`. The default is
+`OPTIONAL` because `REQUIRED` with mismatched secrets sends every valid message to the DLQ.
+
 The message contract is owned by `mto-configuration` — check `docs/06-messaging.md` (and that
 repository's `README_MESSAGING.md`) before changing anything under `application/dto/messaging`.
 

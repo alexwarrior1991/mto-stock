@@ -4,6 +4,7 @@ import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
 import com.alejandro.mtostock.application.service.MasterDataEventProcessor;
+import com.alejandro.mtostock.configuration.messaging.MessagePayloadSignatureVerifier;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -49,6 +50,7 @@ public class MasterDataEventConsumer {
     private static final Logger LOGGER = LoggerFactory.getLogger(MasterDataEventConsumer.class);
 
     private final MasterDataEventProcessor masterDataEventProcessor;
+    private final MessagePayloadSignatureVerifier signatureVerifier;
 
     /**
      * La cola se resuelve por placeholder porque una anotación solo admite constantes, y el valor
@@ -74,6 +76,7 @@ public class MasterDataEventConsumer {
                 properties.getHeader(MasterDataMessageHeaders.SEQUENCE_NUMBER),
                 properties.getHeader(MasterDataMessageHeaders.SIGNATURE_ALGORITHM));
 
+        rejectIfNotAuthentic(rawMessage, properties);
         rejectIfUnprocessable(message, properties);
 
         InboxMessageCommand command = InboxMessageCommandFactory.from(message, rawMessage);
@@ -81,6 +84,31 @@ public class MasterDataEventConsumer {
 
         LOGGER.info("Master data message settled: messageId={}, idempotencyKey={}, result={}",
                 properties.getMessageId(), command.messageId(), result);
+    }
+
+    /**
+     * Comprueba que los bytes recibidos son los que firmó el emisor, antes de hacerles caso.
+     *
+     * <p>Va lo primero, y sobre {@code rawMessage.getBody()}: se firma lo que viajó, no el objeto
+     * deserializado, que no vuelve a serializarse igual. Una firma que no cuadra es permanente —los
+     * mismos bytes no van a empezar a cuadrar por reintentarlos—, así que el mensaje va a la DLQ sin
+     * gastar intentos y sin llegar al inbox: registrar como aplicado algo que no se sabe de dónde
+     * viene sería justo lo contrario de lo que hace falta.</p>
+     */
+    private void rejectIfNotAuthentic(Message rawMessage, MessageProperties properties) {
+        signatureVerifier
+                .rejectionReason(
+                        rawMessage.getBody(),
+                        header(properties, MasterDataMessageHeaders.SIGNATURE),
+                        header(properties, MasterDataMessageHeaders.SIGNATURE_ALGORITHM))
+                .ifPresent(reason -> {
+                    throw unprocessable("was rejected because " + reason, properties);
+                });
+    }
+
+    private static String header(MessageProperties properties, String name) {
+        Object value = properties.getHeader(name);
+        return value == null ? null : value.toString();
     }
 
     /**

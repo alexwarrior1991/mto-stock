@@ -90,6 +90,12 @@ binds its own queue `mto.stock.master-data.queue` to the publisher's topic excha
 `mto.master-data.exchange` with the routing key `mto.master-data.#`, and dead-letters what it cannot
 process to `mto.stock.master-data.queue.dlq`.
 
+Every message is verified before it is used: `mto-configuration` signs the bytes it sends, and this
+service recomputes that signature and rejects to the DLQ anything that does not match. Sharing
+`MESSAGING_SIGNATURE_SECRET` between both services makes it an HMAC that protects against tampering;
+without it the check is a plain hash that only catches corruption. Set `MESSAGING_SIGNATURE_MODE` to
+`REQUIRED` once the secret is shared.
+
 Consumption is idempotent through the **inbox pattern**, the counterpart of the outbox
 `mto-configuration` publishes with: every message is recorded in `inbox_message` keyed by its
 `operationId`, and a unique constraint in the database — not a check in the code — makes sure the
