@@ -4,6 +4,7 @@ import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedEvent;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
 import com.alejandro.mtostock.application.service.InboxMessageService;
@@ -134,10 +135,10 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
                 List.of(new ExecutionPackageMasterDataHandler(projectRepository)));
         MasterDataChangedMessage message = executionPackageCreated();
 
-        inbox.process(command(), () -> dispatcher.handle(message));
+        inbox.process(command(), () -> dispatcher.handle(message, new MasterDataEventContext(10L)));
         entityManager.flush();
         entityManager.clear();
-        inbox.process(command(), () -> dispatcher.handle(message));
+        inbox.process(command(), () -> dispatcher.handle(message, new MasterDataEventContext(10L)));
         entityManager.flush();
         entityManager.clear();
 
@@ -163,7 +164,7 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
                         MasterDataOperation.UPDATED, Map.of("stagger", "0.20")),
                 "hash");
 
-        InboxProcessingResult result = inbox.process(command(), () -> dispatcher.handle(cantilever));
+        InboxProcessingResult result = inbox.process(command(), () -> dispatcher.handle(cantilever, new MasterDataEventContext(10L)));
         entityManager.flush();
         entityManager.clear();
 
@@ -189,7 +190,7 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
     private static InboxMessageCommand command() {
         return new InboxMessageCommand(MESSAGE_ID, SOURCE_SERVICE, "MASTER_DATA_STATION_UPDATED", "station",
                 "42", "mto.master-data.exchange", "mto.master-data.station.updated",
-                "mto.stock.master-data.queue", "9f2c1b0d", PAYLOAD);
+                "mto.stock.master-data.queue", "9f2c1b0d", PAYLOAD, 10L);
     }
 
     private InboxMessage reload() {

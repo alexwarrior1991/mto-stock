@@ -65,7 +65,38 @@ public final class InboxMessageCommandFactory {
                 truncate(properties.getReceivedRoutingKey(), MAX_ROUTING_LENGTH),
                 truncate(properties.getConsumerQueue(), MAX_ROUTING_LENGTH),
                 sha256(payload),
-                payload);
+                payload,
+                sequenceNumber(properties));
+    }
+
+    /**
+     * El emisor la escribe como {@code long}, pero AMQP la devuelve como el entero más pequeño en el
+     * que quepa, así que un número por debajo de {@link Integer#MAX_VALUE} llega como
+     * {@code Integer}. Leerla como {@code Long} directamente fallaría con un {@code ClassCastException}
+     * en el caso normal, no en el raro.
+     *
+     * <p>Su ausencia no rechaza el mensaje: sin ella no se puede ordenar, pero sí aplicar, y un
+     * emisor que dejara de enviarla dejaría este servicio sin consumir nada.</p>
+     */
+    private static Long sequenceNumber(MessageProperties properties) {
+        Object sequenceNumber = properties.getHeader(MasterDataMessageHeaders.SEQUENCE_NUMBER);
+
+        return switch (sequenceNumber) {
+            case null -> null;
+            case Number number -> number.longValue();
+            case String text -> parseSequenceNumber(text);
+            default -> parseSequenceNumber(sequenceNumber.toString());
+        };
+    }
+
+    private static Long parseSequenceNumber(String value) {
+        try {
+            return Long.valueOf(value.trim());
+        } catch (NumberFormatException exception) {
+            // Un valor ilegible se trata como ausente en lugar de mandar el mensaje a la DLQ: lo que
+            // se pierde es la proteccion de orden, no el evento.
+            return null;
+        }
     }
 
     private static String idempotencyKey(MasterDataChangedMessage message, MessageProperties properties) {

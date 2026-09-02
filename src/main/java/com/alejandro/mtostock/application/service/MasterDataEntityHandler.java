@@ -1,6 +1,7 @@
 package com.alejandro.mtostock.application.service;
 
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
 
 /**
  * Reacts to changes of one kind of master data entity.
@@ -46,15 +47,15 @@ public interface MasterDataEntityHandler {
      * a las bajas y no a las altas, por ejemplo— es una decisión frecuente y legítima, y obligar a
      * escribir dos cuerpos vacíos para expresarla solo añade ruido.
      */
-    default void onCreated(MasterDataChangedMessage message) {
+    default void onCreated(MasterDataChangedMessage message, MasterDataEventContext context) {
         // Sin reacción por defecto.
     }
 
-    default void onUpdated(MasterDataChangedMessage message) {
+    default void onUpdated(MasterDataChangedMessage message, MasterDataEventContext context) {
         // Sin reacción por defecto.
     }
 
-    default void onDeleted(MasterDataChangedMessage message) {
+    default void onDeleted(MasterDataChangedMessage message, MasterDataEventContext context) {
         // Sin reacción por defecto.
     }
 }

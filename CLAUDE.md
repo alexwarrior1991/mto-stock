@@ -71,7 +71,10 @@ with its own DLX/DLQ). The consumer currently **only logs**: no business logic y
   it upserts a `project` from an execution package and deactivates it on `DELETED` (never deletes —
   `reservation`/`stock_movement` reference it with `on delete restrict`), matching on
   `project.source_service` + `source_entity_id` (added in `V5`, `NULL` for projects created through
-  the API) with the code derived as `EP-<sourceId>`. The other seven entities have no handler and
+  the API) with the code derived as `EP-<sourceId>`. Late events are discarded against the
+  `project.source_sequence_number` watermark (`V6`) from the `sequenceNumber` header, compared
+  inside the writing statement's `where` — never read-then-write; a missing sequence still applies
+  and keeps the stored watermark, and a deletion advances it even when the row is already inactive. The other seven entities have no handler and
   an unknown entity is never an error (the queue is bound to `mto.master-data.#` and gets
   everything), while a message with no `data`, `entityName` or `operation` is rejected to the DLQ by
   the consumer. An entity handler runs inside the inbox transaction, so it must not open its own.

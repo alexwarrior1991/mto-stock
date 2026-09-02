@@ -2,6 +2,7 @@ package com.alejandro.mtostock.application.service.impl;
 
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedEvent;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
 import com.alejandro.mtostock.application.service.MasterDataEntityHandler;
 import com.alejandro.mtostock.application.service.MasterDataEventHandler;
 import org.slf4j.Logger;
@@ -50,14 +51,15 @@ class DispatchingMasterDataEventHandler implements MasterDataEventHandler {
     }
 
     @Override
-    public void handle(MasterDataChangedMessage message) {
+    public void handle(MasterDataChangedMessage message, MasterDataEventContext context) {
         MasterDataChangedEvent event = message.data();
         String entityName = normalize(event.entityName());
 
         LOGGER.info("Master data change received: eventType={}, entity={}, entityId={}, operation={}, "
-                        + "operationId={}, origin={}, createdAt={}, fields={}",
+                        + "operationId={}, sequenceNumber={}, origin={}, createdAt={}, fields={}",
                 message.eventType(), event.entityName(), event.entityId(), event.operation(),
-                message.operationId(), message.origin(), message.creationDate(), fieldNames(event));
+                message.operationId(), context.sequenceNumber(), message.origin(), message.creationDate(),
+                fieldNames(event));
 
         // El contenido va a DEBUG: el mapa lo compone mto-configuration y este servicio no sabe qué
         // hay dentro, así que publicar sus valores a INFO sería decidir por adelantado que nada de
@@ -74,7 +76,7 @@ class DispatchingMasterDataEventHandler implements MasterDataEventHandler {
             return;
         }
 
-        dispatch(handler, message, event);
+        dispatch(handler, message, context, event);
 
         LOGGER.debug("Master data change dispatched to {}: entity={}, operation={}",
                 handler.getClass().getSimpleName(), entityName, event.operation());
@@ -83,12 +85,13 @@ class DispatchingMasterDataEventHandler implements MasterDataEventHandler {
     private static void dispatch(
             MasterDataEntityHandler handler,
             MasterDataChangedMessage message,
+            MasterDataEventContext context,
             MasterDataChangedEvent event) {
 
         switch (event.operation()) {
-            case CREATED -> handler.onCreated(message);
-            case UPDATED -> handler.onUpdated(message);
-            case DELETED -> handler.onDeleted(message);
+            case CREATED -> handler.onCreated(message, context);
+            case UPDATED -> handler.onUpdated(message, context);
+            case DELETED -> handler.onDeleted(message, context);
         }
     }
 

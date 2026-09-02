@@ -172,10 +172,10 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
     @Test
     void masterDataUpsertCreatesTheProjectOnceAndUpdatesItAfterwards() {
         assertEquals(1, projectRepository.upsertFromMasterData(
-                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera", true));
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera", true, 10L));
         entityManager.clear();
         assertEquals(1, projectRepository.upsertFromMasterData(
-                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera (revisado)", false));
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera (revisado)", false, 11L));
         entityManager.clear();
 
         Project project = projectRepository
@@ -196,7 +196,7 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
     void locallyCreatedProjectsAreUnaffectedByTheSourceUniqueConstraint() {
         persist(Project.builder().code("PRJ-001").name("Local one").build());
         persist(Project.builder().code("PRJ-002").name("Local two").build());
-        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Sincronizado", true);
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Sincronizado", true, 10L);
         entityManager.flush();
         entityManager.clear();
 
@@ -210,22 +210,91 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
      */
     @Test
     void masterDataDeletionDeactivatesTheProjectAndKeepsItsHistory() {
-        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Tramo", true);
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Tramo", true, 10L);
         entityManager.clear();
 
-        assertEquals(1, projectRepository.deactivateFromMasterData("mto-configuration", "42"));
+        assertEquals(1, projectRepository.deactivateFromMasterData("mto-configuration", "42", 11L));
         entityManager.clear();
 
         Project project = projectRepository
                 .findBySourceServiceAndSourceEntityId("mto-configuration", "42")
                 .orElseThrow();
         assertFalse(project.getActive());
-        // Ya estaba desactivado: nada que hacer, y no es un error.
-        assertEquals(0, projectRepository.deactivateFromMasterData("mto-configuration", "42"));
-        // Un paquete que este servicio nunca vio tampoco lo es.
-        assertEquals(0, projectRepository.deactivateFromMasterData("mto-configuration", "99"));
+        // Un paquete que este servicio nunca vio no es un error.
+        assertEquals(0, projectRepository.deactivateFromMasterData("mto-configuration", "99", 11L));
     }
 
+
+    /**
+     * El escenario que esto arregla: el evento 10 falla y se reprograma, el 11 llega y se aplica, y
+     * cuando el 10 se reintenta ya no debe pisar al 11 con el nombre viejo.
+     */
+    @Test
+    void aChangeArrivingBehindWhatWasAlreadyAppliedIsDiscarded() {
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Nombre nuevo", true, 11L);
+        entityManager.clear();
+
+        assertEquals(0, projectRepository.upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Nombre viejo", true, 10L));
+        entityManager.clear();
+
+        Project project = projectRepository
+                .findBySourceServiceAndSourceEntityId("mto-configuration", "42")
+                .orElseThrow();
+        assertEquals("Nombre nuevo", project.getName());
+        assertEquals(11L, project.getSourceSequenceNumber());
+    }
+
+    /**
+     * Un UPDATE retrasado detras de un DELETE reactivaba el proyecto. La baja adelanta la marca de
+     * agua aunque el proyecto ya estuviera inactivo, que es justo lo que cierra este agujero.
+     */
+    @Test
+    void anUpdateArrivingAfterADeletionDoesNotBringTheProjectBack() {
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Tramo", true, 10L);
+        entityManager.clear();
+        assertEquals(1, projectRepository.deactivateFromMasterData("mto-configuration", "42", 11L));
+        entityManager.clear();
+
+        assertEquals(0, projectRepository.upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo", true, 10L));
+        entityManager.clear();
+
+        assertFalse(projectRepository
+                .findBySourceServiceAndSourceEntityId("mto-configuration", "42")
+                .orElseThrow()
+                .getActive());
+    }
+
+    /** Igual numero es el mismo cambio, no uno anterior: se aplica en lugar de descartarse. */
+    @Test
+    void aChangeWithTheSameSequenceNumberIsStillApplied() {
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Tramo", true, 10L);
+        entityManager.clear();
+
+        assertEquals(1, projectRepository.upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo revisado", true, 10L));
+    }
+
+    /**
+     * Sin numero no se puede ordenar, asi que se aplica; pero la marca de agua anterior se conserva
+     * en lugar de borrarse, o el siguiente evento viejo entraria.
+     */
+    @Test
+    void aChangeWithoutSequenceNumberIsAppliedAndKeepsTheStoredWatermark() {
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Tramo", true, 10L);
+        entityManager.clear();
+
+        assertEquals(1, projectRepository.upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Sin secuencia", true, null));
+        entityManager.clear();
+
+        Project project = projectRepository
+                .findBySourceServiceAndSourceEntityId("mto-configuration", "42")
+                .orElseThrow();
+        assertEquals("Sin secuencia", project.getName());
+        assertEquals(10L, project.getSourceSequenceNumber());
+    }
 
     private java.util.List<String> lowStockCodes(org.springframework.data.jpa.domain.Specification<Material> specification) {
         return materialRepository.findAll(specification).stream()

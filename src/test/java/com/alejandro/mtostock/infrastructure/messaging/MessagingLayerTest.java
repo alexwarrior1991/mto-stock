@@ -44,6 +44,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -292,6 +293,32 @@ class MessagingLayerTest {
         assertEquals(64, command.payloadHash().length());
     }
 
+    /**
+     * El emisor la escribe como long, pero AMQP devuelve el entero mas pequeno en el que quepa: un
+     * numero por debajo de Integer.MAX_VALUE llega como Integer, que es el caso normal.
+     */
+    @Test
+    void sequenceNumberIsReadFromTheHeaderWhateverIntegerTypeAmqpUsed() {
+        MasterDataChangedMessage message = convert(PUBLISHED_MESSAGE_JSON);
+
+        assertEquals(7L, InboxMessageCommandFactory.from(message, rawMessage()).sequenceNumber());
+        assertEquals(7L, InboxMessageCommandFactory.from(message, rawMessageWithSequence(7)).sequenceNumber());
+        assertEquals(7L, InboxMessageCommandFactory.from(message, rawMessageWithSequence("7")).sequenceNumber());
+    }
+
+    /**
+     * Sin ella no se puede ordenar, pero si aplicar: rechazar el mensaje dejaria este servicio sin
+     * consumir nada si el emisor dejara de enviarla.
+     */
+    @Test
+    void aMissingOrUnreadableSequenceNumberDoesNotRejectTheMessage() {
+        MasterDataChangedMessage message = convert(PUBLISHED_MESSAGE_JSON);
+
+        assertNull(InboxMessageCommandFactory.from(message, rawMessageWithSequence(null)).sequenceNumber());
+        assertNull(InboxMessageCommandFactory.from(message, rawMessageWithSequence("no soy un numero"))
+                .sequenceNumber());
+    }
+
     /** El emisor es procedencia, no clave: su ausencia no puede tirar un mensaje identificable. */
     @Test
     void missingOriginIsRecordedAsUnknownInsteadOfRejectingTheMessage() {
@@ -470,6 +497,12 @@ class MessagingLayerTest {
                 .build();
 
         return (MasterDataChangedMessage) converter.fromMessage(message);
+    }
+
+    private static Message rawMessageWithSequence(Object sequenceNumber) {
+        Message raw = rawMessage();
+        raw.getMessageProperties().setHeader(MasterDataMessageHeaders.SEQUENCE_NUMBER, sequenceNumber);
+        return raw;
     }
 
     private static MasterDataChangedMessage messageWith(MasterDataChangedEvent event) {

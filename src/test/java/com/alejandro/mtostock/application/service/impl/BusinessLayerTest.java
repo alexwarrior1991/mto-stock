@@ -12,6 +12,7 @@ import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedEvent;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
 import com.alejandro.mtostock.application.dto.stock.StockAdjustmentDirection;
@@ -111,6 +112,8 @@ class BusinessLayerTest {
     private static final String MESSAGE_ID = "0f8b1f4c-3f6a-4a6d-9a2a-1c9f5f6f2b10";
     private static final String SOURCE_SERVICE = "mto-configuration";
     private static final String PAYLOAD = "{\"eventType\":\"MASTER_DATA_STATION_UPDATED\"}";
+
+    private static final MasterDataEventContext CONTEXT = new MasterDataEventContext(7L);
 
     @Test
     void stockCalculationReadsCurrentBalancesFromInventoryBalanceAndKeepsHistoricalFromMovements() {
@@ -1319,7 +1322,7 @@ class BusinessLayerTest {
     void inboxRejectsACommandWithoutIdempotencyKey() {
         InboxMessageServiceImpl service = new InboxMessageServiceImpl(mock(InboxMessageRepository.class));
         InboxMessageCommand withoutKey = new InboxMessageCommand(
-                " ", SOURCE_SERVICE, null, null, null, null, null, null, null, PAYLOAD);
+                " ", SOURCE_SERVICE, null, null, null, null, null, null, null, PAYLOAD, 7L);
 
         assertThrows(ValidationException.class, () -> service.process(withoutKey, () -> { }));
     }
@@ -1351,7 +1354,7 @@ class BusinessLayerTest {
         InboxMessageService inboxMessageService = mock(InboxMessageService.class);
         when(inboxMessageService.process(any(), any())).thenReturn(InboxProcessingResult.DUPLICATE_SKIPPED);
         AtomicInteger executions = new AtomicInteger();
-        MasterDataEventHandler handler = message -> executions.incrementAndGet();
+        MasterDataEventHandler handler = (message, context) -> executions.incrementAndGet();
 
         InboxProcessingResult result = new IdempotentMasterDataEventProcessor(inboxMessageService, handler)
                 .process(inboxCommand(), masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED));
@@ -1386,7 +1389,7 @@ class BusinessLayerTest {
     private static InboxMessageCommand inboxCommand() {
         return new InboxMessageCommand(MESSAGE_ID, SOURCE_SERVICE, "MASTER_DATA_STATION_UPDATED", "station",
                 "42", "mto.master-data.exchange", "mto.master-data.station.updated",
-                "mto.stock.master-data.queue", "hash", PAYLOAD);
+                "mto.stock.master-data.queue", "hash", PAYLOAD, 7L);
     }
 
     // -----------------------------------------------------------------------------------------
@@ -1400,7 +1403,7 @@ class BusinessLayerTest {
         MasterDataEventHandler dispatcher =
                 new DispatchingMasterDataEventHandler(List.of(executionPackages, stations));
 
-        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED));
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED), CONTEXT);
 
         assertEquals(List.of("onUpdated"), stations.calls);
         assertTrue(executionPackages.calls.isEmpty());
@@ -1411,9 +1414,9 @@ class BusinessLayerTest {
         RecordingEntityHandler stations = new RecordingEntityHandler(MasterDataEntityNames.STATION);
         MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(stations));
 
-        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.CREATED));
-        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED));
-        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.DELETED));
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.CREATED), CONTEXT);
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED), CONTEXT);
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.DELETED), CONTEXT);
 
         assertEquals(List.of("onCreated", "onUpdated", "onDeleted"), stations.calls);
     }
@@ -1430,7 +1433,7 @@ class BusinessLayerTest {
         MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(stations));
 
         assertDoesNotThrow(() -> dispatcher.handle(
-                masterDataMessage(MasterDataEntityNames.CANTILEVER, MasterDataOperation.CREATED)));
+                masterDataMessage(MasterDataEntityNames.CANTILEVER, MasterDataOperation.CREATED), CONTEXT));
 
         assertTrue(stations.calls.isEmpty());
     }
@@ -1441,7 +1444,7 @@ class BusinessLayerTest {
         MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of());
 
         assertDoesNotThrow(() -> dispatcher.handle(
-                masterDataMessage(MasterDataEntityNames.EXECUTION_PACKAGE, MasterDataOperation.CREATED)));
+                masterDataMessage(MasterDataEntityNames.EXECUTION_PACKAGE, MasterDataOperation.CREATED), CONTEXT));
     }
 
     /** Un manejador que declarase "Execution-Package" no se ejecutaria nunca y nada lo delataria. */
@@ -1450,7 +1453,7 @@ class BusinessLayerTest {
         RecordingEntityHandler packages = new RecordingEntityHandler("  Execution-Package ");
         MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(packages));
 
-        dispatcher.handle(masterDataMessage(MasterDataEntityNames.EXECUTION_PACKAGE, MasterDataOperation.CREATED));
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.EXECUTION_PACKAGE, MasterDataOperation.CREATED), CONTEXT);
 
         assertEquals(List.of("onCreated"), packages.calls);
     }
@@ -1490,7 +1493,7 @@ class BusinessLayerTest {
         MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(onlyDeletions));
 
         assertDoesNotThrow(() -> dispatcher.handle(
-                masterDataMessage(MasterDataEntityNames.TRACK, MasterDataOperation.CREATED)));
+                masterDataMessage(MasterDataEntityNames.TRACK, MasterDataOperation.CREATED), CONTEXT));
     }
 
     /** values es un mapa abierto del emisor: puede llegar vacio o directamente ausente. */
@@ -1504,7 +1507,7 @@ class BusinessLayerTest {
                 new MasterDataChangedEvent(MasterDataEntityNames.STATION, "42", MasterDataOperation.DELETED, null),
                 "hash");
 
-        assertDoesNotThrow(() -> dispatcher.handle(withoutValues));
+        assertDoesNotThrow(() -> dispatcher.handle(withoutValues, CONTEXT));
 
         assertEquals(List.of("onDeleted"), stations.calls);
     }
@@ -1528,10 +1531,10 @@ class BusinessLayerTest {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
 
         new ExecutionPackageMasterDataHandler(projectRepository).onCreated(executionPackage("42",
-                Map.of("id", 42, "name", "Tramo Sants-Sagrera", "enabled", true)));
+                Map.of("id", 42, "name", "Tramo Sants-Sagrera", "enabled", true)), CONTEXT);
 
         verify(projectRepository).upsertFromMasterData(
-                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera", true);
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera", true, 7L);
     }
 
     /**
@@ -1543,10 +1546,10 @@ class BusinessLayerTest {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
 
         new ExecutionPackageMasterDataHandler(projectRepository).onUpdated(executionPackage("42",
-                Map.of("id", 42, "name", "Tramo Sants-Sagrera (revisado)", "enabled", false)));
+                Map.of("id", 42, "name", "Tramo Sants-Sagrera (revisado)", "enabled", false)), CONTEXT);
 
         verify(projectRepository).upsertFromMasterData(
-                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera (revisado)", false);
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera (revisado)", false, 7L);
     }
 
     /**
@@ -1556,23 +1559,23 @@ class BusinessLayerTest {
     @Test
     void deletedExecutionPackageDeactivatesTheProjectInsteadOfRemovingIt() {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
-        when(projectRepository.deactivateFromMasterData("mto-configuration", "42")).thenReturn(1);
+        when(projectRepository.deactivateFromMasterData("mto-configuration", "42", 7L)).thenReturn(1);
 
-        new ExecutionPackageMasterDataHandler(projectRepository).onDeleted(executionPackage("42", Map.of()));
+        new ExecutionPackageMasterDataHandler(projectRepository).onDeleted(executionPackage("42", Map.of()), CONTEXT);
 
-        verify(projectRepository).deactivateFromMasterData("mto-configuration", "42");
+        verify(projectRepository).deactivateFromMasterData("mto-configuration", "42", 7L);
         verify(projectRepository, never()).delete(any());
-        verify(projectRepository, never()).upsertFromMasterData(any(), any(), any(), any(), anyBoolean());
+        verify(projectRepository, never()).upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), any());
     }
 
     /** Puede llegar la baja de un paquete que este servicio nunca vio; no es un error. */
     @Test
     void deletingAnExecutionPackageWithNoMatchingProjectIsNotAnError() {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
-        when(projectRepository.deactivateFromMasterData("mto-configuration", "99")).thenReturn(0);
+        when(projectRepository.deactivateFromMasterData("mto-configuration", "99", 7L)).thenReturn(0);
 
         assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
-                .onDeleted(executionPackage("99", Map.of())));
+                .onDeleted(executionPackage("99", Map.of()), CONTEXT));
     }
 
     /** Un campo que falte no puede desactivar un proyecto vivo: el valor por defecto en origen es true. */
@@ -1581,9 +1584,9 @@ class BusinessLayerTest {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
 
         new ExecutionPackageMasterDataHandler(projectRepository).onCreated(executionPackage("42",
-                Map.of("id", 42, "name", "Tramo Sants-Sagrera")));
+                Map.of("id", 42, "name", "Tramo Sants-Sagrera")), CONTEXT);
 
-        verify(projectRepository).upsertFromMasterData(any(), any(), any(), any(), eq(true));
+        verify(projectRepository).upsertFromMasterData(any(), any(), any(), any(), eq(true), any());
     }
 
     /** Un proyecto llamado "EP-42" en la pantalla de reservas no lo reconoce nadie. */
@@ -1593,7 +1596,7 @@ class BusinessLayerTest {
         ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository);
         MasterDataChangedMessage withoutName = executionPackage("42", Map.of("id", 42, "enabled", true));
 
-        assertThrows(ValidationException.class, () -> handler.onCreated(withoutName));
+        assertThrows(ValidationException.class, () -> handler.onCreated(withoutName, CONTEXT));
 
         verifyNoInteractions(projectRepository);
     }
@@ -1604,7 +1607,7 @@ class BusinessLayerTest {
         ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository);
         MasterDataChangedMessage withoutId = executionPackage(" ", Map.of("name", "Tramo"));
 
-        assertThrows(ValidationException.class, () -> handler.onCreated(withoutId));
+        assertThrows(ValidationException.class, () -> handler.onCreated(withoutId, CONTEXT));
 
         verifyNoInteractions(projectRepository);
     }
@@ -1616,12 +1619,12 @@ class BusinessLayerTest {
     @Test
     void aCodeAlreadyTakenByAnotherProjectFailsWithAnExplanation() {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
-        when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean()))
+        when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), any()))
                 .thenThrow(new DataIntegrityViolationException("duplicate key value violates uq_project_code"));
         ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository);
         MasterDataChangedMessage message = executionPackage("42", Map.of("name", "Tramo"));
 
-        ValidationException exception = assertThrows(ValidationException.class, () -> handler.onCreated(message));
+        ValidationException exception = assertThrows(ValidationException.class, () -> handler.onCreated(message, CONTEXT));
 
         assertTrue(exception.getMessage().contains("EP-42"));
     }
@@ -1643,10 +1646,54 @@ class BusinessLayerTest {
         values.put("stations", List.of(Map.of("id", 2, "name", "Sants")));
 
         assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
-                .onCreated(executionPackage("42", values)));
+                .onCreated(executionPackage("42", values), CONTEXT));
 
         verify(projectRepository).upsertFromMasterData(
-                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera", true);
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera", true, 7L);
+    }
+
+    /**
+     * La sentencia no toca la fila cuando el evento viene por detras de lo ya aplicado, y eso llega
+     * como 0 filas. No es un fallo -no puede serlo: mandar a la DLQ un evento viejo lo unico que
+     * consigue es llenarla de trafico normal.
+     */
+    @Test
+    void anExecutionPackageChangeThatArrivesLateIsDiscardedWithoutFailing() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), any()))
+                .thenReturn(0);
+
+        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
+                .onUpdated(executionPackage("42", Map.of("name", "Nombre viejo")),
+                        new MasterDataEventContext(3L)));
+    }
+
+    @Test
+    void aLateDeletionIsDiscardedWithoutFailing() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        when(projectRepository.deactivateFromMasterData(any(), any(), any())).thenReturn(0);
+        when(projectRepository.findBySourceServiceAndSourceEntityId("mto-configuration", "42"))
+                .thenReturn(Optional.of(Project.builder().code("EP-42").name("Tramo").build()));
+
+        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
+                .onDeleted(executionPackage("42", Map.of()), new MasterDataEventContext(3L)));
+    }
+
+    /**
+     * Sin numero de secuencia no se puede saber que el evento sea viejo, y rechazarlo dejaria el
+     * servicio sin consumir nada si el emisor dejara de enviar la cabecera: se aplica.
+     */
+    @Test
+    void anEventWithoutSequenceNumberIsStillApplied() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), isNull()))
+                .thenReturn(1);
+
+        new ExecutionPackageMasterDataHandler(projectRepository)
+                .onCreated(executionPackage("42", Map.of("name", "Tramo")), new MasterDataEventContext(null));
+
+        verify(projectRepository).upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo", true, null);
     }
 
     private static MasterDataChangedMessage executionPackage(String entityId, Map<String, Object> values) {
@@ -1676,17 +1723,17 @@ class BusinessLayerTest {
         }
 
         @Override
-        public void onCreated(MasterDataChangedMessage message) {
+        public void onCreated(MasterDataChangedMessage message, MasterDataEventContext context) {
             calls.add("onCreated");
         }
 
         @Override
-        public void onUpdated(MasterDataChangedMessage message) {
+        public void onUpdated(MasterDataChangedMessage message, MasterDataEventContext context) {
             calls.add("onUpdated");
         }
 
         @Override
-        public void onDeleted(MasterDataChangedMessage message) {
+        public void onDeleted(MasterDataChangedMessage message, MasterDataEventContext context) {
             calls.add("onDeleted");
         }
     }

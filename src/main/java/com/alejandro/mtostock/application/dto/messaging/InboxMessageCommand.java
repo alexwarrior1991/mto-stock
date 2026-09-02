@@ -17,6 +17,7 @@ package com.alejandro.mtostock.application.dto.messaging;
  * @param queueName    cola de la que se consumió
  * @param payloadHash  huella del payload; dato auxiliar, nunca clave de idempotencia
  * @param payload      JSON original recibido, sin reserializar
+ * @param sequenceNumber número del mensaje en la secuencia del emisor, o {@code null} si no viajaba
  */
 public record InboxMessageCommand(
         String messageId,
@@ -28,6 +29,7 @@ public record InboxMessageCommand(
         String routingKey,
         String queueName,
         String payloadHash,
-        String payload
+        String payload,
+        Long sequenceNumber
 ) {
 }

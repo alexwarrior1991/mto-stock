@@ -39,6 +39,7 @@ public interface ProjectMapper {
     // una columna nueva a la entidad rompa la compilacion en lugar de colarse vacia.
     @Mapping(target = "sourceService", ignore = true)
     @Mapping(target = "sourceEntityId", ignore = true)
+    @Mapping(target = "sourceSequenceNumber", ignore = true)
     Project toEntity(ProjectRequest request);
 
     @BeanMapping(ignoreByDefault = true)

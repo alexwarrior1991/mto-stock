@@ -3,6 +3,7 @@ package com.alejandro.mtostock.application.service.impl;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedEvent;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
 import com.alejandro.mtostock.application.exception.ValidationException;
 import com.alejandro.mtostock.application.service.MasterDataEntityHandler;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepository;
@@ -31,6 +32,18 @@ import java.util.Map;
  * evento y se descartan: darles columnas aquí sería duplicar el modelo de {@code mto-configuration}
  * en un servicio que no lo usa para nada. Si algún día hacen falta, están en el payload que el
  * inbox conserva.</p>
+ *
+ * <h2>Orden</h2>
+ *
+ * <p>El inbox impide aplicar dos veces el mismo mensaje, no aplicar uno viejo después de uno nuevo.
+ * Si un evento falla y se reprograma, el siguiente del mismo paquete puede adelantarlo, y sin
+ * ninguna protección el nombre viejo pisaría al nuevo — o un {@code UPDATE} retrasado detrás de un
+ * {@code DELETE} reactivaría el proyecto. La marca de agua {@code project.source_sequence_number}
+ * descarta lo que venga por debajo de lo ya aplicado, y la comprobación vive dentro de la propia
+ * sentencia de escritura: entre una lectura y una escritura caben dos entregas.</p>
+ *
+ * <p>Un evento sin número de secuencia se aplica igualmente. No se puede saber que sea viejo, y
+ * rechazarlo dejaría el servicio sin consumir nada si el emisor dejara de enviar la cabecera.</p>
  *
  * <h2>Identidad</h2>
  *
@@ -62,8 +75,8 @@ class ExecutionPackageMasterDataHandler implements MasterDataEntityHandler {
     }
 
     @Override
-    public void onCreated(MasterDataChangedMessage message) {
-        synchronizeProject(message);
+    public void onCreated(MasterDataChangedMessage message, MasterDataEventContext context) {
+        synchronizeProject(message, context);
     }
 
     /**
@@ -72,37 +85,38 @@ class ExecutionPackageMasterDataHandler implements MasterDataEntityHandler {
      * «insertar» que falla si ya existe convertiría en avería una reentrega perfectamente normal.
      */
     @Override
-    public void onUpdated(MasterDataChangedMessage message) {
-        synchronizeProject(message);
+    public void onUpdated(MasterDataChangedMessage message, MasterDataEventContext context) {
+        synchronizeProject(message, context);
     }
 
     @Override
-    public void onDeleted(MasterDataChangedMessage message) {
+    public void onDeleted(MasterDataChangedMessage message, MasterDataEventContext context) {
         String sourceEntityId = sourceEntityId(message.data());
 
-        int deactivated = projectRepository.deactivateFromMasterData(SOURCE_SERVICE, sourceEntityId);
+        int deactivated = projectRepository.deactivateFromMasterData(
+                SOURCE_SERVICE, sourceEntityId, context.sequenceNumber());
 
         if (deactivated == 0) {
-            // No es un error: puede llegar la baja de un paquete que este servicio nunca vio -porque
-            // se creó y se borró antes de que existiera este consumidor- o que ya estaba desactivado.
-            LOGGER.info("Execution package deleted but no active project matched it, nothing to do: "
-                    + "sourceEntityId={}", sourceEntityId);
+            logNothingDeactivated(sourceEntityId, context);
             return;
         }
 
-        LOGGER.info("Project deactivated after its execution package was deleted: sourceEntityId={}, code={}",
-                sourceEntityId, projectCode(sourceEntityId));
+        LOGGER.info("Project deactivated after its execution package was deleted: sourceEntityId={}, code={}, "
+                        + "sequenceNumber={}",
+                sourceEntityId, projectCode(sourceEntityId), context.sequenceNumber());
     }
 
-    private void synchronizeProject(MasterDataChangedMessage message) {
+    private void synchronizeProject(MasterDataChangedMessage message, MasterDataEventContext context) {
         MasterDataChangedEvent event = message.data();
         String sourceEntityId = sourceEntityId(event);
         String code = projectCode(sourceEntityId);
         String name = name(event, sourceEntityId);
         boolean active = active(event);
+        int applied;
 
         try {
-            projectRepository.upsertFromMasterData(SOURCE_SERVICE, sourceEntityId, code, name, active);
+            applied = projectRepository.upsertFromMasterData(
+                    SOURCE_SERVICE, sourceEntityId, code, name, active, context.sequenceNumber());
         } catch (DataIntegrityViolationException exception) {
             // El choque realista es con uq_project_code: alguien creó a mano un proyecto con este
             // mismo código. Sin este mensaje, lo que se lee en la DLQ es una violación de
@@ -112,8 +126,38 @@ class ExecutionPackageMasterDataHandler implements MasterDataEntityHandler {
                     + "Rename or remove the conflicting project.").formatted(code, sourceEntityId));
         }
 
-        LOGGER.info("Project synchronized from execution package: sourceEntityId={}, code={}, active={}",
-                sourceEntityId, code, active);
+        if (applied == 0) {
+            // La sentencia no toca la fila cuando el evento viene por detrás de lo ya aplicado. No es
+            // un fallo: es exactamente lo que tiene que pasar con un cambio que llega tarde.
+            LOGGER.info("Execution package change discarded, a newer one was already applied: "
+                            + "sourceEntityId={}, code={}, sequenceNumber={}",
+                    sourceEntityId, code, context.sequenceNumber());
+            return;
+        }
+
+        LOGGER.info("Project synchronized from execution package: sourceEntityId={}, code={}, active={}, "
+                        + "sequenceNumber={}",
+                sourceEntityId, code, active, context.sequenceNumber());
+    }
+
+    /**
+     * Las dos razones por las que no se desactivó nada son normales, pero muy distintas de leer a las
+     * tres de la mañana: una dice que este servicio nunca supo del paquete, y la otra que la baja
+     * llegó tarde. Cuesta una consulta más, y solo en el camino en el que no se hizo nada.
+     */
+    private void logNothingDeactivated(String sourceEntityId, MasterDataEventContext context) {
+        boolean known = projectRepository
+                .findBySourceServiceAndSourceEntityId(SOURCE_SERVICE, sourceEntityId)
+                .isPresent();
+
+        if (known) {
+            LOGGER.info("Execution package deletion discarded, a newer change was already applied: "
+                            + "sourceEntityId={}, sequenceNumber={}",
+                    sourceEntityId, context.sequenceNumber());
+        } else {
+            LOGGER.info("Execution package deleted but no project came from it, nothing to do: "
+                    + "sourceEntityId={}", sourceEntityId);
+        }
     }
 
     /**

@@ -1,6 +1,7 @@
 package com.alejandro.mtostock.application.service;
 
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
 
 /**
  * Single entry point for master data changes published by {@code mto-configuration}.
@@ -28,6 +29,7 @@ public interface MasterDataEventHandler {
      * @param message sobre completo, nunca {@code null}, con su payload de negocio en
      *                {@code data()}, y con {@code entityName} y {@code operation} ya validados por
      *                el consumidor
+     * @param context metadatos que viajan fuera del payload, como el número de secuencia
      */
-    void handle(MasterDataChangedMessage message);
+    void handle(MasterDataChangedMessage message, MasterDataEventContext context);
 }

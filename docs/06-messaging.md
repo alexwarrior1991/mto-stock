@@ -277,6 +277,8 @@ against here — the one entity of the eight with a real counterpart in this dom
 | `CREATED` / `UPDATED` | The project is created or updated (one upsert; both operations take the same path, because an at-least-once redelivery of a `CREATED` must not fail) |
 | `DELETED` | The project is **deactivated**, never deleted |
 
+Any of the three is discarded if it arrives behind what was already applied — see *Ordering* below.
+
 Only the name and the active flag are copied — all a `mto-stock` project can hold. The dates,
 length, company, tracks and stations travel in the event and are dropped: giving them columns here
 would duplicate `mto-configuration`'s model in a service that has no use for it. If they are ever
@@ -359,11 +361,42 @@ What *is* rejected straight to the DLQ is a message missing the minimum the cont
 `data`, no `entityName`, or no `operation` — because without those the application layer cannot
 decide anything, and rereading the same message will not add them.
 
+### Ordering
+
+The inbox stops the same message being applied twice; it does not stop an older message being
+applied after a newer one. If an event fails and is rescheduled, the next event for the same
+aggregate can overtake it, and the retry then writes the old state over the new one — an `UPDATED`
+arriving behind a `DELETED` would even bring the project back.
+
+`mto-configuration` numbers every message from a PostgreSQL sequence: global, monotonic, assigned by
+the database, and published in the `sequenceNumber` header. Because it is monotonic for the whole
+outbox it is also monotonic per aggregate, so keeping the last applied number per synchronized row
+is enough. `project.source_sequence_number` (`V6`) is that watermark, and anything arriving below it
+is discarded.
+
+The check lives **inside the writing statement** — the `where` of the `on conflict do update`, and
+the `where` of the deactivation — not in the handler. Between a read and a write fit two deliveries,
+and the second would compare against a watermark that is already out of date. A discarded event
+affects 0 rows, which is what the handler logs; it is not a failure and must not reach the DLQ.
+
+Two details that are easy to get wrong:
+
+- **An event with no sequence number is applied**, and keeps the stored watermark rather than
+  clearing it. It cannot be known to be old, and rejecting it would leave the service consuming
+  nothing if the publisher ever stopped sending the header. An unreadable value is treated the same
+  as a missing one: what is lost is the ordering guard, not the event.
+- **A deletion advances the watermark even when the project is already inactive.** Skipping the row
+  would leave the watermark behind, and an `UPDATED` numbered below that deletion would reactivate
+  the project — the very hole this closes.
+
+Equal numbers are applied, not discarded: the same message redelivered is already caught by the
+inbox, so a tie is never something older.
+
+Ordering is per synchronized row. A second entity handler that needs the same guard adds its own
+watermark column the same way.
+
 ### Transport concerns still open
 
-- **Order.** A redrive can replay something old; the `sequenceNumber` header says what was already
-  applied for that aggregate. The inbox stops the same message being applied twice, not an older
-  message being applied after a newer one.
 - **Integrity.** Verifying `messageSignature` requires sharing `app.messaging.signature.secret`
   with `mto-configuration`.
 
@@ -378,6 +411,7 @@ decide anything, and rereading the same message will not add them.
 | `application/service/impl` | `DispatchingMasterDataEventHandler` | Logs every change and routes it to the handler of its entity |
 | `application/service` | `MasterDataEntityHandler` | **Extension point for the business logic**, one per entity |
 | `application/dto/messaging` | `MasterDataEntityNames` | The eight entity names the publisher emits today |
+| `application/dto/messaging` | `MasterDataEventContext` | Transport metadata beside the payload: the sequence number |
 | `application/dto/messaging` | `InboxMessageCommand`, `InboxProcessingResult` | Transport-free input and outcome of the inbox |
 | `application/service` | `InboxMessageService` | Runs a piece of work at most once per message |
 | `application/service` | `MasterDataEventProcessor` | What the consumer talks to: inbox + handler |

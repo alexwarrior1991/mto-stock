@@ -3,6 +3,7 @@ package com.alejandro.mtostock.application.service.impl;
 import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
 import com.alejandro.mtostock.application.service.InboxMessageService;
 import com.alejandro.mtostock.application.service.MasterDataEventHandler;
 import com.alejandro.mtostock.application.service.MasterDataEventProcessor;
@@ -38,7 +39,9 @@ class IdempotentMasterDataEventProcessor implements MasterDataEventProcessor {
     @Override
     public InboxProcessingResult process(InboxMessageCommand command, MasterDataChangedMessage message) {
         try {
-            return inboxMessageService.process(command, () -> masterDataEventHandler.handle(message));
+            MasterDataEventContext context = new MasterDataEventContext(command.sequenceNumber());
+
+            return inboxMessageService.process(command, () -> masterDataEventHandler.handle(message, context));
         } catch (RuntimeException failure) {
             LOGGER.error("Master data message failed and was recorded as failed in the inbox: "
                             + "messageId={}, sourceService={}, eventType={}",

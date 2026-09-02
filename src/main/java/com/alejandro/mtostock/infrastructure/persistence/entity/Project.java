@@ -71,6 +71,16 @@ public class Project extends AuditableEntity {
     @ToString.Include
     private String sourceEntityId;
 
+    /**
+     * Número de secuencia del último cambio aplicado desde el origen.
+     *
+     * <p>Es la marca de agua que descarta los eventos que llegan tarde. El emisor numera cada
+     * mensaje con una secuencia global y creciente, así que un evento con un número por debajo de
+     * éste describe un estado anterior al que ya está guardado y aplicarlo lo empeoraría.</p>
+     */
+    @Column(name = "source_sequence_number")
+    private Long sourceSequenceNumber;
+
     /** Un proyecto sincronizado no se edita a mano: lo que se cambie aquí lo pisa el siguiente evento. */
     public boolean isSynchronized() {
         return sourceService != null;
