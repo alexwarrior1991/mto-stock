@@ -90,16 +90,23 @@ binds its own queue `mto.stock.master-data.queue` to the publisher's topic excha
 `mto.master-data.exchange` with the routing key `mto.master-data.#`, and dead-letters what it cannot
 process to `mto.stock.master-data.queue.dlq`.
 
-**Right now the consumer only logs the events it receives** — no database writes, no calls into the
-stock services. The business logic is pending and its entry point is
-`application/service/MasterDataEventHandler`.
+Consumption is idempotent through the **inbox pattern**, the counterpart of the outbox
+`mto-configuration` publishes with: every message is recorded in `inbox_message` keyed by its
+`operationId`, and a unique constraint in the database — not a check in the code — makes sure the
+work runs exactly once however many times the broker delivers it. A duplicate is skipped and
+acknowledged; a failure is recorded with its reason and dead-lettered after the configured retries.
+
+**Right now the consumer only logs the events it receives** — no stock is touched. The business
+logic is pending and its entry point is `application/service/MasterDataEventHandler`; whatever goes
+there is already covered by the inbox and does not need to check for repeats itself.
 
 Turn the channel off with `APP_RABBITMQ_ENABLED=false` (no topology, no consumer, no connection: the
 application starts without a broker) or keep the topology and stop consuming with
 `APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED=false`. The test suite never needs a broker.
 
-See `docs/06-messaging.md` for the message contract, the full variable list, how to publish a test
-message from the management UI, and where to add the business logic.
+See `docs/06-messaging.md` for the message contract, the full variable list, how the inbox behaves
+on duplicates and failures, how to publish a test message from the management UI, and where to add
+the business logic.
 
 ## Database migrations
 

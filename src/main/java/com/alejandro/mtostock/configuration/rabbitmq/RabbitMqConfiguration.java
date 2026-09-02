@@ -1,6 +1,6 @@
 package com.alejandro.mtostock.configuration.rabbitmq;
 
-import com.alejandro.mtostock.application.service.MasterDataEventHandler;
+import com.alejandro.mtostock.application.service.MasterDataEventProcessor;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.MasterDataEventConsumer;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.MasterDataRabbitMqNames;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.RabbitListenerContainerFactoryNames;
@@ -155,17 +155,20 @@ public class RabbitMqConfiguration {
      * <p>Es un {@code @Bean} y no un {@code @Component} para que herede la condición de esta clase:
      * con {@code app.rabbitmq.enabled=false} no hay factory que lo soporte, y un consumidor
      * escaneado por su cuenta fallaría al arrancar buscándola.</p>
+     *
+     * <p>Depende del procesador idempotente y no del manejador: el consumidor entrega el mensaje al
+     * inbox, y es el inbox quien decide si el manejador llega a ejecutarse.</p>
      */
     @Bean
     @ConditionalOnProperty(
             prefix = "app.rabbitmq.master-data", name = "listener-enabled",
             havingValue = "true", matchIfMissing = true)
-    public MasterDataEventConsumer masterDataEventConsumer(MasterDataEventHandler masterDataEventHandler) {
+    public MasterDataEventConsumer masterDataEventConsumer(MasterDataEventProcessor masterDataEventProcessor) {
         LOGGER.info("Master data consumer enabled: queue={}, boundTo={} with routingKey={}, "
                         + "deadLetterQueue={} via {} with routingKey={}",
                 properties.queue(), properties.exchange(), properties.routingKey(),
                 properties.deadLetterQueue(), properties.deadLetterExchange(), properties.deadLetterRoutingKey());
 
-        return new MasterDataEventConsumer(masterDataEventHandler);
+        return new MasterDataEventConsumer(masterDataEventProcessor);
     }
 }

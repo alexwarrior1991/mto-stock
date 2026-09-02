@@ -3,9 +3,12 @@ package com.alejandro.mtostock.infrastructure.messaging;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedEvent;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
-import com.alejandro.mtostock.application.service.MasterDataEventHandler;
+import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
+import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
+import com.alejandro.mtostock.application.service.MasterDataEventProcessor;
 import com.alejandro.mtostock.configuration.rabbitmq.MasterDataRabbitProperties;
 import com.alejandro.mtostock.configuration.rabbitmq.RabbitMqConfiguration;
+import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.InboxMessageCommandFactory;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.MasterDataEventConsumer;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.MasterDataMessageHeaders;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.MasterDataRabbitMqNames;
@@ -35,9 +38,12 @@ import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -135,32 +141,51 @@ class MessagingLayerTest {
     // Listener y manejador
     // ---------------------------------------------------------------------------------------
 
+    /**
+     * El listener no puede llamar al manejador: entre uno y otro está el inbox, que es quien decide
+     * si el trabajo llega a ejecutarse. Delegar en el procesador es lo que hace que un duplicado no
+     * ejecute nada.
+     */
     @Test
-    void consumerDelegatesTheMessageToTheApplicationHandler() {
-        RecordingHandler handler = new RecordingHandler();
+    void consumerDelegatesToTheIdempotentProcessorAndNotToTheHandler() {
+        RecordingProcessor processor = new RecordingProcessor(InboxProcessingResult.PROCESSED);
         MasterDataChangedMessage message = convert(PUBLISHED_MESSAGE_JSON);
 
-        new MasterDataEventConsumer(handler).onMasterDataChanged(message, rawMessage());
+        new MasterDataEventConsumer(processor).onMasterDataChanged(message, rawMessage());
 
-        assertEquals(1, handler.handled.size());
-        assertSame(message, handler.handled.getFirst());
+        assertEquals(1, processor.handled.size());
+        assertSame(message, processor.handled.getFirst());
+        assertEquals("0f8b1f4c-3f6a-4a6d-9a2a-1c9f5f6f2b10", processor.commands.getFirst().messageId());
+    }
+
+    /**
+     * Una entrega repetida de un mensaje ya aplicado no es un fallo: el listener vuelve sin
+     * excepción y el contenedor confirma. Si lanzara, el duplicado daría vueltas por la cola y
+     * acabaría en la DLQ.
+     */
+    @Test
+    void duplicateResultIsAcknowledgedInsteadOfRejected() {
+        RecordingProcessor processor = new RecordingProcessor(InboxProcessingResult.DUPLICATE_SKIPPED);
+        MasterDataChangedMessage message = convert(PUBLISHED_MESSAGE_JSON);
+
+        assertDoesNotThrow(() -> new MasterDataEventConsumer(processor).onMasterDataChanged(message, rawMessage()));
     }
 
     /**
      * Un sobre sin payload no mejora por reintentarlo: el mensaje que hay en la cola es el mismo.
-     * Va directo a la DLQ sin gastar los intentos configurados.
+     * Va directo a la DLQ sin gastar los intentos configurados y sin llegar al inbox.
      */
     @Test
-    void messageWithoutPayloadIsRejectedWithoutRetryAndNeverReachesTheHandler() {
-        RecordingHandler handler = new RecordingHandler();
+    void messageWithoutPayloadIsRejectedWithoutRetryAndNeverReachesTheProcessor() {
+        RecordingProcessor processor = new RecordingProcessor(InboxProcessingResult.PROCESSED);
         MasterDataChangedMessage withoutData = new MasterDataChangedMessage(
                 UUID.randomUUID(), "station-42", "mto-configuration", Instant.now(),
                 "MASTER_DATA_STATION_UPDATED", null, "hash");
 
         assertThrows(AmqpRejectAndDontRequeueException.class,
-                () -> new MasterDataEventConsumer(handler).onMasterDataChanged(withoutData, rawMessage()));
+                () -> new MasterDataEventConsumer(processor).onMasterDataChanged(withoutData, rawMessage()));
 
-        assertTrue(handler.handled.isEmpty());
+        assertTrue(processor.handled.isEmpty());
     }
 
     /**
@@ -168,8 +193,8 @@ class MessagingLayerTest {
      * evento se perdería y la DLQ quedaría vacía, que es justo lo que hace creer que todo va bien.
      */
     @Test
-    void handlerFailuresPropagateSoTheContainerCanRetryAndThenDeadLetter() {
-        MasterDataEventHandler failing = message -> {
+    void processorFailuresPropagateSoTheContainerCanRetryAndThenDeadLetter() {
+        MasterDataEventProcessor failing = (command, message) -> {
             throw new IllegalStateException("database is down");
         };
         MasterDataChangedMessage message = convert(PUBLISHED_MESSAGE_JSON);
@@ -178,6 +203,85 @@ class MessagingLayerTest {
                 () -> new MasterDataEventConsumer(failing).onMasterDataChanged(message, rawMessage()));
 
         assertEquals("database is down", exception.getMessage());
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Clave de idempotencia y comando del inbox
+    // ---------------------------------------------------------------------------------------
+
+    /**
+     * El {@code operationId} identifica la operación que generó el evento en origen y viaja dentro
+     * del payload que el outbox guardó una sola vez: es el mismo en cada reentrega.
+     */
+    @Test
+    void idempotencyKeyComesFromTheOperationIdOfTheEnvelope() {
+        InboxMessageCommand command =
+                InboxMessageCommandFactory.from(convert(PUBLISHED_MESSAGE_JSON), rawMessage());
+
+        assertEquals("0f8b1f4c-3f6a-4a6d-9a2a-1c9f5f6f2b10", command.messageId());
+        assertEquals("mto-configuration", command.sourceService());
+        assertEquals("MASTER_DATA_STATION_UPDATED", command.eventType());
+        assertEquals("station", command.aggregateType());
+        assertEquals("42", command.aggregateId());
+        assertEquals(MasterDataRabbitMqNames.MASTER_DATA_EXCHANGE, command.exchangeName());
+        assertEquals("mto.master-data.station.updated", command.routingKey());
+        assertEquals(MasterDataRabbitMqNames.STOCK_MASTER_DATA_QUEUE, command.queueName());
+    }
+
+    /** Red por si el contrato del payload cambiase: el message_id de AMQP es igual de estable. */
+    @Test
+    void idempotencyKeyFallsBackToTheAmqpMessageIdWhenTheEnvelopeHasNoOperationId() {
+        MasterDataChangedMessage withoutOperationId = new MasterDataChangedMessage(
+                null, "station-42", "mto-configuration", Instant.now(), "MASTER_DATA_STATION_UPDATED",
+                new MasterDataChangedEvent("station", "42", MasterDataOperation.UPDATED, Map.of()), "hash");
+
+        InboxMessageCommand command = InboxMessageCommandFactory.from(withoutOperationId, rawMessage());
+
+        assertEquals("f4b0a1c2-0000-4000-8000-000000000001", command.messageId());
+    }
+
+    /**
+     * Aplicarlo «de todas formas» sería peor que descartarlo: sin identificador estable no hay forma
+     * de reconocer la siguiente entrega del mismo evento, y la promesa de exactamente-una-vez se
+     * rompería en silencio justo cuando alguien ya cuenta con ella.
+     */
+    @Test
+    void messageWithoutAnyStableIdentifierIsRejectedWithoutRetry() {
+        MasterDataChangedMessage withoutOperationId = new MasterDataChangedMessage(
+                null, "station-42", "mto-configuration", Instant.now(), "MASTER_DATA_STATION_UPDATED",
+                new MasterDataChangedEvent("station", "42", MasterDataOperation.UPDATED, Map.of()), "hash");
+        MessageProperties withoutMessageId = new MessageProperties();
+        Message raw = MessageBuilder.withBody(new byte[]{'{', '}'}).andProperties(withoutMessageId).build();
+
+        assertThrows(AmqpRejectAndDontRequeueException.class,
+                () -> InboxMessageCommandFactory.from(withoutOperationId, raw));
+    }
+
+    /**
+     * Se guardan los bytes recibidos, no el DTO reserializado: la ida y vuelta no conserva la
+     * identidad -un 1.50 vuelve como 1.5- y dejaría almacenado algo que no es lo que envió el
+     * emisor.
+     */
+    @Test
+    void inboxStoresTheOriginalPayloadBytesAndTheirHash() {
+        InboxMessageCommand command =
+                InboxMessageCommandFactory.from(convert(PUBLISHED_MESSAGE_JSON), rawMessage(PUBLISHED_MESSAGE_JSON));
+
+        assertEquals(PUBLISHED_MESSAGE_JSON, command.payload());
+        assertNotNull(command.payloadHash());
+        assertEquals(64, command.payloadHash().length());
+    }
+
+    /** El emisor es procedencia, no clave: su ausencia no puede tirar un mensaje identificable. */
+    @Test
+    void missingOriginIsRecordedAsUnknownInsteadOfRejectingTheMessage() {
+        MasterDataChangedMessage withoutOrigin = new MasterDataChangedMessage(
+                UUID.randomUUID(), "station-42", "  ", Instant.now(), "MASTER_DATA_STATION_UPDATED",
+                new MasterDataChangedEvent("station", "42", MasterDataOperation.UPDATED, Map.of()), "hash");
+
+        InboxMessageCommand command = InboxMessageCommandFactory.from(withoutOrigin, rawMessage());
+
+        assertEquals("unknown", command.sourceService());
     }
 
     // ---------------------------------------------------------------------------------------
@@ -349,6 +453,10 @@ class MessagingLayerTest {
     }
 
     private static Message rawMessage() {
+        return rawMessage(PUBLISHED_MESSAGE_JSON);
+    }
+
+    private static Message rawMessage(String body) {
         MessageProperties properties = new MessageProperties();
         properties.setReceivedExchange(MasterDataRabbitMqNames.MASTER_DATA_EXCHANGE);
         properties.setReceivedRoutingKey("mto.master-data.station.updated");
@@ -360,16 +468,24 @@ class MessagingLayerTest {
         properties.setHeader(MasterDataMessageHeaders.SEQUENCE_NUMBER, 7L);
         properties.setHeader(MasterDataMessageHeaders.SIGNATURE_ALGORITHM, "SHA-256");
 
-        return MessageBuilder.withBody(new byte[0]).andProperties(properties).build();
+        return MessageBuilder.withBody(body.getBytes(StandardCharsets.UTF_8)).andProperties(properties).build();
     }
 
-    private static final class RecordingHandler implements MasterDataEventHandler {
+    private static final class RecordingProcessor implements MasterDataEventProcessor {
 
         private final List<MasterDataChangedMessage> handled = new ArrayList<>();
+        private final List<InboxMessageCommand> commands = new ArrayList<>();
+        private final InboxProcessingResult result;
+
+        private RecordingProcessor(InboxProcessingResult result) {
+            this.result = result;
+        }
 
         @Override
-        public void handle(MasterDataChangedMessage message) {
+        public InboxProcessingResult process(InboxMessageCommand command, MasterDataChangedMessage message) {
+            commands.add(command);
             handled.add(message);
+            return result;
         }
     }
 
@@ -377,8 +493,8 @@ class MessagingLayerTest {
     static class TestHandlerConfiguration {
 
         @Bean
-        MasterDataEventHandler masterDataEventHandler() {
-            return new RecordingHandler();
+        MasterDataEventProcessor masterDataEventProcessor() {
+            return new RecordingProcessor(InboxProcessingResult.PROCESSED);
         }
     }
 }

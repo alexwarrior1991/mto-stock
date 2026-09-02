@@ -150,6 +150,101 @@ Unknown fields do not fail deserialization. The publisher can add fields to the 
 coordinating with each consumer, and rejecting them would send perfectly valid messages to the DLQ
 on the day `mto-configuration` is deployed.
 
+## Idempotency: the inbox
+
+`mto-configuration` publishes with an outbox, which guarantees an event is delivered **at least
+once**. The inbox is the other half of that pair on this side: it guarantees the event is **applied
+exactly once**, no matter how many times the broker delivers it.
+
+The protection lives in the database, not in the code — a unique constraint on
+`(message_id, source_service)` in `inbox_message`. Anything in memory, or an "does it exist? then
+insert", has a race between the check and the write through which two simultaneous deliveries both
+run the work.
+
+### The idempotency key
+
+`operationId` from the envelope, falling back to the AMQP `message_id` header.
+
+`operationId` identifies the operation that produced the event in `mto-configuration` and travels
+inside the payload the outbox stored once, so every redelivery carries the same value. The AMQP
+`message_id` is the id of that outbox row — equally stable — and is the safety net if the payload
+contract ever changes.
+
+A message with neither is rejected straight to the DLQ. Applying it anyway would be worse than
+dropping it: with no stable identifier there is no way to recognise the next delivery of the same
+event, and the exactly-once promise breaks silently just when someone has started relying on it.
+
+`payload_hash` is stored too, but only as a correlation aid. It is never the key: the publisher
+already emits stable identifiers, and a hash of the payload would turn two legitimately identical
+events into a duplicate.
+
+### The flow
+
+```
+message → [inbox: record + claim] → handler → [inbox: mark processed] → ack
+                    │                   │
+       already applied → skip → ack     └─ throws → rollback
+                                             → record FAILED (own transaction)
+                                             → rethrow → retry → DLQ
+```
+
+One transaction covers recording, claiming, the work and the "processed" mark: they commit together
+or nothing commits. There is no state where the inbox says a message was applied but its effect was
+rolled back.
+
+| Situation | What happens |
+| --- | --- |
+| First delivery | Row inserted, claimed, handler runs, row marked `PROCESSED`, `processing_attempts` = 1, message acked |
+| Redelivery of an applied message | The conditional claim matches no rows, the handler never runs, `processing_attempts` unchanged, message acked. A duplicate is **not** an error and must not reach the DLQ |
+| Handler fails | The transaction rolls back, the failure is recorded in its own transaction (`FAILED` + reason + `processing_attempts` + 1), and the exception is rethrown so the container retries and finally dead-letters |
+| Redelivery of a failed message | Claimed again — its status is not `PROCESSED` — attempts keeps climbing and the previous reason is cleared. If it now works, it ends `PROCESSED` |
+| Row stuck in `PROCESSING` | Claimed again. That state never commits on the normal path, so finding one means the process died mid-flight, and re-running it is the only way the event ever gets applied |
+
+### Two concurrent deliveries
+
+PostgreSQL serialises them, at a different point depending on when they arrive:
+
+- **A first delivery and its duplicate at the same time.** The second cannot see the row the first
+  has inserted but not committed, so what stops it is not a row lock but the unique index: its
+  `insert ... on conflict` waits there until the first transaction finishes. If that one committed,
+  the claim then finds the message already applied and skips. If it rolled back, the second inserts
+  and takes the work — so a failure of the first does not lose the event.
+- **Later deliveries, with the row already committed.** The insert does nothing and the claim
+  `update` takes the row lock; the second waits there and, once released, PostgreSQL re-evaluates
+  the `where` against the new version, sees `PROCESSED` and matches no rows.
+
+Either way the work runs exactly once.
+
+### Why the failed state is written in a separate transaction
+
+The attempt's transaction has to roll back when the work fails — otherwise a message would be marked
+as applied while its effect was undone. But that same rollback also removes the inbox row, so
+marking the failure inside that transaction would leave no trace: the message would reach the DLQ
+and the table would not remember why. Hence `recordFailure`, with its own transaction, called
+**after** the attempt has finished.
+
+Calling it from inside would be worse than useless: the attempt's transaction holds the row locked
+until it commits or rolls back, the new one would wait for that lock, and the first would be waiting
+for the second to return. Nobody moves, and no deadlock detector sees it, because one of the two is
+waiting on a method call rather than on a lock.
+
+### Inbox and DLQ are not the same thing
+
+The DLQ holds messages the broker could not get processed. The inbox records what this service has
+actually applied. A message can be in both — dead-lettered after its retries and recorded as
+`FAILED` with the reason — and each answers a different question: the DLQ says "this is pending",
+the inbox says "this is what happened to it".
+
+### Payload
+
+The `payload` column stores the JSON exactly as it arrived, character for character. It is `json`
+and not `jsonb` on purpose: `jsonb` normalises on write — it reorders keys and collapses whitespace
+— so what you read back is no longer what was received and its SHA-256 no longer matches
+`payload_hash`. This table exists to answer "what exactly arrived", and fidelity is worth more here
+than the `jsonb` operators, which nothing uses today: no query looks inside the payload. If one ever
+needs to, an expression index over `payload::jsonb` or a generated column adds it without changing
+what is stored.
+
 ## Where the business logic goes
 
 `application/service/MasterDataEventHandler` is the extension point. The current implementation,
@@ -157,15 +252,22 @@ on the day `mto-configuration` is deployed.
 with an implementation that does the work — the infrastructure consumer does not need to change,
 because it depends on the interface.
 
-Three transport concerns have to be settled by that implementation, and are deliberately unsolved
-today because there is nothing to protect yet:
+**Idempotency is already solved**: whatever that implementation does runs at most once per
+`operationId`, because the inbox wraps it. It does not need to check for repeats itself.
 
-- **Idempotency.** Delivery is *at-least-once*: `operationId` identifies the originating operation
-  and is what lets a repeat be discarded.
+Two transport concerns are still open, and are deliberately unsolved today because there is nothing
+to protect yet:
+
 - **Order.** A redrive can replay something old; the `sequenceNumber` header says what was already
-  applied for that aggregate.
+  applied for that aggregate. The inbox stops the same message being applied twice, not an older
+  message being applied after a newer one.
 - **Integrity.** Verifying `messageSignature` requires sharing
   `app.messaging.signature.secret` with `mto-configuration`.
+
+One caveat worth knowing: today the handler joins the inbox transaction, so its work and the
+"processed" mark commit together. Any future implementation that writes through a different
+transaction — a separate datasource, a `REQUIRES_NEW`, an outbound call — breaks that and has to
+deal with partial application itself.
 
 | Layer | Class | Role |
 | --- | --- | --- |
@@ -176,3 +278,9 @@ today because there is nothing to protect yet:
 | `application/dto/messaging` | `MasterDataChangedMessage`, `MasterDataChangedEvent`, `MasterDataOperation` | The message contract |
 | `application/service` | `MasterDataEventHandler` | **Extension point for the business logic** |
 | `application/service/impl` | `LoggingMasterDataEventHandler` | Placeholder implementation |
+| `application/dto/messaging` | `InboxMessageCommand`, `InboxProcessingResult` | Transport-free input and outcome of the inbox |
+| `application/service` | `InboxMessageService` | Runs a piece of work at most once per message |
+| `application/service` | `MasterDataEventProcessor` | What the consumer talks to: inbox + handler |
+| `application/service/impl` | `InboxMessageServiceImpl`, `IdempotentMasterDataEventProcessor` | Idempotency and failure recording |
+| `infrastructure/messaging/rabbitmq` | `InboxMessageCommandFactory` | AMQP metadata → command, and the idempotency key |
+| `infrastructure/persistence` | `InboxMessage`, `InboxMessageStatus`, `InboxMessageRepository` | The `inbox_message` table and its atomic operations |

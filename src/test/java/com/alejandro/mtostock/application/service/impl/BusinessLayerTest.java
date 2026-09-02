@@ -8,6 +8,8 @@ import com.alejandro.mtostock.application.dto.material.MaterialRequest;
 import com.alejandro.mtostock.application.dto.material.MaterialStockResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialSummaryResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialUpdateRequest;
+import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
+import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedEvent;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
@@ -29,6 +31,7 @@ import com.alejandro.mtostock.application.mapper.MaterialMapper;
 import com.alejandro.mtostock.application.mapper.StockMovementMapper;
 import com.alejandro.mtostock.application.mapper.WarehouseMapper;
 import com.alejandro.mtostock.application.service.BOMCalculationService;
+import com.alejandro.mtostock.application.service.InboxMessageService;
 import com.alejandro.mtostock.application.service.InventoryBalanceService;
 import com.alejandro.mtostock.application.service.MasterDataEventHandler;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
@@ -46,6 +49,7 @@ import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementTyp
 import com.alejandro.mtostock.infrastructure.persistence.entity.Supplier;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
 import com.alejandro.mtostock.infrastructure.persistence.repository.AssemblyRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.InboxMessageRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.InventoryBalanceRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.MaterialRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepository;
@@ -55,6 +59,8 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.SupplierRepo
 import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.AuditorAware;
 import org.springframework.test.util.ReflectionTestUtils;
@@ -69,6 +75,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -83,6 +90,7 @@ import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -93,6 +101,10 @@ import static org.mockito.Mockito.when;
 class BusinessLayerTest {
 
     private static final Pattern REST_CONTROLLER_ANNOTATION = Pattern.compile("@RestController(?!Advice)\\b");
+
+    private static final String MESSAGE_ID = "0f8b1f4c-3f6a-4a6d-9a2a-1c9f5f6f2b10";
+    private static final String SOURCE_SERVICE = "mto-configuration";
+    private static final String PAYLOAD = "{\"eventType\":\"MASTER_DATA_STATION_UPDATED\"}";
 
     @Test
     void stockCalculationReadsCurrentBalancesFromInventoryBalanceAndKeepsHistoricalFromMovements() {
@@ -1230,6 +1242,144 @@ class BusinessLayerTest {
         );
 
         assertThrows(AssemblyException.class, () -> service.validateComponentAvailability(assembly.getId(), warehouse.getId()));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Inbox: idempotencia del consumo
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * Primera entrega: se registra, se reclama -que es lo que incrementa el contador de intentos- se
+     * ejecuta el trabajo una sola vez y se marca como aplicado. Que el contador quede en 1 y que un
+     * FAILED se pueda reclamar de nuevo lo comprueba InboxMessageRepositoryDataJpaTest contra
+     * PostgreSQL, porque son garantias del SQL y no del servicio.
+     */
+    @Test
+    void inboxRunsTheWorkOnceAndMarksTheMessageAsProcessed() {
+        InboxMessageRepository inboxMessageRepository = mock(InboxMessageRepository.class);
+        when(inboxMessageRepository.claimForProcessing(MESSAGE_ID, SOURCE_SERVICE)).thenReturn(1);
+        when(inboxMessageRepository.markProcessed(MESSAGE_ID, SOURCE_SERVICE)).thenReturn(1);
+        InboxMessageServiceImpl service = new InboxMessageServiceImpl(inboxMessageRepository);
+        AtomicInteger executions = new AtomicInteger();
+
+        InboxProcessingResult result = service.process(inboxCommand(), executions::incrementAndGet);
+
+        assertEquals(InboxProcessingResult.PROCESSED, result);
+        assertEquals(1, executions.get());
+        verify(inboxMessageRepository).insertIfMissing(eq(MESSAGE_ID), eq(SOURCE_SERVICE), any(), any(), any(),
+                any(), any(), any(), any(), eq(PAYLOAD));
+        verify(inboxMessageRepository).claimForProcessing(MESSAGE_ID, SOURCE_SERVICE);
+        verify(inboxMessageRepository).markProcessed(MESSAGE_ID, SOURCE_SERVICE);
+    }
+
+    /**
+     * La reclamacion no toca las filas ya aplicadas, asi que devolver 0 filas ES la senal de
+     * duplicado. Se decide con el recuento de un update atomico y no con un "existe?" previo,
+     * porque entre esa lectura y la escritura caben dos entregas simultaneas.
+     */
+    @Test
+    void inboxSkipsTheWorkWhenTheMessageWasAlreadyApplied() {
+        InboxMessageRepository inboxMessageRepository = mock(InboxMessageRepository.class);
+        when(inboxMessageRepository.claimForProcessing(MESSAGE_ID, SOURCE_SERVICE)).thenReturn(0);
+        InboxMessageServiceImpl service = new InboxMessageServiceImpl(inboxMessageRepository);
+        AtomicInteger executions = new AtomicInteger();
+
+        InboxProcessingResult result = service.process(inboxCommand(), executions::incrementAndGet);
+
+        assertEquals(InboxProcessingResult.DUPLICATE_SKIPPED, result);
+        assertEquals(0, executions.get());
+        verify(inboxMessageRepository, never()).markProcessed(any(), any());
+    }
+
+    /**
+     * Marcar como aplicado un mensaje cuyo trabajo fallo dejaria el evento perdido para siempre: no
+     * se reintentaria nunca porque el inbox lo daria por hecho.
+     */
+    @Test
+    void inboxDoesNotMarkAsProcessedWhenTheWorkFails() {
+        InboxMessageRepository inboxMessageRepository = mock(InboxMessageRepository.class);
+        when(inboxMessageRepository.claimForProcessing(MESSAGE_ID, SOURCE_SERVICE)).thenReturn(1);
+        InboxMessageServiceImpl service = new InboxMessageServiceImpl(inboxMessageRepository);
+
+        assertThrows(IllegalStateException.class, () -> service.process(inboxCommand(), () -> {
+            throw new IllegalStateException("database is down");
+        }));
+
+        verify(inboxMessageRepository, never()).markProcessed(any(), any());
+    }
+
+    /** Sin identificador estable no hay idempotencia que garantizar. */
+    @Test
+    void inboxRejectsACommandWithoutIdempotencyKey() {
+        InboxMessageServiceImpl service = new InboxMessageServiceImpl(mock(InboxMessageRepository.class));
+        InboxMessageCommand withoutKey = new InboxMessageCommand(
+                " ", SOURCE_SERVICE, null, null, null, null, null, null, null, PAYLOAD);
+
+        assertThrows(ValidationException.class, () -> service.process(withoutKey, () -> { }));
+    }
+
+    /** El motivo se recorta: el mensaje de una excepcion puede arrastrar un payload entero. */
+    @Test
+    void inboxTruncatesAVeryLongFailureReason() {
+        InboxMessageRepository inboxMessageRepository = mock(InboxMessageRepository.class);
+        InboxMessageServiceImpl service = new InboxMessageServiceImpl(inboxMessageRepository);
+        ArgumentCaptor<String> reason = ArgumentCaptor.forClass(String.class);
+
+        service.recordFailure(inboxCommand(), new IllegalStateException("x".repeat(5_000)));
+
+        verify(inboxMessageRepository).recordFailure(eq(MESSAGE_ID), eq(SOURCE_SERVICE), any(), any(), any(),
+                any(), any(), any(), any(), eq(PAYLOAD), reason.capture());
+        assertEquals(2_000, reason.getValue().length());
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // IdempotentMasterDataEventProcessor
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * El manejador solo se ejecuta desde dentro del inbox. Con un inbox que no invoca el trabajo
+     * -lo que hace ante un duplicado- el manejador no llega a ejecutarse nunca.
+     */
+    @Test
+    void masterDataHandlerOnlyRunsThroughTheInbox() {
+        InboxMessageService inboxMessageService = mock(InboxMessageService.class);
+        when(inboxMessageService.process(any(), any())).thenReturn(InboxProcessingResult.DUPLICATE_SKIPPED);
+        AtomicInteger executions = new AtomicInteger();
+        MasterDataEventHandler handler = message -> executions.incrementAndGet();
+
+        InboxProcessingResult result = new IdempotentMasterDataEventProcessor(inboxMessageService, handler)
+                .process(inboxCommand(), masterDataMessage(Map.of()));
+
+        assertEquals(InboxProcessingResult.DUPLICATE_SKIPPED, result);
+        assertEquals(0, executions.get());
+    }
+
+    /**
+     * El estado fallido se escribe DESPUES de que la transaccion del intento haya terminado, no
+     * desde dentro: esa transaccion tiene bloqueada la fila hasta revertir, y una transaccion nueva
+     * que la tocase se quedaria esperando a otra que a su vez espera a que ella devuelva.
+     */
+    @Test
+    void masterDataFailureIsRecordedAfterTheAttemptAndRethrownForTheBroker() {
+        InboxMessageService inboxMessageService = mock(InboxMessageService.class);
+        IllegalStateException failure = new IllegalStateException("database is down");
+        when(inboxMessageService.process(any(), any())).thenThrow(failure);
+        IdempotentMasterDataEventProcessor processor = new IdempotentMasterDataEventProcessor(
+                inboxMessageService, new LoggingMasterDataEventHandler());
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                () -> processor.process(inboxCommand(), masterDataMessage(Map.of())));
+
+        assertSame(failure, thrown);
+        InOrder order = inOrder(inboxMessageService);
+        order.verify(inboxMessageService).process(any(), any());
+        order.verify(inboxMessageService).recordFailure(any(), eq(failure));
+    }
+
+    private static InboxMessageCommand inboxCommand() {
+        return new InboxMessageCommand(MESSAGE_ID, SOURCE_SERVICE, "MASTER_DATA_STATION_UPDATED", "station",
+                "42", "mto.master-data.exchange", "mto.master-data.station.updated",
+                "mto.stock.master-data.queue", "hash", PAYLOAD);
     }
 
     // -----------------------------------------------------------------------------------------

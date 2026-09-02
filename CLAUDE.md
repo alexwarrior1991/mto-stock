@@ -65,10 +65,27 @@ with its own DLX/DLQ). The consumer currently **only logs**: no business logic y
   and **the extension point where the business logic goes**; `LoggingMasterDataEventHandler` is the
   placeholder implementation.
 
+Consumption is idempotent through an **inbox** (`inbox_message`, added in
+`V4__create_inbox_message_table.sql`), the consumer-side counterpart of the publisher's outbox:
+
+- The idempotency key is the envelope's `operationId`, falling back to the AMQP `message_id` header;
+  a message with neither is rejected straight to the DLQ. The guarantee is the unique constraint on
+  `(message_id, source_service)`, not any check in code — `InboxMessageRepository` claims and marks
+  with conditional native `UPDATE`s and an `on conflict` insert, the same row-count idiom as
+  `InventoryBalanceRepository`, because a read-then-write lets two concurrent deliveries through.
+- `MasterDataEventConsumer` → `MasterDataEventProcessor` → `InboxMessageService` → the handler. The
+  consumer never calls `MasterDataEventHandler` directly; the inbox decides whether it runs at all.
+- Recording, claiming, the handler and the `PROCESSED` mark share one transaction.
+  `InboxMessageService.recordFailure` is `REQUIRES_NEW` and must be called **after** that
+  transaction has finished (that is why `IdempotentMasterDataEventProcessor` is not transactional):
+  calling it from inside deadlocks on the row the outer transaction holds.
+- `payload` is `json`, not `jsonb`, so the stored bytes stay identical to what arrived and keep
+  matching `payload_hash`.
+
 The message contract is owned by `mto-configuration` — check `docs/06-messaging.md` (and that
 repository's `README_MESSAGING.md`) before changing anything under `application/dto/messaging`.
 
 ### Testing
 
 - `PostgreSQLTestContainer` (in `support/`) is the shared base for integration tests needing a real Postgres (`postgres:16-alpine` via Testcontainers) with Flyway migrations applied — extend it rather than mocking the datasource for repository/persistence tests.
-- Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` (repositories), `MapperLayerTest` (mappers), `MessagingLayerTest` (RabbitMQ contract, consumer and topology), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class.
+- Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` + `InboxMessageRepositoryDataJpaTest` (repositories), `InboxIdempotencyDataJpaTest` (inbox end to end on real Postgres), `MapperLayerTest` (mappers), `MessagingLayerTest` (RabbitMQ contract, consumer and topology), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class.
