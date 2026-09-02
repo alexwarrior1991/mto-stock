@@ -11,6 +11,7 @@ import com.alejandro.mtostock.application.dto.material.MaterialUpdateRequest;
 import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedEvent;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
 import com.alejandro.mtostock.application.dto.stock.StockAdjustmentDirection;
@@ -33,6 +34,7 @@ import com.alejandro.mtostock.application.mapper.WarehouseMapper;
 import com.alejandro.mtostock.application.service.BOMCalculationService;
 import com.alejandro.mtostock.application.service.InboxMessageService;
 import com.alejandro.mtostock.application.service.InventoryBalanceService;
+import com.alejandro.mtostock.application.service.MasterDataEntityHandler;
 import com.alejandro.mtostock.application.service.MasterDataEventHandler;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.ReservationEngine;
@@ -71,6 +73,7 @@ import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -1348,7 +1351,7 @@ class BusinessLayerTest {
         MasterDataEventHandler handler = message -> executions.incrementAndGet();
 
         InboxProcessingResult result = new IdempotentMasterDataEventProcessor(inboxMessageService, handler)
-                .process(inboxCommand(), masterDataMessage(Map.of()));
+                .process(inboxCommand(), masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED));
 
         assertEquals(InboxProcessingResult.DUPLICATE_SKIPPED, result);
         assertEquals(0, executions.get());
@@ -1365,10 +1368,11 @@ class BusinessLayerTest {
         IllegalStateException failure = new IllegalStateException("database is down");
         when(inboxMessageService.process(any(), any())).thenThrow(failure);
         IdempotentMasterDataEventProcessor processor = new IdempotentMasterDataEventProcessor(
-                inboxMessageService, new LoggingMasterDataEventHandler());
+                inboxMessageService, new DispatchingMasterDataEventHandler(List.of()));
 
         IllegalStateException thrown = assertThrows(IllegalStateException.class,
-                () -> processor.process(inboxCommand(), masterDataMessage(Map.of())));
+                () -> processor.process(inboxCommand(),
+                        masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED)));
 
         assertSame(failure, thrown);
         InOrder order = inOrder(inboxMessageService);
@@ -1383,42 +1387,163 @@ class BusinessLayerTest {
     }
 
     // -----------------------------------------------------------------------------------------
-    // LoggingMasterDataEventHandler
+    // DispatchingMasterDataEventHandler
     // -----------------------------------------------------------------------------------------
 
+    @Test
+    void masterDataChangeIsRoutedToTheHandlerOfItsEntity() {
+        RecordingEntityHandler executionPackages = new RecordingEntityHandler(MasterDataEntityNames.EXECUTION_PACKAGE);
+        RecordingEntityHandler stations = new RecordingEntityHandler(MasterDataEntityNames.STATION);
+        MasterDataEventHandler dispatcher =
+                new DispatchingMasterDataEventHandler(List.of(executionPackages, stations));
+
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED));
+
+        assertEquals(List.of("onUpdated"), stations.calls);
+        assertTrue(executionPackages.calls.isEmpty());
+    }
+
+    @Test
+    void eachOperationReachesItsOwnMethod() {
+        RecordingEntityHandler stations = new RecordingEntityHandler(MasterDataEntityNames.STATION);
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(stations));
+
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.CREATED));
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED));
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.DELETED));
+
+        assertEquals(List.of("onCreated", "onUpdated", "onDeleted"), stations.calls);
+    }
+
     /**
-     * El manejador inicial de eventos de datos maestros no toca nada todavia: la logica de negocio
-     * esta pendiente y su punto de entrada es MasterDataEventHandler. Lo que si tiene que cumplir
-     * es no lanzar, porque una excepcion aqui manda el mensaje a la DLQ.
+     * La cola esta enlazada a mto.master-data.# y llega todo lo que publica mto-configuration, que
+     * hoy son ocho tipos de entidad y manana pueden ser mas. Tratar como error lo que no se atiende
+     * mandaria a la DLQ la mayor parte del trafico normal y convertiria cada entidad nueva del
+     * emisor en una averia aqui.
      */
     @Test
-    void masterDataEventIsHandledWithoutTouchingStock() {
-        MasterDataEventHandler handler = new LoggingMasterDataEventHandler();
+    void changesOfUnhandledEntitiesAreIgnoredInsteadOfFailing() {
+        RecordingEntityHandler stations = new RecordingEntityHandler(MasterDataEntityNames.STATION);
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(stations));
 
-        assertDoesNotThrow(() -> handler.handle(masterDataMessage(Map.of("code", "BCN-SANTS"))));
+        assertDoesNotThrow(() -> dispatcher.handle(
+                masterDataMessage(MasterDataEntityNames.CANTILEVER, MasterDataOperation.CREATED)));
 
-        // No hay colaborador que verificar y es justo lo que se comprueba: el manejador inicial no
-        // declara ninguna dependencia, asi que no puede escribir en base de datos ni llamar a un
-        // servicio de stock aunque se cuele la llamada.
-        assertEquals(0, LoggingMasterDataEventHandler.class.getDeclaredConstructors()[0].getParameterCount());
+        assertTrue(stations.calls.isEmpty());
     }
 
-    /** {@code values} es un mapa abierto del emisor: puede llegar vacio o directamente ausente. */
+    /** Sin ningun manejador registrado el consumo sigue funcionando: se registra y no se hace nada. */
     @Test
-    void masterDataEventWithoutValuesIsHandledWithoutFailing() {
-        MasterDataEventHandler handler = new LoggingMasterDataEventHandler();
+    void withoutAnyRegisteredHandlerEveryChangeIsSimplyIgnored() {
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of());
 
-        assertDoesNotThrow(() -> handler.handle(masterDataMessage(null)));
+        assertDoesNotThrow(() -> dispatcher.handle(
+                masterDataMessage(MasterDataEntityNames.EXECUTION_PACKAGE, MasterDataOperation.CREATED)));
     }
 
-    private static MasterDataChangedMessage masterDataMessage(Map<String, Object> values) {
+    /** Un manejador que declarase "Execution-Package" no se ejecutaria nunca y nada lo delataria. */
+    @Test
+    void entityNameMatchingIgnoresCaseAndSurroundingSpaces() {
+        RecordingEntityHandler packages = new RecordingEntityHandler("  Execution-Package ");
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(packages));
+
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.EXECUTION_PACKAGE, MasterDataOperation.CREATED));
+
+        assertEquals(List.of("onCreated"), packages.calls);
+    }
+
+    /**
+     * Cual de los dos se ejecutase dependeria del orden de escaneo del classpath: una diferencia de
+     * comportamiento entre dos arranques del mismo binario.
+     */
+    @Test
+    void twoHandlersForTheSameEntityStopTheApplicationFromStarting() {
+        List<MasterDataEntityHandler> duplicated = List.of(
+                new RecordingEntityHandler(MasterDataEntityNames.STATION),
+                new RecordingEntityHandler(MasterDataEntityNames.STATION));
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> new DispatchingMasterDataEventHandler(duplicated));
+
+        assertTrue(exception.getMessage().contains(MasterDataEntityNames.STATION));
+    }
+
+    @Test
+    void aHandlerWithoutEntityNameStopsTheApplicationFromStarting() {
+        List<MasterDataEntityHandler> blank = List.of(new RecordingEntityHandler(" "));
+
+        assertThrows(IllegalStateException.class, () -> new DispatchingMasterDataEventHandler(blank));
+    }
+
+    /** Un manejador puede atender solo las operaciones que le interesen. */
+    @Test
+    void unimplementedOperationsDoNothingByDefault() {
+        MasterDataEntityHandler onlyDeletions = new MasterDataEntityHandler() {
+            @Override
+            public String entityName() {
+                return MasterDataEntityNames.TRACK;
+            }
+        };
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(onlyDeletions));
+
+        assertDoesNotThrow(() -> dispatcher.handle(
+                masterDataMessage(MasterDataEntityNames.TRACK, MasterDataOperation.CREATED)));
+    }
+
+    /** values es un mapa abierto del emisor: puede llegar vacio o directamente ausente. */
+    @Test
+    void masterDataChangeWithoutValuesIsRoutedWithoutFailing() {
+        RecordingEntityHandler stations = new RecordingEntityHandler(MasterDataEntityNames.STATION);
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(stations));
+        MasterDataChangedMessage withoutValues = new MasterDataChangedMessage(
+                UUID.randomUUID(), "station-42", "mto-configuration", Instant.now(),
+                "MASTER_DATA_STATION_DELETED",
+                new MasterDataChangedEvent(MasterDataEntityNames.STATION, "42", MasterDataOperation.DELETED, null),
+                "hash");
+
+        assertDoesNotThrow(() -> dispatcher.handle(withoutValues));
+
+        assertEquals(List.of("onDeleted"), stations.calls);
+    }
+
+    private static final class RecordingEntityHandler implements MasterDataEntityHandler {
+
+        private final String entityName;
+        private final List<String> calls = new ArrayList<>();
+
+        private RecordingEntityHandler(String entityName) {
+            this.entityName = entityName;
+        }
+
+        @Override
+        public String entityName() {
+            return entityName;
+        }
+
+        @Override
+        public void onCreated(MasterDataChangedMessage message) {
+            calls.add("onCreated");
+        }
+
+        @Override
+        public void onUpdated(MasterDataChangedMessage message) {
+            calls.add("onUpdated");
+        }
+
+        @Override
+        public void onDeleted(MasterDataChangedMessage message) {
+            calls.add("onDeleted");
+        }
+    }
+
+    private static MasterDataChangedMessage masterDataMessage(String entityName, MasterDataOperation operation) {
         return new MasterDataChangedMessage(
                 UUID.randomUUID(),
-                "station-42",
+                entityName + "-42",
                 "mto-configuration",
                 Instant.now(),
-                "MASTER_DATA_STATION_UPDATED",
-                new MasterDataChangedEvent("station", "42", MasterDataOperation.UPDATED, values),
+                "MASTER_DATA_" + entityName.toUpperCase().replace('-', '_') + "_" + operation.name(),
+                new MasterDataChangedEvent(entityName, "42", operation, Map.of("name", "Barcelona Sants")),
                 "hash");
     }
 

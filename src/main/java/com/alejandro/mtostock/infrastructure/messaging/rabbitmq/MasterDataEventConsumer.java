@@ -84,19 +84,35 @@ public class MasterDataEventConsumer {
     }
 
     /**
-     * Un sobre sin payload no es un fallo del que se pueda salir reintentando: el mensaje que hay
-     * en la cola no cambia por volver a leerlo.
+     * Un mensaje al que le falta lo mínimo del contrato no mejora por reintentarlo: el que hay en la
+     * cola no cambia por volver a leerlo.
+     *
+     * <p>Se comprueban aquí las tres cosas sin las que la capa de aplicación no puede decidir nada
+     * —el payload, qué entidad cambió y qué le pasó— para que todo el rechazo permanente viva en un
+     * único sitio, que además es el único que conoce AMQP. Aguas abajo, el despachador puede dar
+     * por hecho que están.</p>
      */
     private static void rejectIfUnprocessable(MasterDataChangedMessage message, MessageProperties properties) {
         if (message == null || message.data() == null) {
-            LOGGER.error("Master data message without payload sent to the dead letter queue: "
-                            + "messageId={}, exchange={}, routingKey={}",
-                    properties.getMessageId(),
-                    properties.getReceivedExchange(),
-                    properties.getReceivedRoutingKey());
-
-            throw new AmqpRejectAndDontRequeueException(
-                    "Master data message has no 'data' payload: messageId=" + properties.getMessageId());
+            throw unprocessable("has no 'data' payload", properties);
         }
+        if (message.data().entityName() == null || message.data().entityName().isBlank()) {
+            throw unprocessable("has no entityName, so there is no way to know what changed", properties);
+        }
+        if (message.data().operation() == null) {
+            throw unprocessable("has no operation, so there is no way to know what happened to it", properties);
+        }
+    }
+
+    private static AmqpRejectAndDontRequeueException unprocessable(String reason, MessageProperties properties) {
+        LOGGER.error("Master data message sent to the dead letter queue, it {}: messageId={}, exchange={}, "
+                        + "routingKey={}",
+                reason,
+                properties.getMessageId(),
+                properties.getReceivedExchange(),
+                properties.getReceivedRoutingKey());
+
+        return new AmqpRejectAndDontRequeueException(
+                "Master data message " + reason + ": messageId=" + properties.getMessageId());
     }
 }

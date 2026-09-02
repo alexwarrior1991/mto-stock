@@ -189,6 +189,26 @@ class MessagingLayerTest {
     }
 
     /**
+     * Sin saber qué entidad cambió no hay a quién enrutar el evento, y volver a leer el mismo
+     * mensaje no va a añadirle el dato: va a la DLQ sin gastar reintentos.
+     */
+    @Test
+    void messageWithoutEntityNameOrOperationIsRejectedWithoutRetry() {
+        RecordingProcessor processor = new RecordingProcessor(InboxProcessingResult.PROCESSED);
+        MasterDataChangedMessage withoutEntityName = messageWith(
+                new MasterDataChangedEvent("  ", "42", MasterDataOperation.UPDATED, Map.of()));
+        MasterDataChangedMessage withoutOperation = messageWith(
+                new MasterDataChangedEvent("station", "42", null, Map.of()));
+
+        assertThrows(AmqpRejectAndDontRequeueException.class,
+                () -> new MasterDataEventConsumer(processor).onMasterDataChanged(withoutEntityName, rawMessage()));
+        assertThrows(AmqpRejectAndDontRequeueException.class,
+                () -> new MasterDataEventConsumer(processor).onMasterDataChanged(withoutOperation, rawMessage()));
+
+        assertTrue(processor.handled.isEmpty());
+    }
+
+    /**
      * Si el listener se tragara el fallo, el contenedor confirmaría el mensaje como procesado: el
      * evento se perdería y la DLQ quedaría vacía, que es justo lo que hace creer que todo va bien.
      */
@@ -450,6 +470,11 @@ class MessagingLayerTest {
                 .build();
 
         return (MasterDataChangedMessage) converter.fromMessage(message);
+    }
+
+    private static MasterDataChangedMessage messageWith(MasterDataChangedEvent event) {
+        return new MasterDataChangedMessage(UUID.randomUUID(), "station-42", "mto-configuration",
+                Instant.now(), "MASTER_DATA_STATION_UPDATED", event, "hash");
     }
 
     private static Message rawMessage() {

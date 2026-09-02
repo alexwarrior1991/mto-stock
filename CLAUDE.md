@@ -61,9 +61,16 @@ with its own DLX/DLQ). The consumer currently **only logs**: no business logic y
   `app.rabbitmq.enabled`, the consumer additionally on `app.rabbitmq.master-data.listener-enabled`;
   with the first off the application starts without a broker, which is what the tests rely on.
 - `infrastructure/messaging/rabbitmq` — contract names/headers and the thin `MasterDataEventConsumer`.
-- `application/dto/messaging` + `application/service/MasterDataEventHandler` — the message contract
-  and **the extension point where the business logic goes**; `LoggingMasterDataEventHandler` is the
-  placeholder implementation.
+- `application/dto/messaging` — the message contract, plus `MasterDataEntityNames` (the eight entity
+  names `mto-configuration` publishes: all railway infrastructure, none matching a `mto-stock`
+  entity one to one).
+- `MasterDataEventHandler` is the transport/application boundary and has a single implementation,
+  `DispatchingMasterDataEventHandler`, which logs each change and routes it by entity name.
+  **`MasterDataEntityHandler` is where the business logic goes** — one `@Service` per entity, picked
+  up from the context with nothing to register. None exists yet, so every event is logged and
+  ignored; an unknown entity is never an error (the queue is bound to `mto.master-data.#` and gets
+  everything), while a message with no `data`, `entityName` or `operation` is rejected to the DLQ by
+  the consumer. An entity handler runs inside the inbox transaction, so it must not open its own.
 
 Consumption is idempotent through an **inbox** (`inbox_message`, added in
 `V4__create_inbox_message_table.sql`), the consumer-side counterpart of the publisher's outbox:

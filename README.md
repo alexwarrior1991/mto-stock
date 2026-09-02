@@ -96,9 +96,11 @@ Consumption is idempotent through the **inbox pattern**, the counterpart of the 
 work runs exactly once however many times the broker delivers it. A duplicate is skipped and
 acknowledged; a failure is recorded with its reason and dead-lettered after the configured retries.
 
-**Right now the consumer only logs the events it receives** — no stock is touched. The business
-logic is pending and its entry point is `application/service/MasterDataEventHandler`; whatever goes
-there is already covered by the inbox and does not need to check for repeats itself.
+Each change is routed by entity type to the `MasterDataEntityHandler` that claims it. **No entity
+handlers are registered today**, so every event is logged and ignored — no stock is touched. To make
+the service react, add a `@Service` implementing `MasterDataEntityHandler` for that entity; the
+dispatcher picks it up from the context and the consumer is not touched. Whatever goes there is
+already covered by the inbox and does not need to check for repeats itself.
 
 Turn the channel off with `APP_RABBITMQ_ENABLED=false` (no topology, no consumer, no connection: the
 application starts without a broker) or keep the topology and stop consuming with

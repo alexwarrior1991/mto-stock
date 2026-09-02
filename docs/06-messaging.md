@@ -245,29 +245,97 @@ than the `jsonb` operators, which nothing uses today: no query looks inside the 
 needs to, an expression index over `payload::jsonb` or a generated column adds it without changing
 what is stored.
 
-## Where the business logic goes
+## Routing, and where the business logic goes
 
-`application/service/MasterDataEventHandler` is the extension point. The current implementation,
-`application/service/impl/LoggingMasterDataEventHandler`, only logs. To react for real, replace it
-with an implementation that does the work — the infrastructure consumer does not need to change,
-because it depends on the interface.
+`mto-configuration` publishes eight kinds of infrastructure master data, and this queue is bound to
+`mto.master-data.#`, so all of them arrive:
 
-**Idempotency is already solved**: whatever that implementation does runs at most once per
-`operationId`, because the inbox wraps it. It does not need to check for repeats itself.
+| Entity name | What it is |
+| --- | --- |
+| `execution-package` | The work package: dates, length, company |
+| `station` | Station, with its tracks, disconnectors and section insulators |
+| `track` | Track, with its profiles |
+| `profile` | The kilometre point where the catenary is supported: pole, foundation, anchorage |
+| `cantilever` | Cantilever geometry: heights, stagger, arm angle |
+| `steady-arm` | Steady arm |
+| `disconnector` | Disconnector |
+| `section-insulator` | Section insulator |
 
-Two transport concerns are still open, and are deliberately unsolved today because there is nothing
-to protect yet:
+They describe the catenary being built, not materials or warehouses — there is no one-to-one
+correspondence with anything in `mto-stock`. `DispatchingMasterDataEventHandler` therefore does not
+decide anything: it looks at which entity changed and hands the message to the
+`MasterDataEntityHandler` that claims it.
+
+**No entity handlers are registered today**, so every event is logged and ignored. That is the
+current state on purpose: what `mto-stock` should do with a cantilever or an execution package is a
+domain decision that has not been made yet.
+
+### Adding business logic
+
+Create a `@Service` implementing `MasterDataEntityHandler`:
+
+```java
+@Service
+@RequiredArgsConstructor
+class ExecutionPackageMasterDataHandler implements MasterDataEntityHandler {
+
+    private final ProjectService projectService;
+
+    @Override
+    public String entityName() {
+        return MasterDataEntityNames.EXECUTION_PACKAGE;
+    }
+
+    @Override
+    public void onCreated(MasterDataChangedMessage message) {
+        // message.data().values() carries the published fields
+    }
+
+    @Override
+    public void onUpdated(MasterDataChangedMessage message) { … }
+}
+```
+
+The dispatcher picks it up from the context — nothing to register, and the RabbitMQ consumer is not
+touched. The three operation methods do nothing by default: reacting only to deletions, say, is a
+legitimate choice and should not require writing two empty bodies to express it.
+
+Two rules that implementation has to respect:
+
+- **It runs inside the inbox transaction**, alongside the message record: everything commits or
+  nothing does, and the message is applied exactly once however many times the broker delivers it.
+  There is no need to check for repeats. Opening another transaction underneath — a `REQUIRES_NEW`,
+  a second datasource, an outbound call — breaks that guarantee and leaves partial application to
+  whoever wrote it.
+- **`values()` is an open map** shaped by the publisher's own payload mapper. Translating it into
+  this domain's types is the handler's job, and it is worth doing defensively: a field that exists
+  today can disappear in the next `mto-configuration` deployment without this service hearing about
+  it.
+
+Two handlers claiming the same entity stop the application from starting: which one ran would
+otherwise depend on classpath scanning order, which is a behaviour difference between two startups
+of the same binary.
+
+### Unknown entities are ignored, not failed
+
+An event whose entity has no handler is logged and skipped. Treating it as an error would send most
+of the normal traffic to the DLQ and turn every new entity type upstream into an outage here.
+
+Such an event is still marked `PROCESSED` in the inbox, and that is correct: what to do with it was
+already decided — nothing — and redelivering it would not change that. Nothing is lost either: the
+inbox row keeps the original payload, so a handler written later can reprocess what was stored.
+
+What *is* rejected straight to the DLQ is a message missing the minimum the contract promises — no
+`data`, no `entityName`, or no `operation` — because without those the application layer cannot
+decide anything, and rereading the same message will not add them.
+
+### Transport concerns still open
 
 - **Order.** A redrive can replay something old; the `sequenceNumber` header says what was already
   applied for that aggregate. The inbox stops the same message being applied twice, not an older
   message being applied after a newer one.
-- **Integrity.** Verifying `messageSignature` requires sharing
-  `app.messaging.signature.secret` with `mto-configuration`.
-
-One caveat worth knowing: today the handler joins the inbox transaction, so its work and the
-"processed" mark commit together. Any future implementation that writes through a different
-transaction — a separate datasource, a `REQUIRES_NEW`, an outbound call — breaks that and has to
-deal with partial application itself.
+- **Integrity.** Verifying `messageSignature` requires sharing `app.messaging.signature.secret`
+  with `mto-configuration`.
 
 | Layer | Class | Role |
 | --- | --- | --- |
@@ -276,8 +344,10 @@ deal with partial application itself.
 | `infrastructure/messaging/rabbitmq` | `MasterDataRabbitMqNames`, `MasterDataMessageHeaders` | The contract's names, split by owner |
 | `infrastructure/messaging/rabbitmq` | `MasterDataEventConsumer` | Thin listener: logs metadata and delegates |
 | `application/dto/messaging` | `MasterDataChangedMessage`, `MasterDataChangedEvent`, `MasterDataOperation` | The message contract |
-| `application/service` | `MasterDataEventHandler` | **Extension point for the business logic** |
-| `application/service/impl` | `LoggingMasterDataEventHandler` | Placeholder implementation |
+| `application/service` | `MasterDataEventHandler` | Boundary between transport and application; one implementation |
+| `application/service/impl` | `DispatchingMasterDataEventHandler` | Logs every change and routes it to the handler of its entity |
+| `application/service` | `MasterDataEntityHandler` | **Extension point for the business logic**, one per entity |
+| `application/dto/messaging` | `MasterDataEntityNames` | The eight entity names the publisher emits today |
 | `application/dto/messaging` | `InboxMessageCommand`, `InboxProcessingResult` | Transport-free input and outcome of the inbox |
 | `application/service` | `InboxMessageService` | Runs a piece of work at most once per message |
 | `application/service` | `MasterDataEventProcessor` | What the consumer talks to: inbox + handler |
