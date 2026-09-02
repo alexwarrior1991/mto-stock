@@ -32,6 +32,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -162,6 +163,69 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
             entityManager.flush();
         });
     }
+
+    /**
+     * El alta y la modificacion de un paquete de ejecucion son la misma sentencia: la entrega es
+     * at-least-once, asi que un alta reentregada tiene que actualizar en vez de reventar por la
+     * restriccion unica.
+     */
+    @Test
+    void masterDataUpsertCreatesTheProjectOnceAndUpdatesItAfterwards() {
+        assertEquals(1, projectRepository.upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera", true));
+        entityManager.clear();
+        assertEquals(1, projectRepository.upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera (revisado)", false));
+        entityManager.clear();
+
+        Project project = projectRepository
+                .findBySourceServiceAndSourceEntityId("mto-configuration", "42")
+                .orElseThrow();
+        assertEquals("EP-42", project.getCode());
+        assertEquals("Tramo Sants-Sagrera (revisado)", project.getName());
+        assertFalse(project.getActive());
+        assertTrue(project.isSynchronized());
+        assertEquals(1, projectRepository.count());
+    }
+
+    /**
+     * Los proyectos creados a mano quedan con el origen a NULL, y PostgreSQL considera distintos dos
+     * NULL en un indice unico: la restriccion de origen no les afecta por muchos que haya.
+     */
+    @Test
+    void locallyCreatedProjectsAreUnaffectedByTheSourceUniqueConstraint() {
+        persist(Project.builder().code("PRJ-001").name("Local one").build());
+        persist(Project.builder().code("PRJ-002").name("Local two").build());
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Sincronizado", true);
+        entityManager.flush();
+        entityManager.clear();
+
+        assertEquals(3, projectRepository.count());
+        assertFalse(projectRepository.findByCode("PRJ-001").orElseThrow().isSynchronized());
+    }
+
+    /**
+     * La baja desactiva y no borra: reservation y stock_movement apuntan a project con on delete
+     * restrict, de modo que un proyecto con historial no se podria borrar aunque se quisiera.
+     */
+    @Test
+    void masterDataDeletionDeactivatesTheProjectAndKeepsItsHistory() {
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Tramo", true);
+        entityManager.clear();
+
+        assertEquals(1, projectRepository.deactivateFromMasterData("mto-configuration", "42"));
+        entityManager.clear();
+
+        Project project = projectRepository
+                .findBySourceServiceAndSourceEntityId("mto-configuration", "42")
+                .orElseThrow();
+        assertFalse(project.getActive());
+        // Ya estaba desactivado: nada que hacer, y no es un error.
+        assertEquals(0, projectRepository.deactivateFromMasterData("mto-configuration", "42"));
+        // Un paquete que este servicio nunca vio tampoco lo es.
+        assertEquals(0, projectRepository.deactivateFromMasterData("mto-configuration", "99"));
+    }
+
 
     private java.util.List<String> lowStockCodes(org.springframework.data.jpa.domain.Specification<Material> specification) {
         return materialRepository.findAll(specification).stream()

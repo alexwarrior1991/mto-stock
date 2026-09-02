@@ -1,11 +1,18 @@
 package com.alejandro.mtostock.application.service.impl;
 
 import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedEvent;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
 import com.alejandro.mtostock.application.service.InboxMessageService;
+import com.alejandro.mtostock.application.service.MasterDataEventHandler;
 import com.alejandro.mtostock.infrastructure.persistence.entity.InboxMessage;
+import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
 import com.alejandro.mtostock.infrastructure.persistence.entity.InboxMessageStatus;
 import com.alejandro.mtostock.infrastructure.persistence.repository.InboxMessageRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepository;
 import com.alejandro.mtostock.support.PostgreSQLTestContainer;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
@@ -18,6 +25,10 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -59,6 +70,9 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
 
     @Autowired
     private InboxMessageRepository inboxMessageRepository;
+
+    @Autowired
+    private ProjectRepository projectRepository;
 
     @Test
     void theWorkRunsOnceAcrossTwoDeliveriesOfTheSameMessage() {
@@ -106,6 +120,70 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
         assertEquals(InboxProcessingResult.PROCESSED, retry);
         assertEquals(1, executions.get());
         assertEquals(InboxMessageStatus.PROCESSED, reload().getStatus());
+    }
+
+    /**
+     * La cadena entera sobre la base de datos real: inbox, despachador y manejador de paquetes de
+     * ejecucion. Dos entregas del mismo evento dejan un solo proyecto, que es el resultado que le
+     * importa a alguien, no el numero de veces que se llamo a un metodo.
+     */
+    @Test
+    void twoDeliveriesOfAnExecutionPackageLeaveASingleSynchronizedProject() {
+        InboxMessageService inbox = new InboxMessageServiceImpl(inboxMessageRepository);
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(
+                List.of(new ExecutionPackageMasterDataHandler(projectRepository)));
+        MasterDataChangedMessage message = executionPackageCreated();
+
+        inbox.process(command(), () -> dispatcher.handle(message));
+        entityManager.flush();
+        entityManager.clear();
+        inbox.process(command(), () -> dispatcher.handle(message));
+        entityManager.flush();
+        entityManager.clear();
+
+        Project project = projectRepository
+                .findBySourceServiceAndSourceEntityId("mto-configuration", "42")
+                .orElseThrow();
+        assertEquals("EP-42", project.getCode());
+        assertEquals("Tramo Sants-Sagrera", project.getName());
+        assertTrue(project.getActive());
+        assertEquals(1, projectRepository.count());
+    }
+
+    /** Una entidad sin manejador no rompe nada y no deja rastro en las tablas de negocio. */
+    @Test
+    void aCantileverChangeIsRecordedInTheInboxAndTouchesNoProject() {
+        InboxMessageService inbox = new InboxMessageServiceImpl(inboxMessageRepository);
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(
+                List.of(new ExecutionPackageMasterDataHandler(projectRepository)));
+        MasterDataChangedMessage cantilever = new MasterDataChangedMessage(
+                UUID.fromString(MESSAGE_ID), "cantilever-7", "mto-configuration", Instant.now(),
+                "MASTER_DATA_CANTILEVER_UPDATED",
+                new MasterDataChangedEvent(MasterDataEntityNames.CANTILEVER, "7",
+                        MasterDataOperation.UPDATED, Map.of("stagger", "0.20")),
+                "hash");
+
+        InboxProcessingResult result = inbox.process(command(), () -> dispatcher.handle(cantilever));
+        entityManager.flush();
+        entityManager.clear();
+
+        assertEquals(InboxProcessingResult.PROCESSED, result);
+        assertEquals(0, projectRepository.count());
+        assertEquals(InboxMessageStatus.PROCESSED, reload().getStatus());
+    }
+
+    private static MasterDataChangedMessage executionPackageCreated() {
+        return new MasterDataChangedMessage(
+                UUID.fromString(MESSAGE_ID),
+                "execution-package-42",
+                "mto-configuration",
+                Instant.parse("2026-09-01T10:15:30Z"),
+                "MASTER_DATA_EXECUTION_PACKAGE_CREATED",
+                new MasterDataChangedEvent(MasterDataEntityNames.EXECUTION_PACKAGE, "42",
+                        MasterDataOperation.CREATED,
+                        Map.of("id", 42, "name", "Tramo Sants-Sagrera", "enabled", true,
+                                "length", 12_500L, "startDate", "2026-01-15")),
+                "hash");
     }
 
     private static InboxMessageCommand command() {

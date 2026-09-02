@@ -34,6 +34,11 @@ public interface ProjectMapper {
     @Mapping(target = "createdBy", ignore = true)
     @Mapping(target = "updatedBy", ignore = true)
     @Mapping(target = "active", constant = "true")
+    // Un proyecto creado por la API no viene de ningun sitio: el origen solo lo rellena la
+    // sincronizacion de datos maestros, y dejarlo sin mapear a proposito es lo que hace que anadir
+    // una columna nueva a la entidad rompa la compilacion en lugar de colarse vacia.
+    @Mapping(target = "sourceService", ignore = true)
+    @Mapping(target = "sourceEntityId", ignore = true)
     Project toEntity(ProjectRequest request);
 
     @BeanMapping(ignoreByDefault = true)

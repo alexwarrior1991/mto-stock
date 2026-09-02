@@ -266,13 +266,43 @@ correspondence with anything in `mto-stock`. `DispatchingMasterDataEventHandler`
 decide anything: it looks at which entity changed and hands the message to the
 `MasterDataEntityHandler` that claims it.
 
-**No entity handlers are registered today**, so every event is logged and ignored. That is the
-current state on purpose: what `mto-stock` should do with a cantilever or an execution package is a
-domain decision that has not been made yet.
+### `execution-package` → `project`
 
-### Adding business logic
+One handler is registered today, `ExecutionPackageMasterDataHandler`. An execution package is the
+unit of work in `mto-configuration`, and a project is what materials are reserved and consumed
+against here — the one entity of the eight with a real counterpart in this domain.
 
-Create a `@Service` implementing `MasterDataEntityHandler`:
+| Event | What happens |
+| --- | --- |
+| `CREATED` / `UPDATED` | The project is created or updated (one upsert; both operations take the same path, because an at-least-once redelivery of a `CREATED` must not fail) |
+| `DELETED` | The project is **deactivated**, never deleted |
+
+Only the name and the active flag are copied — all a `mto-stock` project can hold. The dates,
+length, company, tracks and stations travel in the event and are dropped: giving them columns here
+would duplicate `mto-configuration`'s model in a service that has no use for it. If they are ever
+needed, they are in the payload the inbox keeps.
+
+The project is matched on `(source_service, source_entity_id)`, not on its code. Those columns are
+`NULL` for projects created through the API, which is what tells the two apart — a synchronized
+project should not be edited by hand, since the next event overwrites it. The code is derived from
+the source id (`EP-42`) because `project.code` is required and unique and the execution package
+publishes none; deriving it keeps it stable across deliveries instead of tracking the name, which
+does change. A code already taken by a hand-made project fails with an explanation rather than a
+bare constraint violation.
+
+Deletion deactivates because `reservation` and `stock_movement` reference `project` with
+`on delete restrict`: a project with history could not be deleted anyway, and one without history
+would take the record of why it existed with it. A deletion that matches no project is not an
+error — the package may have been created and removed before this consumer existed.
+
+**The other seven entities have no handler**, so their events are logged and ignored. What
+`mto-stock` should do with a cantilever or a profile is a domain decision that has not been made
+yet.
+
+### Adding another handler
+
+Create a `@Service` implementing `MasterDataEntityHandler`, the way
+`ExecutionPackageMasterDataHandler` does:
 
 ```java
 @Service
@@ -353,4 +383,6 @@ decide anything, and rereading the same message will not add them.
 | `application/service` | `MasterDataEventProcessor` | What the consumer talks to: inbox + handler |
 | `application/service/impl` | `InboxMessageServiceImpl`, `IdempotentMasterDataEventProcessor` | Idempotency and failure recording |
 | `infrastructure/messaging/rabbitmq` | `InboxMessageCommandFactory` | AMQP metadata → command, and the idempotency key |
+| `application/service/impl` | `ExecutionPackageMasterDataHandler` | The only handler today: keeps `project` in step with its execution package |
 | `infrastructure/persistence` | `InboxMessage`, `InboxMessageStatus`, `InboxMessageRepository` | The `inbox_message` table and its atomic operations |
+| `infrastructure/persistence` | `ProjectRepository.upsertFromMasterData` / `deactivateFromMasterData` | The atomic project sync, `project.source_service` + `source_entity_id` (`V5`) |

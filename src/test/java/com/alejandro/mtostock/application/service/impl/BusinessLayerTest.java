@@ -65,6 +65,7 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.AuditorAware;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -74,6 +75,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -89,6 +91,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -1504,6 +1507,158 @@ class BusinessLayerTest {
         assertDoesNotThrow(() -> dispatcher.handle(withoutValues));
 
         assertEquals(List.of("onDeleted"), stations.calls);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // ExecutionPackageMasterDataHandler
+    // -----------------------------------------------------------------------------------------
+
+    @Test
+    void executionPackageHandlerClaimsItsEntity() {
+        assertEquals(MasterDataEntityNames.EXECUTION_PACKAGE,
+                new ExecutionPackageMasterDataHandler(mock(ProjectRepository.class)).entityName());
+    }
+
+    /**
+     * El codigo se deriva del identificador de origen y no del nombre: project.code es obligatorio y
+     * unico, el paquete de ejecucion no publica ninguno, y el nombre si cambia entre entregas.
+     */
+    @Test
+    void newExecutionPackageCreatesAProjectCodedAfterItsSourceId() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+
+        new ExecutionPackageMasterDataHandler(projectRepository).onCreated(executionPackage("42",
+                Map.of("id", 42, "name", "Tramo Sants-Sagrera", "enabled", true)));
+
+        verify(projectRepository).upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera", true);
+    }
+
+    /**
+     * Alta y modificacion hacen lo mismo. La entrega es at-least-once: tratar el alta como un
+     * insertar-o-fallar convertiria en averia una reentrega perfectamente normal.
+     */
+    @Test
+    void updatedExecutionPackageTakesTheSamePathAsACreatedOne() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+
+        new ExecutionPackageMasterDataHandler(projectRepository).onUpdated(executionPackage("42",
+                Map.of("id", 42, "name", "Tramo Sants-Sagrera (revisado)", "enabled", false)));
+
+        verify(projectRepository).upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera (revisado)", false);
+    }
+
+    /**
+     * Nunca se borra: reservation y stock_movement apuntan a project con on delete restrict, asi que
+     * un proyecto con historial no se podria borrar aunque se quisiera.
+     */
+    @Test
+    void deletedExecutionPackageDeactivatesTheProjectInsteadOfRemovingIt() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        when(projectRepository.deactivateFromMasterData("mto-configuration", "42")).thenReturn(1);
+
+        new ExecutionPackageMasterDataHandler(projectRepository).onDeleted(executionPackage("42", Map.of()));
+
+        verify(projectRepository).deactivateFromMasterData("mto-configuration", "42");
+        verify(projectRepository, never()).delete(any());
+        verify(projectRepository, never()).upsertFromMasterData(any(), any(), any(), any(), anyBoolean());
+    }
+
+    /** Puede llegar la baja de un paquete que este servicio nunca vio; no es un error. */
+    @Test
+    void deletingAnExecutionPackageWithNoMatchingProjectIsNotAnError() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        when(projectRepository.deactivateFromMasterData("mto-configuration", "99")).thenReturn(0);
+
+        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
+                .onDeleted(executionPackage("99", Map.of())));
+    }
+
+    /** Un campo que falte no puede desactivar un proyecto vivo: el valor por defecto en origen es true. */
+    @Test
+    void executionPackageWithoutEnabledFlagIsTreatedAsActive() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+
+        new ExecutionPackageMasterDataHandler(projectRepository).onCreated(executionPackage("42",
+                Map.of("id", 42, "name", "Tramo Sants-Sagrera")));
+
+        verify(projectRepository).upsertFromMasterData(any(), any(), any(), any(), eq(true));
+    }
+
+    /** Un proyecto llamado "EP-42" en la pantalla de reservas no lo reconoce nadie. */
+    @Test
+    void executionPackageWithoutNameIsRejectedInsteadOfNamedAfterItsCode() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository);
+        MasterDataChangedMessage withoutName = executionPackage("42", Map.of("id", 42, "enabled", true));
+
+        assertThrows(ValidationException.class, () -> handler.onCreated(withoutName));
+
+        verifyNoInteractions(projectRepository);
+    }
+
+    @Test
+    void executionPackageWithoutEntityIdIsRejected() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository);
+        MasterDataChangedMessage withoutId = executionPackage(" ", Map.of("name", "Tramo"));
+
+        assertThrows(ValidationException.class, () -> handler.onCreated(withoutId));
+
+        verifyNoInteractions(projectRepository);
+    }
+
+    /**
+     * Lo que se lee en la DLQ ante un choque de codigos es una violacion de restriccion sin
+     * contexto: cuesta una tarde averiguar de donde salia.
+     */
+    @Test
+    void aCodeAlreadyTakenByAnotherProjectFailsWithAnExplanation() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean()))
+                .thenThrow(new DataIntegrityViolationException("duplicate key value violates uq_project_code"));
+        ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository);
+        MasterDataChangedMessage message = executionPackage("42", Map.of("name", "Tramo"));
+
+        ValidationException exception = assertThrows(ValidationException.class, () -> handler.onCreated(message));
+
+        assertTrue(exception.getMessage().contains("EP-42"));
+    }
+
+    /** Solo se copia lo que un proyecto de mto-stock sabe guardar; lo demas queda en el inbox. */
+    @Test
+    void fieldsWithNoPlaceInTheProjectAreDropped() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("id", 42);
+        values.put("name", "Tramo Sants-Sagrera");
+        values.put("enabled", true);
+        values.put("initialPackage", true);
+        values.put("length", 12_500L);
+        values.put("startDate", "2026-01-15");
+        values.put("endDate", "2026-12-20");
+        values.put("company", Map.of("id", 7, "code", "ACME", "name", "Acme Rail"));
+        values.put("tracks", List.of(Map.of("id", 1, "name", "V1")));
+        values.put("stations", List.of(Map.of("id", 2, "name", "Sants")));
+
+        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
+                .onCreated(executionPackage("42", values)));
+
+        verify(projectRepository).upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera", true);
+    }
+
+    private static MasterDataChangedMessage executionPackage(String entityId, Map<String, Object> values) {
+        return new MasterDataChangedMessage(
+                UUID.randomUUID(),
+                "execution-package-" + entityId,
+                "mto-configuration",
+                Instant.now(),
+                "MASTER_DATA_EXECUTION_PACKAGE_CREATED",
+                new MasterDataChangedEvent(MasterDataEntityNames.EXECUTION_PACKAGE, entityId,
+                        MasterDataOperation.CREATED, values),
+                "hash");
     }
 
     private static final class RecordingEntityHandler implements MasterDataEntityHandler {
