@@ -32,6 +32,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -161,6 +162,138 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
             persist(material("MAT-REL", "Duplicate material"));
             entityManager.flush();
         });
+    }
+
+    /**
+     * El alta y la modificacion de un paquete de ejecucion son la misma sentencia: la entrega es
+     * at-least-once, asi que un alta reentregada tiene que actualizar en vez de reventar por la
+     * restriccion unica.
+     */
+    @Test
+    void masterDataUpsertCreatesTheProjectOnceAndUpdatesItAfterwards() {
+        assertEquals(1, projectRepository.upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera", true, 10L));
+        entityManager.clear();
+        assertEquals(1, projectRepository.upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera (revisado)", false, 11L));
+        entityManager.clear();
+
+        Project project = projectRepository
+                .findBySourceServiceAndSourceEntityId("mto-configuration", "42")
+                .orElseThrow();
+        assertEquals("EP-42", project.getCode());
+        assertEquals("Tramo Sants-Sagrera (revisado)", project.getName());
+        assertFalse(project.getActive());
+        assertTrue(project.isSynchronized());
+        assertEquals(1, projectRepository.count());
+    }
+
+    /**
+     * Los proyectos creados a mano quedan con el origen a NULL, y PostgreSQL considera distintos dos
+     * NULL en un indice unico: la restriccion de origen no les afecta por muchos que haya.
+     */
+    @Test
+    void locallyCreatedProjectsAreUnaffectedByTheSourceUniqueConstraint() {
+        persist(Project.builder().code("PRJ-001").name("Local one").build());
+        persist(Project.builder().code("PRJ-002").name("Local two").build());
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Sincronizado", true, 10L);
+        entityManager.flush();
+        entityManager.clear();
+
+        assertEquals(3, projectRepository.count());
+        assertFalse(projectRepository.findByCode("PRJ-001").orElseThrow().isSynchronized());
+    }
+
+    /**
+     * La baja desactiva y no borra: reservation y stock_movement apuntan a project con on delete
+     * restrict, de modo que un proyecto con historial no se podria borrar aunque se quisiera.
+     */
+    @Test
+    void masterDataDeletionDeactivatesTheProjectAndKeepsItsHistory() {
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Tramo", true, 10L);
+        entityManager.clear();
+
+        assertEquals(1, projectRepository.deactivateFromMasterData("mto-configuration", "42", 11L));
+        entityManager.clear();
+
+        Project project = projectRepository
+                .findBySourceServiceAndSourceEntityId("mto-configuration", "42")
+                .orElseThrow();
+        assertFalse(project.getActive());
+        // Un paquete que este servicio nunca vio no es un error.
+        assertEquals(0, projectRepository.deactivateFromMasterData("mto-configuration", "99", 11L));
+    }
+
+
+    /**
+     * El escenario que esto arregla: el evento 10 falla y se reprograma, el 11 llega y se aplica, y
+     * cuando el 10 se reintenta ya no debe pisar al 11 con el nombre viejo.
+     */
+    @Test
+    void aChangeArrivingBehindWhatWasAlreadyAppliedIsDiscarded() {
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Nombre nuevo", true, 11L);
+        entityManager.clear();
+
+        assertEquals(0, projectRepository.upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Nombre viejo", true, 10L));
+        entityManager.clear();
+
+        Project project = projectRepository
+                .findBySourceServiceAndSourceEntityId("mto-configuration", "42")
+                .orElseThrow();
+        assertEquals("Nombre nuevo", project.getName());
+        assertEquals(11L, project.getSourceSequenceNumber());
+    }
+
+    /**
+     * Un UPDATE retrasado detras de un DELETE reactivaba el proyecto. La baja adelanta la marca de
+     * agua aunque el proyecto ya estuviera inactivo, que es justo lo que cierra este agujero.
+     */
+    @Test
+    void anUpdateArrivingAfterADeletionDoesNotBringTheProjectBack() {
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Tramo", true, 10L);
+        entityManager.clear();
+        assertEquals(1, projectRepository.deactivateFromMasterData("mto-configuration", "42", 11L));
+        entityManager.clear();
+
+        assertEquals(0, projectRepository.upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo", true, 10L));
+        entityManager.clear();
+
+        assertFalse(projectRepository
+                .findBySourceServiceAndSourceEntityId("mto-configuration", "42")
+                .orElseThrow()
+                .getActive());
+    }
+
+    /** Igual numero es el mismo cambio, no uno anterior: se aplica en lugar de descartarse. */
+    @Test
+    void aChangeWithTheSameSequenceNumberIsStillApplied() {
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Tramo", true, 10L);
+        entityManager.clear();
+
+        assertEquals(1, projectRepository.upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo revisado", true, 10L));
+    }
+
+    /**
+     * Sin numero no se puede ordenar, asi que se aplica; pero la marca de agua anterior se conserva
+     * en lugar de borrarse, o el siguiente evento viejo entraria.
+     */
+    @Test
+    void aChangeWithoutSequenceNumberIsAppliedAndKeepsTheStoredWatermark() {
+        projectRepository.upsertFromMasterData("mto-configuration", "42", "EP-42", "Tramo", true, 10L);
+        entityManager.clear();
+
+        assertEquals(1, projectRepository.upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Sin secuencia", true, null));
+        entityManager.clear();
+
+        Project project = projectRepository
+                .findBySourceServiceAndSourceEntityId("mto-configuration", "42")
+                .orElseThrow();
+        assertEquals("Sin secuencia", project.getName());
+        assertEquals(10L, project.getSourceSequenceNumber());
     }
 
     private java.util.List<String> lowStockCodes(org.springframework.data.jpa.domain.Specification<Material> specification) {

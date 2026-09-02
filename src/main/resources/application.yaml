@@ -12,6 +12,35 @@ spring:
         jwt:
           issuer-uri: ${KEYCLOAK_ISSUER_URI:http://auth.mto.local:8082/realms/mto}
 
+  # Este servicio solo CONSUME: no publica nada, asi que no hay publisher confirms ni returns que
+  # configurar. Lo que hay debajo de listener.simple lo aplica Spring Boot a traves del
+  # SimpleRabbitListenerContainerFactoryConfigurer; sin pasar por el, una factory declarada a mano
+  # descarta todo este bloque en silencio (ver RabbitMqConfiguration).
+  rabbitmq:
+    host: ${SPRING_RABBITMQ_HOST:localhost}
+    port: ${SPRING_RABBITMQ_PORT:5672}
+    username: ${SPRING_RABBITMQ_USERNAME:guest}
+    password: ${SPRING_RABBITMQ_PASSWORD:guest}
+    virtual-host: ${SPRING_RABBITMQ_VIRTUAL_HOST:/}
+    listener:
+      simple:
+        # El contenedor confirma el mensaje al volver el listener sin excepcion, y lo rechaza si
+        # lanza. No hay ack manual porque no hay nada que confirmar a medias: el listener delega en
+        # un unico manejador y no reparte el trabajo entre hilos.
+        acknowledge-mode: auto
+        concurrency: ${SPRING_RABBITMQ_LISTENER_CONCURRENCY:1}
+        max-concurrency: ${SPRING_RABBITMQ_LISTENER_MAX_CONCURRENCY:5}
+        prefetch: ${SPRING_RABBITMQ_LISTENER_PREFETCH:10}
+        retry:
+          # Reintentos acotados: agotados los intentos, el mensaje va a la DLQ. La otra mitad de
+          # esa garantia -no reencolar lo rechazado- la fija el codigo y no este bloque, porque un
+          # reencolado infinito atasca el canal entero. Ver RabbitMqConfiguration.
+          enabled: true
+          max-retries: ${SPRING_RABBITMQ_LISTENER_MAX_RETRIES:3}
+          initial-interval: 1s
+          multiplier: 2
+          max-interval: 10s
+
 management:
   endpoints:
     web:
@@ -88,3 +117,44 @@ app:
         - X-Correlation-Id
       allow-credentials: false
       max-age: ${APP_CORS_MAX_AGE:3600}
+
+  # Canal de eventos de datos maestros publicados por mto-configuration.
+  #
+  # El exchange y la routing key son contrato del emisor y no se cambian por gusto: un binding
+  # contra un exchange que nadie usa se declara igual de bien y deja de llegar todo sin ningun
+  # error visible. La cola y su DLQ si son de este servicio, que es quien las consume.
+  #
+  # Hoy el consumidor solo registra lo que recibe; la logica de negocio esta pendiente y su punto
+  # de entrada es MasterDataEventHandler.
+  rabbitmq:
+    # Apaga la declaracion de la topologia Y el consumidor. Con esto en false nadie abre una
+    # conexion, asi que la aplicacion arranca sin broker.
+    enabled: ${APP_RABBITMQ_ENABLED:true}
+    master-data:
+      exchange: ${APP_RABBITMQ_MASTER_DATA_EXCHANGE:mto.master-data.exchange}
+      queue: ${APP_RABBITMQ_MASTER_DATA_QUEUE:mto.stock.master-data.queue}
+      routing-key: "${APP_RABBITMQ_MASTER_DATA_ROUTING_KEY:mto.master-data.#}"
+      dead-letter-exchange: ${APP_RABBITMQ_MASTER_DATA_DEAD_LETTER_EXCHANGE:mto.stock.master-data.queue.dlx}
+      dead-letter-queue: ${APP_RABBITMQ_MASTER_DATA_DEAD_LETTER_QUEUE:mto.stock.master-data.queue.dlq}
+      dead-letter-routing-key: ${APP_RABBITMQ_MASTER_DATA_DEAD_LETTER_ROUTING_KEY:mto.stock.master-data.queue.dlq}
+      # Permite declarar la topologia sin consumir: util para dejar la cola creada acumulando
+      # eventos mientras el servicio todavia no sabe que hacer con ellos.
+      listener-enabled: ${APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED:true}
+
+  # Firma de los mensajes, sobre los bytes que viajan de verdad. Es la unica comprobacion de
+  # integridad que un consumidor puede rehacer: el messageHash del payload se calcula sobre el objeto
+  # antes de serializarlo y no sobrevive a la ida y vuelta.
+  messaging:
+    signature:
+      # EL MISMO VALOR que app.messaging.signature.secret en mto-configuration. Con secreto la firma
+      # es HMAC-SHA256 y protege de manipulacion; sin el se degrada a un SHA-256 simple, que detecta
+      # corrupcion pero no manipulacion, porque quien altere el mensaje puede recalcularlo.
+      secret: ${MESSAGING_SIGNATURE_SECRET:}
+      # DISABLED no comprueba nada; OPTIONAL rechaza una firma que no cuadra pero acepta lo que no
+      # puede comprobar; REQUIRED exige que todo mensaje llegue firmado y sea comprobable.
+      #
+      # Por defecto OPTIONAL y no REQUIRED a proposito: si los dos servicios no comparten todavia el
+      # mismo secreto, el emisor firma con HMAC, aqui solo se sabe calcular SHA-256 y REQUIRED
+      # mandaria a la DLQ todos los mensajes validos. Se pasa a REQUIRED cuando el secreto ya esta
+      # repartido, que es como debe quedar en produccion.
+      mode: ${MESSAGING_SIGNATURE_MODE:OPTIONAL}

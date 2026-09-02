@@ -8,6 +8,13 @@ import com.alejandro.mtostock.application.dto.material.MaterialRequest;
 import com.alejandro.mtostock.application.dto.material.MaterialStockResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialSummaryResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialUpdateRequest;
+import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
+import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedEvent;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
 import com.alejandro.mtostock.application.dto.stock.StockAdjustmentDirection;
 import com.alejandro.mtostock.application.dto.stock.StockMovementAdjustmentRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementEntryRequest;
@@ -26,7 +33,10 @@ import com.alejandro.mtostock.application.mapper.MaterialMapper;
 import com.alejandro.mtostock.application.mapper.StockMovementMapper;
 import com.alejandro.mtostock.application.mapper.WarehouseMapper;
 import com.alejandro.mtostock.application.service.BOMCalculationService;
+import com.alejandro.mtostock.application.service.InboxMessageService;
 import com.alejandro.mtostock.application.service.InventoryBalanceService;
+import com.alejandro.mtostock.application.service.MasterDataEntityHandler;
+import com.alejandro.mtostock.application.service.MasterDataEventHandler;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.ReservationEngine;
 import com.alejandro.mtostock.application.service.StockCalculationService;
@@ -42,6 +52,7 @@ import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementTyp
 import com.alejandro.mtostock.infrastructure.persistence.entity.Supplier;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
 import com.alejandro.mtostock.infrastructure.persistence.repository.AssemblyRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.InboxMessageRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.InventoryBalanceRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.MaterialRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepository;
@@ -51,8 +62,11 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.SupplierRepo
 import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.AuditorAware;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -60,11 +74,17 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -72,10 +92,12 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -86,6 +108,12 @@ import static org.mockito.Mockito.when;
 class BusinessLayerTest {
 
     private static final Pattern REST_CONTROLLER_ANNOTATION = Pattern.compile("@RestController(?!Advice)\\b");
+
+    private static final String MESSAGE_ID = "0f8b1f4c-3f6a-4a6d-9a2a-1c9f5f6f2b10";
+    private static final String SOURCE_SERVICE = "mto-configuration";
+    private static final String PAYLOAD = "{\"eventType\":\"MASTER_DATA_STATION_UPDATED\"}";
+
+    private static final MasterDataEventContext CONTEXT = new MasterDataEventContext(7L);
 
     @Test
     void stockCalculationReadsCurrentBalancesFromInventoryBalanceAndKeepsHistoricalFromMovements() {
@@ -1223,6 +1251,502 @@ class BusinessLayerTest {
         );
 
         assertThrows(AssemblyException.class, () -> service.validateComponentAvailability(assembly.getId(), warehouse.getId()));
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Inbox: idempotencia del consumo
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * Primera entrega: se registra, se reclama -que es lo que incrementa el contador de intentos- se
+     * ejecuta el trabajo una sola vez y se marca como aplicado. Que el contador quede en 1 y que un
+     * FAILED se pueda reclamar de nuevo lo comprueba InboxMessageRepositoryDataJpaTest contra
+     * PostgreSQL, porque son garantias del SQL y no del servicio.
+     */
+    @Test
+    void inboxRunsTheWorkOnceAndMarksTheMessageAsProcessed() {
+        InboxMessageRepository inboxMessageRepository = mock(InboxMessageRepository.class);
+        when(inboxMessageRepository.claimForProcessing(MESSAGE_ID, SOURCE_SERVICE)).thenReturn(1);
+        when(inboxMessageRepository.markProcessed(MESSAGE_ID, SOURCE_SERVICE)).thenReturn(1);
+        InboxMessageServiceImpl service = new InboxMessageServiceImpl(inboxMessageRepository);
+        AtomicInteger executions = new AtomicInteger();
+
+        InboxProcessingResult result = service.process(inboxCommand(), executions::incrementAndGet);
+
+        assertEquals(InboxProcessingResult.PROCESSED, result);
+        assertEquals(1, executions.get());
+        verify(inboxMessageRepository).insertIfMissing(eq(MESSAGE_ID), eq(SOURCE_SERVICE), any(), any(), any(),
+                any(), any(), any(), any(), eq(PAYLOAD));
+        verify(inboxMessageRepository).claimForProcessing(MESSAGE_ID, SOURCE_SERVICE);
+        verify(inboxMessageRepository).markProcessed(MESSAGE_ID, SOURCE_SERVICE);
+    }
+
+    /**
+     * La reclamacion no toca las filas ya aplicadas, asi que devolver 0 filas ES la senal de
+     * duplicado. Se decide con el recuento de un update atomico y no con un "existe?" previo,
+     * porque entre esa lectura y la escritura caben dos entregas simultaneas.
+     */
+    @Test
+    void inboxSkipsTheWorkWhenTheMessageWasAlreadyApplied() {
+        InboxMessageRepository inboxMessageRepository = mock(InboxMessageRepository.class);
+        when(inboxMessageRepository.claimForProcessing(MESSAGE_ID, SOURCE_SERVICE)).thenReturn(0);
+        InboxMessageServiceImpl service = new InboxMessageServiceImpl(inboxMessageRepository);
+        AtomicInteger executions = new AtomicInteger();
+
+        InboxProcessingResult result = service.process(inboxCommand(), executions::incrementAndGet);
+
+        assertEquals(InboxProcessingResult.DUPLICATE_SKIPPED, result);
+        assertEquals(0, executions.get());
+        verify(inboxMessageRepository, never()).markProcessed(any(), any());
+    }
+
+    /**
+     * Marcar como aplicado un mensaje cuyo trabajo fallo dejaria el evento perdido para siempre: no
+     * se reintentaria nunca porque el inbox lo daria por hecho.
+     */
+    @Test
+    void inboxDoesNotMarkAsProcessedWhenTheWorkFails() {
+        InboxMessageRepository inboxMessageRepository = mock(InboxMessageRepository.class);
+        when(inboxMessageRepository.claimForProcessing(MESSAGE_ID, SOURCE_SERVICE)).thenReturn(1);
+        InboxMessageServiceImpl service = new InboxMessageServiceImpl(inboxMessageRepository);
+
+        assertThrows(IllegalStateException.class, () -> service.process(inboxCommand(), () -> {
+            throw new IllegalStateException("database is down");
+        }));
+
+        verify(inboxMessageRepository, never()).markProcessed(any(), any());
+    }
+
+    /** Sin identificador estable no hay idempotencia que garantizar. */
+    @Test
+    void inboxRejectsACommandWithoutIdempotencyKey() {
+        InboxMessageServiceImpl service = new InboxMessageServiceImpl(mock(InboxMessageRepository.class));
+        InboxMessageCommand withoutKey = new InboxMessageCommand(
+                " ", SOURCE_SERVICE, null, null, null, null, null, null, null, PAYLOAD, 7L);
+
+        assertThrows(ValidationException.class, () -> service.process(withoutKey, () -> { }));
+    }
+
+    /** El motivo se recorta: el mensaje de una excepcion puede arrastrar un payload entero. */
+    @Test
+    void inboxTruncatesAVeryLongFailureReason() {
+        InboxMessageRepository inboxMessageRepository = mock(InboxMessageRepository.class);
+        InboxMessageServiceImpl service = new InboxMessageServiceImpl(inboxMessageRepository);
+        ArgumentCaptor<String> reason = ArgumentCaptor.forClass(String.class);
+
+        service.recordFailure(inboxCommand(), new IllegalStateException("x".repeat(5_000)));
+
+        verify(inboxMessageRepository).recordFailure(eq(MESSAGE_ID), eq(SOURCE_SERVICE), any(), any(), any(),
+                any(), any(), any(), any(), eq(PAYLOAD), reason.capture());
+        assertEquals(2_000, reason.getValue().length());
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // IdempotentMasterDataEventProcessor
+    // -----------------------------------------------------------------------------------------
+
+    /**
+     * El manejador solo se ejecuta desde dentro del inbox. Con un inbox que no invoca el trabajo
+     * -lo que hace ante un duplicado- el manejador no llega a ejecutarse nunca.
+     */
+    @Test
+    void masterDataHandlerOnlyRunsThroughTheInbox() {
+        InboxMessageService inboxMessageService = mock(InboxMessageService.class);
+        when(inboxMessageService.process(any(), any())).thenReturn(InboxProcessingResult.DUPLICATE_SKIPPED);
+        AtomicInteger executions = new AtomicInteger();
+        MasterDataEventHandler handler = (message, context) -> executions.incrementAndGet();
+
+        InboxProcessingResult result = new IdempotentMasterDataEventProcessor(inboxMessageService, handler)
+                .process(inboxCommand(), masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED));
+
+        assertEquals(InboxProcessingResult.DUPLICATE_SKIPPED, result);
+        assertEquals(0, executions.get());
+    }
+
+    /**
+     * El estado fallido se escribe DESPUES de que la transaccion del intento haya terminado, no
+     * desde dentro: esa transaccion tiene bloqueada la fila hasta revertir, y una transaccion nueva
+     * que la tocase se quedaria esperando a otra que a su vez espera a que ella devuelva.
+     */
+    @Test
+    void masterDataFailureIsRecordedAfterTheAttemptAndRethrownForTheBroker() {
+        InboxMessageService inboxMessageService = mock(InboxMessageService.class);
+        IllegalStateException failure = new IllegalStateException("database is down");
+        when(inboxMessageService.process(any(), any())).thenThrow(failure);
+        IdempotentMasterDataEventProcessor processor = new IdempotentMasterDataEventProcessor(
+                inboxMessageService, new DispatchingMasterDataEventHandler(List.of()));
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                () -> processor.process(inboxCommand(),
+                        masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED)));
+
+        assertSame(failure, thrown);
+        InOrder order = inOrder(inboxMessageService);
+        order.verify(inboxMessageService).process(any(), any());
+        order.verify(inboxMessageService).recordFailure(any(), eq(failure));
+    }
+
+    private static InboxMessageCommand inboxCommand() {
+        return new InboxMessageCommand(MESSAGE_ID, SOURCE_SERVICE, "MASTER_DATA_STATION_UPDATED", "station",
+                "42", "mto.master-data.exchange", "mto.master-data.station.updated",
+                "mto.stock.master-data.queue", "hash", PAYLOAD, 7L);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // DispatchingMasterDataEventHandler
+    // -----------------------------------------------------------------------------------------
+
+    @Test
+    void masterDataChangeIsRoutedToTheHandlerOfItsEntity() {
+        RecordingEntityHandler executionPackages = new RecordingEntityHandler(MasterDataEntityNames.EXECUTION_PACKAGE);
+        RecordingEntityHandler stations = new RecordingEntityHandler(MasterDataEntityNames.STATION);
+        MasterDataEventHandler dispatcher =
+                new DispatchingMasterDataEventHandler(List.of(executionPackages, stations));
+
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED), CONTEXT);
+
+        assertEquals(List.of("onUpdated"), stations.calls);
+        assertTrue(executionPackages.calls.isEmpty());
+    }
+
+    @Test
+    void eachOperationReachesItsOwnMethod() {
+        RecordingEntityHandler stations = new RecordingEntityHandler(MasterDataEntityNames.STATION);
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(stations));
+
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.CREATED), CONTEXT);
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.UPDATED), CONTEXT);
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.STATION, MasterDataOperation.DELETED), CONTEXT);
+
+        assertEquals(List.of("onCreated", "onUpdated", "onDeleted"), stations.calls);
+    }
+
+    /**
+     * La cola esta enlazada a mto.master-data.# y llega todo lo que publica mto-configuration, que
+     * hoy son ocho tipos de entidad y manana pueden ser mas. Tratar como error lo que no se atiende
+     * mandaria a la DLQ la mayor parte del trafico normal y convertiria cada entidad nueva del
+     * emisor en una averia aqui.
+     */
+    @Test
+    void changesOfUnhandledEntitiesAreIgnoredInsteadOfFailing() {
+        RecordingEntityHandler stations = new RecordingEntityHandler(MasterDataEntityNames.STATION);
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(stations));
+
+        assertDoesNotThrow(() -> dispatcher.handle(
+                masterDataMessage(MasterDataEntityNames.CANTILEVER, MasterDataOperation.CREATED), CONTEXT));
+
+        assertTrue(stations.calls.isEmpty());
+    }
+
+    /** Sin ningun manejador registrado el consumo sigue funcionando: se registra y no se hace nada. */
+    @Test
+    void withoutAnyRegisteredHandlerEveryChangeIsSimplyIgnored() {
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of());
+
+        assertDoesNotThrow(() -> dispatcher.handle(
+                masterDataMessage(MasterDataEntityNames.EXECUTION_PACKAGE, MasterDataOperation.CREATED), CONTEXT));
+    }
+
+    /** Un manejador que declarase "Execution-Package" no se ejecutaria nunca y nada lo delataria. */
+    @Test
+    void entityNameMatchingIgnoresCaseAndSurroundingSpaces() {
+        RecordingEntityHandler packages = new RecordingEntityHandler("  Execution-Package ");
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(packages));
+
+        dispatcher.handle(masterDataMessage(MasterDataEntityNames.EXECUTION_PACKAGE, MasterDataOperation.CREATED), CONTEXT);
+
+        assertEquals(List.of("onCreated"), packages.calls);
+    }
+
+    /**
+     * Cual de los dos se ejecutase dependeria del orden de escaneo del classpath: una diferencia de
+     * comportamiento entre dos arranques del mismo binario.
+     */
+    @Test
+    void twoHandlersForTheSameEntityStopTheApplicationFromStarting() {
+        List<MasterDataEntityHandler> duplicated = List.of(
+                new RecordingEntityHandler(MasterDataEntityNames.STATION),
+                new RecordingEntityHandler(MasterDataEntityNames.STATION));
+
+        IllegalStateException exception = assertThrows(IllegalStateException.class,
+                () -> new DispatchingMasterDataEventHandler(duplicated));
+
+        assertTrue(exception.getMessage().contains(MasterDataEntityNames.STATION));
+    }
+
+    @Test
+    void aHandlerWithoutEntityNameStopsTheApplicationFromStarting() {
+        List<MasterDataEntityHandler> blank = List.of(new RecordingEntityHandler(" "));
+
+        assertThrows(IllegalStateException.class, () -> new DispatchingMasterDataEventHandler(blank));
+    }
+
+    /** Un manejador puede atender solo las operaciones que le interesen. */
+    @Test
+    void unimplementedOperationsDoNothingByDefault() {
+        MasterDataEntityHandler onlyDeletions = new MasterDataEntityHandler() {
+            @Override
+            public String entityName() {
+                return MasterDataEntityNames.TRACK;
+            }
+        };
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(onlyDeletions));
+
+        assertDoesNotThrow(() -> dispatcher.handle(
+                masterDataMessage(MasterDataEntityNames.TRACK, MasterDataOperation.CREATED), CONTEXT));
+    }
+
+    /** values es un mapa abierto del emisor: puede llegar vacio o directamente ausente. */
+    @Test
+    void masterDataChangeWithoutValuesIsRoutedWithoutFailing() {
+        RecordingEntityHandler stations = new RecordingEntityHandler(MasterDataEntityNames.STATION);
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(stations));
+        MasterDataChangedMessage withoutValues = new MasterDataChangedMessage(
+                UUID.randomUUID(), "station-42", "mto-configuration", Instant.now(),
+                "MASTER_DATA_STATION_DELETED",
+                new MasterDataChangedEvent(MasterDataEntityNames.STATION, "42", MasterDataOperation.DELETED, null),
+                "hash");
+
+        assertDoesNotThrow(() -> dispatcher.handle(withoutValues, CONTEXT));
+
+        assertEquals(List.of("onDeleted"), stations.calls);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // ExecutionPackageMasterDataHandler
+    // -----------------------------------------------------------------------------------------
+
+    @Test
+    void executionPackageHandlerClaimsItsEntity() {
+        assertEquals(MasterDataEntityNames.EXECUTION_PACKAGE,
+                new ExecutionPackageMasterDataHandler(mock(ProjectRepository.class)).entityName());
+    }
+
+    /**
+     * El codigo se deriva del identificador de origen y no del nombre: project.code es obligatorio y
+     * unico, el paquete de ejecucion no publica ninguno, y el nombre si cambia entre entregas.
+     */
+    @Test
+    void newExecutionPackageCreatesAProjectCodedAfterItsSourceId() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+
+        new ExecutionPackageMasterDataHandler(projectRepository).onCreated(executionPackage("42",
+                Map.of("id", 42, "name", "Tramo Sants-Sagrera", "enabled", true)), CONTEXT);
+
+        verify(projectRepository).upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera", true, 7L);
+    }
+
+    /**
+     * Alta y modificacion hacen lo mismo. La entrega es at-least-once: tratar el alta como un
+     * insertar-o-fallar convertiria en averia una reentrega perfectamente normal.
+     */
+    @Test
+    void updatedExecutionPackageTakesTheSamePathAsACreatedOne() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+
+        new ExecutionPackageMasterDataHandler(projectRepository).onUpdated(executionPackage("42",
+                Map.of("id", 42, "name", "Tramo Sants-Sagrera (revisado)", "enabled", false)), CONTEXT);
+
+        verify(projectRepository).upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera (revisado)", false, 7L);
+    }
+
+    /**
+     * Nunca se borra: reservation y stock_movement apuntan a project con on delete restrict, asi que
+     * un proyecto con historial no se podria borrar aunque se quisiera.
+     */
+    @Test
+    void deletedExecutionPackageDeactivatesTheProjectInsteadOfRemovingIt() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        when(projectRepository.deactivateFromMasterData("mto-configuration", "42", 7L)).thenReturn(1);
+
+        new ExecutionPackageMasterDataHandler(projectRepository).onDeleted(executionPackage("42", Map.of()), CONTEXT);
+
+        verify(projectRepository).deactivateFromMasterData("mto-configuration", "42", 7L);
+        verify(projectRepository, never()).delete(any());
+        verify(projectRepository, never()).upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), any());
+    }
+
+    /** Puede llegar la baja de un paquete que este servicio nunca vio; no es un error. */
+    @Test
+    void deletingAnExecutionPackageWithNoMatchingProjectIsNotAnError() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        when(projectRepository.deactivateFromMasterData("mto-configuration", "99", 7L)).thenReturn(0);
+
+        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
+                .onDeleted(executionPackage("99", Map.of()), CONTEXT));
+    }
+
+    /** Un campo que falte no puede desactivar un proyecto vivo: el valor por defecto en origen es true. */
+    @Test
+    void executionPackageWithoutEnabledFlagIsTreatedAsActive() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+
+        new ExecutionPackageMasterDataHandler(projectRepository).onCreated(executionPackage("42",
+                Map.of("id", 42, "name", "Tramo Sants-Sagrera")), CONTEXT);
+
+        verify(projectRepository).upsertFromMasterData(any(), any(), any(), any(), eq(true), any());
+    }
+
+    /** Un proyecto llamado "EP-42" en la pantalla de reservas no lo reconoce nadie. */
+    @Test
+    void executionPackageWithoutNameIsRejectedInsteadOfNamedAfterItsCode() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository);
+        MasterDataChangedMessage withoutName = executionPackage("42", Map.of("id", 42, "enabled", true));
+
+        assertThrows(ValidationException.class, () -> handler.onCreated(withoutName, CONTEXT));
+
+        verifyNoInteractions(projectRepository);
+    }
+
+    @Test
+    void executionPackageWithoutEntityIdIsRejected() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository);
+        MasterDataChangedMessage withoutId = executionPackage(" ", Map.of("name", "Tramo"));
+
+        assertThrows(ValidationException.class, () -> handler.onCreated(withoutId, CONTEXT));
+
+        verifyNoInteractions(projectRepository);
+    }
+
+    /**
+     * Lo que se lee en la DLQ ante un choque de codigos es una violacion de restriccion sin
+     * contexto: cuesta una tarde averiguar de donde salia.
+     */
+    @Test
+    void aCodeAlreadyTakenByAnotherProjectFailsWithAnExplanation() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), any()))
+                .thenThrow(new DataIntegrityViolationException("duplicate key value violates uq_project_code"));
+        ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository);
+        MasterDataChangedMessage message = executionPackage("42", Map.of("name", "Tramo"));
+
+        ValidationException exception = assertThrows(ValidationException.class, () -> handler.onCreated(message, CONTEXT));
+
+        assertTrue(exception.getMessage().contains("EP-42"));
+    }
+
+    /** Solo se copia lo que un proyecto de mto-stock sabe guardar; lo demas queda en el inbox. */
+    @Test
+    void fieldsWithNoPlaceInTheProjectAreDropped() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        Map<String, Object> values = new LinkedHashMap<>();
+        values.put("id", 42);
+        values.put("name", "Tramo Sants-Sagrera");
+        values.put("enabled", true);
+        values.put("initialPackage", true);
+        values.put("length", 12_500L);
+        values.put("startDate", "2026-01-15");
+        values.put("endDate", "2026-12-20");
+        values.put("company", Map.of("id", 7, "code", "ACME", "name", "Acme Rail"));
+        values.put("tracks", List.of(Map.of("id", 1, "name", "V1")));
+        values.put("stations", List.of(Map.of("id", 2, "name", "Sants")));
+
+        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
+                .onCreated(executionPackage("42", values), CONTEXT));
+
+        verify(projectRepository).upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo Sants-Sagrera", true, 7L);
+    }
+
+    /**
+     * La sentencia no toca la fila cuando el evento viene por detras de lo ya aplicado, y eso llega
+     * como 0 filas. No es un fallo -no puede serlo: mandar a la DLQ un evento viejo lo unico que
+     * consigue es llenarla de trafico normal.
+     */
+    @Test
+    void anExecutionPackageChangeThatArrivesLateIsDiscardedWithoutFailing() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), any()))
+                .thenReturn(0);
+
+        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
+                .onUpdated(executionPackage("42", Map.of("name", "Nombre viejo")),
+                        new MasterDataEventContext(3L)));
+    }
+
+    @Test
+    void aLateDeletionIsDiscardedWithoutFailing() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        when(projectRepository.deactivateFromMasterData(any(), any(), any())).thenReturn(0);
+        when(projectRepository.findBySourceServiceAndSourceEntityId("mto-configuration", "42"))
+                .thenReturn(Optional.of(Project.builder().code("EP-42").name("Tramo").build()));
+
+        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
+                .onDeleted(executionPackage("42", Map.of()), new MasterDataEventContext(3L)));
+    }
+
+    /**
+     * Sin numero de secuencia no se puede saber que el evento sea viejo, y rechazarlo dejaria el
+     * servicio sin consumir nada si el emisor dejara de enviar la cabecera: se aplica.
+     */
+    @Test
+    void anEventWithoutSequenceNumberIsStillApplied() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), isNull()))
+                .thenReturn(1);
+
+        new ExecutionPackageMasterDataHandler(projectRepository)
+                .onCreated(executionPackage("42", Map.of("name", "Tramo")), new MasterDataEventContext(null));
+
+        verify(projectRepository).upsertFromMasterData(
+                "mto-configuration", "42", "EP-42", "Tramo", true, null);
+    }
+
+    private static MasterDataChangedMessage executionPackage(String entityId, Map<String, Object> values) {
+        return new MasterDataChangedMessage(
+                UUID.randomUUID(),
+                "execution-package-" + entityId,
+                "mto-configuration",
+                Instant.now(),
+                "MASTER_DATA_EXECUTION_PACKAGE_CREATED",
+                new MasterDataChangedEvent(MasterDataEntityNames.EXECUTION_PACKAGE, entityId,
+                        MasterDataOperation.CREATED, values),
+                "hash");
+    }
+
+    private static final class RecordingEntityHandler implements MasterDataEntityHandler {
+
+        private final String entityName;
+        private final List<String> calls = new ArrayList<>();
+
+        private RecordingEntityHandler(String entityName) {
+            this.entityName = entityName;
+        }
+
+        @Override
+        public String entityName() {
+            return entityName;
+        }
+
+        @Override
+        public void onCreated(MasterDataChangedMessage message, MasterDataEventContext context) {
+            calls.add("onCreated");
+        }
+
+        @Override
+        public void onUpdated(MasterDataChangedMessage message, MasterDataEventContext context) {
+            calls.add("onUpdated");
+        }
+
+        @Override
+        public void onDeleted(MasterDataChangedMessage message, MasterDataEventContext context) {
+            calls.add("onDeleted");
+        }
+    }
+
+    private static MasterDataChangedMessage masterDataMessage(String entityName, MasterDataOperation operation) {
+        return new MasterDataChangedMessage(
+                UUID.randomUUID(),
+                entityName + "-42",
+                "mto-configuration",
+                Instant.now(),
+                "MASTER_DATA_" + entityName.toUpperCase().replace('-', '_') + "_" + operation.name(),
+                new MasterDataChangedEvent(entityName, "42", operation, Map.of("name", "Barcelona Sants")),
+                "hash");
     }
 
     @Test

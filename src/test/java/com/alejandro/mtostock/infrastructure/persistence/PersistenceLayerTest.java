@@ -10,6 +10,7 @@ import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementTyp
 import com.alejandro.mtostock.infrastructure.persistence.entity.Supplier;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
 import com.alejandro.mtostock.infrastructure.persistence.repository.AssemblyRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.InboxMessageRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.MaterialRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ReservationRepository;
@@ -43,6 +44,7 @@ class PersistenceLayerTest {
         assertJpaRepository(StockMovementRepository.class);
         assertSpecificationRepository(StockMovementRepository.class);
         assertJpaRepository(ReservationRepository.class);
+        assertJpaRepository(InboxMessageRepository.class);
         assertSpecificationRepository(ReservationRepository.class);
         assertJpaRepository(SupplierRepository.class);
         assertJpaRepository(ProjectRepository.class);

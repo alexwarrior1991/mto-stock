@@ -50,7 +50,63 @@ Stock is never stored directly on `material`/`warehouse`. It is derived from an 
 - `reservation.status` (`ACTIVE`/`RELEASED`/`CANCELLED`/`CONSUMED`) drives `reserved_quantity`; only `ACTIVE` reservations reduce availability.
 - Assemblies never have stock — availability is computed on demand from the BOM (`assembly_component`) against current component stock (`BOMCalculationService`).
 
+### Messaging
+
+`mto-stock` consumes the master data change events that `mto-configuration` publishes to RabbitMQ
+(`mto.master-data.exchange`, routing key `mto.master-data.#`, own queue `mto.stock.master-data.queue`
+with its own DLX/DLQ). The consumer currently **only logs**: no business logic yet.
+
+- `configuration/rabbitmq` — `MasterDataRabbitProperties` (`app.rabbitmq.master-data.*`) and
+  `RabbitMqConfiguration` (topology, JSON converter, listener factory). The whole block is gated on
+  `app.rabbitmq.enabled`, the consumer additionally on `app.rabbitmq.master-data.listener-enabled`;
+  with the first off the application starts without a broker, which is what the tests rely on.
+- `infrastructure/messaging/rabbitmq` — contract names/headers and the thin `MasterDataEventConsumer`.
+- `application/dto/messaging` — the message contract, plus `MasterDataEntityNames` (the eight entity
+  names `mto-configuration` publishes: all railway infrastructure, none matching a `mto-stock`
+  entity one to one).
+- `MasterDataEventHandler` is the transport/application boundary and has a single implementation,
+  `DispatchingMasterDataEventHandler`, which logs each change and routes it by entity name.
+  **`MasterDataEntityHandler` is where the business logic goes** — one `@Service` per entity, picked
+  up from the context with nothing to register. `ExecutionPackageMasterDataHandler` is the only one:
+  it upserts a `project` from an execution package and deactivates it on `DELETED` (never deletes —
+  `reservation`/`stock_movement` reference it with `on delete restrict`), matching on
+  `project.source_service` + `source_entity_id` (added in `V5`, `NULL` for projects created through
+  the API) with the code derived as `EP-<sourceId>`. Late events are discarded against the
+  `project.source_sequence_number` watermark (`V6`) from the `sequenceNumber` header, compared
+  inside the writing statement's `where` — never read-then-write; a missing sequence still applies
+  and keeps the stored watermark, and a deletion advances it even when the row is already inactive. The other seven entities have no handler and
+  an unknown entity is never an error (the queue is bound to `mto.master-data.#` and gets
+  everything), while a message with no `data`, `entityName` or `operation` is rejected to the DLQ by
+  the consumer. An entity handler runs inside the inbox transaction, so it must not open its own.
+
+Consumption is idempotent through an **inbox** (`inbox_message`, added in
+`V4__create_inbox_message_table.sql`), the consumer-side counterpart of the publisher's outbox:
+
+- The idempotency key is the envelope's `operationId`, falling back to the AMQP `message_id` header;
+  a message with neither is rejected straight to the DLQ. The guarantee is the unique constraint on
+  `(message_id, source_service)`, not any check in code — `InboxMessageRepository` claims and marks
+  with conditional native `UPDATE`s and an `on conflict` insert, the same row-count idiom as
+  `InventoryBalanceRepository`, because a read-then-write lets two concurrent deliveries through.
+- `MasterDataEventConsumer` → `MasterDataEventProcessor` → `InboxMessageService` → the handler. The
+  consumer never calls `MasterDataEventHandler` directly; the inbox decides whether it runs at all.
+- Recording, claiming, the handler and the `PROCESSED` mark share one transaction.
+  `InboxMessageService.recordFailure` is `REQUIRES_NEW` and must be called **after** that
+  transaction has finished (that is why `IdempotentMasterDataEventProcessor` is not transactional):
+  calling it from inside deadlocks on the row the outer transaction holds.
+- `payload` is `json`, not `jsonb`, so the stored bytes stay identical to what arrived and keep
+  matching `payload_hash`.
+
+`configuration/messaging` verifies the `messageSignature` header over the received bytes before the
+consumer uses the message (`app.messaging.signature.secret` — the same value as in
+`mto-configuration` — plus `.mode`: `DISABLED`/`OPTIONAL`/`REQUIRED`). A bad signature is always
+rejected to the DLQ; a message that *cannot* be verified (unsigned, or signed with an algorithm this
+side cannot compute because the secrets differ) is only rejected under `REQUIRED`. The default is
+`OPTIONAL` because `REQUIRED` with mismatched secrets sends every valid message to the DLQ.
+
+The message contract is owned by `mto-configuration` — check `docs/06-messaging.md` (and that
+repository's `README_MESSAGING.md`) before changing anything under `application/dto/messaging`.
+
 ### Testing
 
 - `PostgreSQLTestContainer` (in `support/`) is the shared base for integration tests needing a real Postgres (`postgres:16-alpine` via Testcontainers) with Flyway migrations applied — extend it rather than mocking the datasource for repository/persistence tests.
-- Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` (repositories), `MapperLayerTest` (mappers), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class.
+- Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` + `InboxMessageRepositoryDataJpaTest` (repositories), `InboxIdempotencyDataJpaTest` (inbox end to end on real Postgres), `MapperLayerTest` (mappers), `MessagingLayerTest` (RabbitMQ contract, consumer and topology), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class.

@@ -22,7 +22,10 @@ import lombok.ToString;
 @Entity
 @Table(
         name = "project",
-        uniqueConstraints = @UniqueConstraint(name = "uq_project_code", columnNames = "code"),
+        uniqueConstraints = {
+                @UniqueConstraint(name = "uq_project_code", columnNames = "code"),
+                @UniqueConstraint(name = "uq_project_source", columnNames = {"source_service", "source_entity_id"})
+        },
         indexes = @Index(name = "idx_project_active", columnList = "active")
 )
 @Getter
@@ -49,5 +52,38 @@ public class Project extends AuditableEntity {
     @Builder.Default
     @Column(name = "active", nullable = false)
     private Boolean active = true;
+
+    /**
+     * Servicio del que se sincroniza este proyecto, o {@code null} si se creó a mano por la API.
+     *
+     * <p>Junto con {@link #sourceEntityId} forma la clave por la que se reconoce el mismo origen en
+     * entregas sucesivas. No se usa {@link #code} para eso: los identificadores de
+     * {@code mto-configuration} son numéricos, y {@code code} es un identificador de negocio que la
+     * gente lee y escribe.</p>
+     */
+    @Size(max = 100)
+    @Column(name = "source_service", length = 100)
+    private String sourceService;
+
+    /** Identificador de la entidad en el servicio de origen, tal y como viaja en el evento. */
+    @Size(max = 100)
+    @Column(name = "source_entity_id", length = 100)
+    @ToString.Include
+    private String sourceEntityId;
+
+    /**
+     * Número de secuencia del último cambio aplicado desde el origen.
+     *
+     * <p>Es la marca de agua que descarta los eventos que llegan tarde. El emisor numera cada
+     * mensaje con una secuencia global y creciente, así que un evento con un número por debajo de
+     * éste describe un estado anterior al que ya está guardado y aplicarlo lo empeoraría.</p>
+     */
+    @Column(name = "source_sequence_number")
+    private Long sourceSequenceNumber;
+
+    /** Un proyecto sincronizado no se edita a mano: lo que se cambie aquí lo pisa el siguiente evento. */
+    public boolean isSynchronized() {
+        return sourceService != null;
+    }
 
 }
