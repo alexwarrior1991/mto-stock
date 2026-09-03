@@ -137,6 +137,35 @@ would be deciding up front that nothing the publisher sends — now or when it a
 sensitive. Field *names* do go to `INFO`: enough to see what is arriving, and not the data itself.
 Set `LOGGING_LEVEL_APP=DEBUG` (the default in `dev`) to see full payloads.
 
+Log lines carry the `traceId` and `spanId` of the trace the message belongs to, which is what lets a
+consumed message be tied back to the HTTP request that originally caused it — see below.
+
+## The trace crosses the queue
+
+A queue is the easiest place for a distributed trace to break: the publisher finishes its request and
+the consumer starts a fresh one minutes later, with nothing linking them.
+
+It does not break here. `mto-configuration` writes `traceparent`/`tracestate` into the AMQP headers
+when it publishes from its outbox, and this side continues that trace instead of opening a new one:
+
+```yaml
+spring:
+  rabbitmq:
+    listener:
+      simple:
+        observation-enabled: ${SPRING_RABBITMQ_LISTENER_OBSERVATION_ENABLED:true}
+```
+
+That property only takes effect because `masterDataRabbitListenerContainerFactory` runs through
+`SimpleRabbitListenerContainerFactoryConfigurer`. A factory declared by hand that skips the
+configurer silently discards the entire `spring.rabbitmq.listener.simple.*` block — retries, backoff
+and this line alike — which is the same trap `RabbitMqConfiguration` already documents for
+acknowledge-mode.
+
+So an operation that starts as `POST /api/configuration/...` at the gateway and ends up changing a
+`project` row here is **one** trace, queue hop included. See the *Distributed tracing* section of the
+README for the collector and the sampling settings.
+
 ## Failures and the dead letter queue
 
 | Failure | What happens |

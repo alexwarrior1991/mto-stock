@@ -131,6 +131,37 @@ services:
     networks:
       - mto-stock-network
 
+  # Colector de trazas y visor, todo en uno. Jaeger habla OTLP nativo, asi que no hace falta un
+  # OpenTelemetry Collector delante.
+  #
+  # Cada stack del dominio trae el suyo para poder levantarse solo, igual que cada uno trae su
+  # Keycloak. Cuando se levantan varios a la vez chocan en los mismos puertos del host -como ya
+  # chocan Postgres, RabbitMQ y Keycloak-, y eso es justo lo que hace que funcione: los tres
+  # servicios exportan a otel.mto.local:4318 resuelto por el host, de modo que el Jaeger que tenga
+  # el puerto recibe TODAS las trazas y la del gateway a este servicio se ve entera en un solo sitio.
+  jaeger:
+    image: jaegertracing/all-in-one:1.62
+    container_name: mto-stock-jaeger
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      # Interfaz web
+      - "${JAEGER_UI_PORT:-16686}:16686"
+      # Ingesta OTLP por HTTP, la que usan los servicios
+      - "${JAEGER_OTLP_HTTP_PORT:-4318}:4318"
+    # Sin volumen a proposito: las trazas de desarrollo viven en memoria y se pierden al parar el
+    # contenedor. Persistirlas pediria Elasticsearch o Cassandra detras, mucho aparato para mirar
+    # una traza mientras se depura.
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:16686"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - mto-stock-network
+
   app:
     build:
       context: .
@@ -171,6 +202,10 @@ services:
       MANAGEMENT_HEALTH_REDIS_ENABLED: ${MANAGEMENT_HEALTH_REDIS_ENABLED:-false}
       MESSAGING_SIGNATURE_SECRET: ${MESSAGING_SIGNATURE_SECRET:-}
       MESSAGING_SIGNATURE_MODE: ${MESSAGING_SIGNATURE_MODE:-OPTIONAL}
+      # El colector vive en el stack de mto-configuration y se alcanza por el host, igual que
+      # Keycloak. Asi una traza que empieza en mto-gateway y termina aqui se ve entera en un
+      # solo Jaeger en lugar de partida entre stacks.
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-http://otel.mto.local:4318/v1/traces}
       KEYCLOAK_ISSUER_URI: ${KEYCLOAK_ISSUER_URI:?KEYCLOAK_ISSUER_URI must be set}
       KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:?KEYCLOAK_CLIENT_ID must be set}
       KEYCLOAK_AUDIENCE: ${KEYCLOAK_AUDIENCE:?KEYCLOAK_AUDIENCE must be set}
@@ -188,6 +223,7 @@ services:
     # valida, asi que no vale apuntar a 'keycloak:8080' desde dentro de la red.
     extra_hosts:
       - "auth.mto.local:host-gateway"
+      - "otel.mto.local:host-gateway"
     ports:
       - "${APP_PORT:-8080}:${SERVER_PORT:-8080}"
     healthcheck:
