@@ -34,6 +34,18 @@ spring:
 
   # Sin valores por defecto a proposito: un broker mal configurado tiene que impedir el arranque en
   # lugar de dejar el servicio en marcha sin consumir nada, que es un fallo silencioso.
+  # Sin valores por defecto, igual que la base de datos y el broker: un despliegue al que se le
+  # olvide apuntar Redis debe no arrancar, en vez de arrancar en silencio contra un localhost que
+  # no existe y servirlo todo con un WARN por peticion.
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: ${SPRING_DATA_REDIS_PASSWORD:}
+      database: ${SPRING_DATA_REDIS_DATABASE:0}
+      timeout: ${SPRING_DATA_REDIS_TIMEOUT:500ms}
+      connect-timeout: ${SPRING_DATA_REDIS_CONNECT_TIMEOUT:500ms}
+
   rabbitmq:
     host: ${SPRING_RABBITMQ_HOST}
     port: ${SPRING_RABBITMQ_PORT:5672}
@@ -56,6 +68,9 @@ app:
     enabled: ${APP_RABBITMQ_ENABLED:true}
     master-data:
       listener-enabled: ${APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED:true}
+  cache:
+    enabled: ${APP_CACHE_ENABLED:true}
+    default-ttl: ${APP_CACHE_DEFAULT_TTL:30m}
 
 management:
   endpoint:

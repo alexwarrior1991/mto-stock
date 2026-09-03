@@ -40,6 +40,7 @@ import com.alejandro.mtostock.application.service.MasterDataEventHandler;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.ReservationEngine;
 import com.alejandro.mtostock.application.service.StockCalculationService;
+import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Assembly;
 import com.alejandro.mtostock.infrastructure.persistence.entity.AssemblyComponent;
 import com.alejandro.mtostock.infrastructure.persistence.entity.InventoryBalance;
@@ -1169,7 +1170,8 @@ class BusinessLayerTest {
                 materialRepository,
                 mock(MaterialMapper.class),
                 validationService,
-                mock(StockCalculationService.class)
+                mock(StockCalculationService.class),
+                mock(CacheInvalidator.class)
         );
 
         assertThrows(DuplicateCodeException.class, () -> service.create(createRequest));
@@ -1206,7 +1208,8 @@ class BusinessLayerTest {
                 materialRepository,
                 assemblyMapper,
                 validationService,
-                mock(BOMCalculationService.class)
+                mock(BOMCalculationService.class),
+                mock(CacheInvalidator.class)
         );
 
         service.create(request);
@@ -1519,7 +1522,7 @@ class BusinessLayerTest {
     @Test
     void executionPackageHandlerClaimsItsEntity() {
         assertEquals(MasterDataEntityNames.EXECUTION_PACKAGE,
-                new ExecutionPackageMasterDataHandler(mock(ProjectRepository.class)).entityName());
+                new ExecutionPackageMasterDataHandler(mock(ProjectRepository.class), mock(CacheInvalidator.class)).entityName());
     }
 
     /**
@@ -1530,7 +1533,7 @@ class BusinessLayerTest {
     void newExecutionPackageCreatesAProjectCodedAfterItsSourceId() {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
 
-        new ExecutionPackageMasterDataHandler(projectRepository).onCreated(executionPackage("42",
+        new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class)).onCreated(executionPackage("42",
                 Map.of("id", 42, "name", "Tramo Sants-Sagrera", "enabled", true)), CONTEXT);
 
         verify(projectRepository).upsertFromMasterData(
@@ -1545,7 +1548,7 @@ class BusinessLayerTest {
     void updatedExecutionPackageTakesTheSamePathAsACreatedOne() {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
 
-        new ExecutionPackageMasterDataHandler(projectRepository).onUpdated(executionPackage("42",
+        new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class)).onUpdated(executionPackage("42",
                 Map.of("id", 42, "name", "Tramo Sants-Sagrera (revisado)", "enabled", false)), CONTEXT);
 
         verify(projectRepository).upsertFromMasterData(
@@ -1561,7 +1564,7 @@ class BusinessLayerTest {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
         when(projectRepository.deactivateFromMasterData("mto-configuration", "42", 7L)).thenReturn(1);
 
-        new ExecutionPackageMasterDataHandler(projectRepository).onDeleted(executionPackage("42", Map.of()), CONTEXT);
+        new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class)).onDeleted(executionPackage("42", Map.of()), CONTEXT);
 
         verify(projectRepository).deactivateFromMasterData("mto-configuration", "42", 7L);
         verify(projectRepository, never()).delete(any());
@@ -1574,7 +1577,7 @@ class BusinessLayerTest {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
         when(projectRepository.deactivateFromMasterData("mto-configuration", "99", 7L)).thenReturn(0);
 
-        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
+        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class))
                 .onDeleted(executionPackage("99", Map.of()), CONTEXT));
     }
 
@@ -1583,7 +1586,7 @@ class BusinessLayerTest {
     void executionPackageWithoutEnabledFlagIsTreatedAsActive() {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
 
-        new ExecutionPackageMasterDataHandler(projectRepository).onCreated(executionPackage("42",
+        new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class)).onCreated(executionPackage("42",
                 Map.of("id", 42, "name", "Tramo Sants-Sagrera")), CONTEXT);
 
         verify(projectRepository).upsertFromMasterData(any(), any(), any(), any(), eq(true), any());
@@ -1593,7 +1596,7 @@ class BusinessLayerTest {
     @Test
     void executionPackageWithoutNameIsRejectedInsteadOfNamedAfterItsCode() {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
-        ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository);
+        ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class));
         MasterDataChangedMessage withoutName = executionPackage("42", Map.of("id", 42, "enabled", true));
 
         assertThrows(ValidationException.class, () -> handler.onCreated(withoutName, CONTEXT));
@@ -1604,7 +1607,7 @@ class BusinessLayerTest {
     @Test
     void executionPackageWithoutEntityIdIsRejected() {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
-        ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository);
+        ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class));
         MasterDataChangedMessage withoutId = executionPackage(" ", Map.of("name", "Tramo"));
 
         assertThrows(ValidationException.class, () -> handler.onCreated(withoutId, CONTEXT));
@@ -1621,7 +1624,7 @@ class BusinessLayerTest {
         ProjectRepository projectRepository = mock(ProjectRepository.class);
         when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), any()))
                 .thenThrow(new DataIntegrityViolationException("duplicate key value violates uq_project_code"));
-        ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository);
+        ExecutionPackageMasterDataHandler handler = new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class));
         MasterDataChangedMessage message = executionPackage("42", Map.of("name", "Tramo"));
 
         ValidationException exception = assertThrows(ValidationException.class, () -> handler.onCreated(message, CONTEXT));
@@ -1645,7 +1648,7 @@ class BusinessLayerTest {
         values.put("tracks", List.of(Map.of("id", 1, "name", "V1")));
         values.put("stations", List.of(Map.of("id", 2, "name", "Sants")));
 
-        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
+        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class))
                 .onCreated(executionPackage("42", values), CONTEXT));
 
         verify(projectRepository).upsertFromMasterData(
@@ -1663,7 +1666,7 @@ class BusinessLayerTest {
         when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), any()))
                 .thenReturn(0);
 
-        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
+        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class))
                 .onUpdated(executionPackage("42", Map.of("name", "Nombre viejo")),
                         new MasterDataEventContext(3L)));
     }
@@ -1675,7 +1678,7 @@ class BusinessLayerTest {
         when(projectRepository.findBySourceServiceAndSourceEntityId("mto-configuration", "42"))
                 .thenReturn(Optional.of(Project.builder().code("EP-42").name("Tramo").build()));
 
-        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository)
+        assertDoesNotThrow(() -> new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class))
                 .onDeleted(executionPackage("42", Map.of()), new MasterDataEventContext(3L)));
     }
 
@@ -1689,7 +1692,7 @@ class BusinessLayerTest {
         when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), isNull()))
                 .thenReturn(1);
 
-        new ExecutionPackageMasterDataHandler(projectRepository)
+        new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class))
                 .onCreated(executionPackage("42", Map.of("name", "Tramo")), new MasterDataEventContext(null));
 
         verify(projectRepository).upsertFromMasterData(

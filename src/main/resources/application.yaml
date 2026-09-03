@@ -12,6 +12,25 @@ spring:
         jwt:
           issuer-uri: ${KEYCLOAK_ISSUER_URI:http://auth.mto.local:8082/realms/mto}
 
+  # Conexion con Redis, que respalda la cache de datos maestros. Estos valores solo se usan si
+  # app.cache.enabled esta activo: con la cache apagada el CacheManager es un NoOp que no guarda
+  # nada y nadie abre una conexion, asi que la aplicacion arranca sin Redis.
+  data:
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6379}
+      password: ${SPRING_DATA_REDIS_PASSWORD:}
+      database: ${SPRING_DATA_REDIS_DATABASE:0}
+      # Cortos a proposito. El CacheErrorHandler hace que un Redis que no responde no rompa la
+      # peticion, pero no que no la retrase: el timeout es lo que acota ese retraso, y una cache
+      # que tarda mas que la consulta que evita no sirve para nada.
+      timeout: ${SPRING_DATA_REDIS_TIMEOUT:500ms}
+      connect-timeout: ${SPRING_DATA_REDIS_CONNECT_TIMEOUT:500ms}
+      # Este servicio no guarda entidades en Redis, solo respuestas ya serializadas: el escaneo de
+      # repositorios @RedisHash no tiene nada que encontrar y solo alarga el arranque.
+      repositories:
+        enabled: false
+
   # Este servicio solo CONSUME: no publica nada, asi que no hay publisher confirms ni returns que
   # configurar. Lo que hay debajo de listener.simple lo aplica Spring Boot a traves del
   # SimpleRabbitListenerContainerFactoryConfigurer; sin pasar por el, una factory declarada a mano
@@ -60,6 +79,11 @@ management:
   health:
     rabbit:
       enabled: ${MANAGEMENT_HEALTH_RABBIT_ENABLED:false}
+    # Fuera del health por el mismo motivo que RabbitMQ: la cache es una optimizacion, y un Redis
+    # caido no deja al servicio incapaz de atender peticiones -solo mas lento-. Contarlo como DOWN
+    # sacaria la instancia del balanceador por algo de lo que se recupera sola.
+    redis:
+      enabled: ${MANAGEMENT_HEALTH_REDIS_ENABLED:false}
   info:
     env:
       enabled: true
@@ -158,3 +182,20 @@ app:
       # mandaria a la DLQ todos los mensajes validos. Se pasa a REQUIRED cuando el secreto ya esta
       # repartido, que es como debe quedar en produccion.
       mode: ${MESSAGING_SIGNATURE_MODE:OPTIONAL}
+
+  # Cache de datos maestros en Redis: material, almacen, proveedor, conjunto y proyecto, por id.
+  #
+  # El stock NO se cachea a proposito. Cambia con cada movimiento y cada reserva, y ya tiene su
+  # propia optimizacion de lectura en inventory_balance; cachearlo encima solo anadiria una copia
+  # mas que mantener en hora.
+  cache:
+    # Apaga la cache: el CacheManager pasa a ser un NoOp, las anotaciones no guardan nada y nadie
+    # abre una conexion, asi que la aplicacion arranca sin Redis. Apagado por defecto
+    # -al reves que app.rabbitmq.enabled-
+    # porque la cache es una optimizacion, y el modo seguro de una optimizacion es no depender de
+    # una pieza mas de infraestructura mientras nadie la haya pedido.
+    enabled: ${APP_CACHE_ENABLED:false}
+    default-ttl: ${APP_CACHE_DEFAULT_TTL:30m}
+    # El Redis de un entorno local puede ser el mismo que usa mto-configuration: sin prefijo, una
+    # cache llamada 'projects' en los dos servicios seria la misma clave.
+    key-prefix: ${APP_CACHE_KEY_PREFIX:mto-stock:}

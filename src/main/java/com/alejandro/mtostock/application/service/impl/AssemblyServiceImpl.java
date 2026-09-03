@@ -10,6 +10,8 @@ import com.alejandro.mtostock.application.mapper.AssemblyMapper;
 import com.alejandro.mtostock.application.service.AssemblyService;
 import com.alejandro.mtostock.application.service.BOMCalculationService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
+import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
+import com.alejandro.mtostock.configuration.cache.CacheNames;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Assembly;
 import com.alejandro.mtostock.infrastructure.persistence.entity.AssemblyComponent;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
@@ -20,6 +22,7 @@ import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
@@ -42,6 +45,7 @@ class AssemblyServiceImpl implements AssemblyService {
     private final AssemblyMapper assemblyMapper;
     private final InventoryValidationService inventoryValidationService;
     private final BOMCalculationService bomCalculationService;
+    private final CacheInvalidator cacheInvalidator;
 
     @Override
     @Transactional
@@ -64,11 +68,13 @@ class AssemblyServiceImpl implements AssemblyService {
         attachManagedComponentMaterials(assembly);
         inventoryValidationService.validateAssemblyHasComponents(assembly);
         log.info("Assembly {} updated", assembly.getCode());
+        cacheInvalidator.evictAfterCommit(CacheNames.ASSEMBLIES, id);
         return assemblyMapper.toResponse(assembly);
     }
 
     @Override
     @Transactional(readOnly = true)
+    @Cacheable(cacheNames = CacheNames.ASSEMBLIES, key = "#id")
     public AssemblyResponse findById(UUID id) {
         return assemblyMapper.toResponse(assemblyRepository.findWithComponentsById(id).orElseThrow(() -> new NotFoundException("Assembly", id)));
     }
