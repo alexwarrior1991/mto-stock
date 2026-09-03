@@ -11,16 +11,19 @@ import com.alejandro.mtostock.application.dto.material.MaterialUpdateRequest;
 import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedEvent;
+import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
-import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
+import com.alejandro.mtostock.application.dto.project.ProjectUpdateRequest;
 import com.alejandro.mtostock.application.dto.stock.StockAdjustmentDirection;
 import com.alejandro.mtostock.application.dto.stock.StockMovementAdjustmentRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementEntryRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementOutputRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementTransferRequest;
+import com.alejandro.mtostock.application.dto.supplier.SupplierUpdateRequest;
 import com.alejandro.mtostock.application.dto.warehouse.WarehouseSummaryResponse;
+import com.alejandro.mtostock.application.dto.warehouse.WarehouseUpdateRequest;
 import com.alejandro.mtostock.application.exception.AssemblyException;
 import com.alejandro.mtostock.application.exception.DuplicateCodeException;
 import com.alejandro.mtostock.application.exception.InsufficientStockException;
@@ -30,17 +33,21 @@ import com.alejandro.mtostock.application.exception.ValidationException;
 import com.alejandro.mtostock.application.exception.WarehouseException;
 import com.alejandro.mtostock.application.mapper.AssemblyMapper;
 import com.alejandro.mtostock.application.mapper.MaterialMapper;
+import com.alejandro.mtostock.application.mapper.ProjectMapper;
 import com.alejandro.mtostock.application.mapper.StockMovementMapper;
+import com.alejandro.mtostock.application.mapper.SupplierMapper;
 import com.alejandro.mtostock.application.mapper.WarehouseMapper;
 import com.alejandro.mtostock.application.service.BOMCalculationService;
 import com.alejandro.mtostock.application.service.InboxMessageService;
 import com.alejandro.mtostock.application.service.InventoryBalanceService;
+import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.MasterDataEntityHandler;
 import com.alejandro.mtostock.application.service.MasterDataEventHandler;
-import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.ReservationEngine;
 import com.alejandro.mtostock.application.service.StockCalculationService;
+import com.alejandro.mtostock.application.service.TransferService;
 import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
+import com.alejandro.mtostock.configuration.cache.CacheNames;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Assembly;
 import com.alejandro.mtostock.infrastructure.persistence.entity.AssemblyComponent;
 import com.alejandro.mtostock.infrastructure.persistence.entity.InventoryBalance;
@@ -1697,6 +1704,149 @@ class BusinessLayerTest {
 
         verify(projectRepository).upsertFromMasterData(
                 "mto-configuration", "42", "EP-42", "Tramo", true, null);
+    }
+
+    /**
+     * La entrada del material cambiado se va, y con ella TODA la cache de conjuntos: AssemblyResponse
+     * lleva dentro un MaterialSummaryResponse por linea de la BOM -codigo, nombre, unidad y si esta
+     * activo-, asi que cambiar un material deja obsoleto cualquier conjunto que lo incluya. Desde
+     * aqui no se sabe cuales son: la BOM se navega del conjunto al material, no al reves.
+     */
+    @Test
+    void materialUpdateEvictsTheMaterialAndEveryCachedAssembly() {
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        CacheInvalidator cacheInvalidator = mock(CacheInvalidator.class);
+        Material material = material("MAT-1");
+        when(materialRepository.findById(material.getId())).thenReturn(Optional.of(material));
+        MaterialServiceImpl service = new MaterialServiceImpl(
+                materialRepository,
+                mock(MaterialMapper.class),
+                mock(InventoryValidationService.class),
+                mock(StockCalculationService.class),
+                cacheInvalidator
+        );
+
+        service.update(material.getId(), new MaterialUpdateRequest(
+                "MAT-1", "Copper wire", "m", BigDecimal.ZERO, true));
+
+        verify(cacheInvalidator).evictAfterCommit(CacheNames.MATERIALS, material.getId());
+        verify(cacheInvalidator).evictAllAfterCommit(CacheNames.ASSEMBLIES);
+    }
+
+    /** Cada uno se lleva por delante solo la entrada que cambia, que es la unica que puede estar rancia. */
+    @Test
+    void catalogueUpdatesEvictTheEntryTheyChange() {
+        WarehouseRepository warehouseRepository = mock(WarehouseRepository.class);
+        SupplierRepository supplierRepository = mock(SupplierRepository.class);
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        CacheInvalidator cacheInvalidator = mock(CacheInvalidator.class);
+        Warehouse warehouse = warehouse("WH-1");
+        Supplier supplier = supplier("SUP-1");
+        Project project = project("PRJ-1");
+        when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
+        when(supplierRepository.findById(supplier.getId())).thenReturn(Optional.of(supplier));
+        when(projectRepository.findById(project.getId())).thenReturn(Optional.of(project));
+
+        new WarehouseServiceImpl(
+                warehouseRepository,
+                mock(WarehouseMapper.class),
+                mock(StockMovementMapper.class),
+                mock(InventoryValidationService.class),
+                mock(StockCalculationService.class),
+                mock(TransferService.class),
+                cacheInvalidator
+        ).update(warehouse.getId(), new WarehouseUpdateRequest("WH-1", "Central", true));
+
+        new SupplierServiceImpl(
+                supplierRepository,
+                mock(SupplierMapper.class),
+                mock(InventoryValidationService.class),
+                cacheInvalidator
+        ).update(supplier.getId(), new SupplierUpdateRequest("SUP-1", "Cables SA", true));
+
+        new ProjectServiceImpl(
+                projectRepository,
+                mock(ProjectMapper.class),
+                mock(InventoryValidationService.class),
+                cacheInvalidator
+        ).update(project.getId(), new ProjectUpdateRequest("PRJ-1", "Tramo norte", true));
+
+        verify(cacheInvalidator).evictAfterCommit(CacheNames.WAREHOUSES, warehouse.getId());
+        verify(cacheInvalidator).evictAfterCommit(CacheNames.SUPPLIERS, supplier.getId());
+        verify(cacheInvalidator).evictAfterCommit(CacheNames.PROJECTS, project.getId());
+    }
+
+    /** Un alta no tiene ninguna entrada que invalidar: el id todavia no existe. */
+    @Test
+    void catalogueCreationsEvictNothing() {
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        MaterialMapper materialMapper = mock(MaterialMapper.class);
+        CacheInvalidator cacheInvalidator = mock(CacheInvalidator.class);
+        Material material = material("MAT-1");
+        when(materialMapper.toEntity(any(MaterialRequest.class))).thenReturn(material);
+        when(materialRepository.save(material)).thenReturn(material);
+
+        new MaterialServiceImpl(
+                materialRepository,
+                materialMapper,
+                mock(InventoryValidationService.class),
+                mock(StockCalculationService.class),
+                cacheInvalidator
+        ).create(new MaterialRequest("MAT-1", "Copper wire", "m", BigDecimal.ZERO));
+
+        verifyNoInteractions(cacheInvalidator);
+    }
+
+    /**
+     * Este handler es el segundo camino por el que cambia un project: escribe con SQL nativo sin
+     * pasar por ProjectService, asi que si no invalidase por su cuenta un proyecto renombrado desde
+     * mto-configuration se seguiria sirviendo viejo hasta que caducase el TTL.
+     *
+     * <p>Entera y no por clave porque el upsert devuelve cuantas filas toco, no el id.</p>
+     */
+    @Test
+    void executionPackageChangeEvictsTheProjectCache() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        CacheInvalidator cacheInvalidator = mock(CacheInvalidator.class);
+        when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), any())).thenReturn(1);
+
+        new ExecutionPackageMasterDataHandler(projectRepository, cacheInvalidator).onUpdated(executionPackage("42",
+                Map.of("id", 42, "name", "Tramo Sants-Sagrera", "enabled", true)), CONTEXT);
+
+        verify(cacheInvalidator).evictAllAfterCommit(CacheNames.PROJECTS);
+    }
+
+    /** La baja tambien cambia la fila -desactiva-, asi que tambien invalida. */
+    @Test
+    void executionPackageDeletionEvictsTheProjectCache() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        CacheInvalidator cacheInvalidator = mock(CacheInvalidator.class);
+        when(projectRepository.deactivateFromMasterData("mto-configuration", "42", 7L)).thenReturn(1);
+
+        new ExecutionPackageMasterDataHandler(projectRepository, cacheInvalidator)
+                .onDeleted(executionPackage("42", Map.of()), CONTEXT);
+
+        verify(cacheInvalidator).evictAllAfterCommit(CacheNames.PROJECTS);
+    }
+
+    /**
+     * Un evento que llega por detras de lo ya aplicado no toca ninguna fila, y entonces tampoco hay
+     * nada que invalidar: vaciar la cache ahi seria tirar entradas correctas por un cambio que la
+     * marca de agua acaba de descartar.
+     */
+    @Test
+    void executionPackageChangeThatTouchesNoRowLeavesTheProjectCacheAlone() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        CacheInvalidator cacheInvalidator = mock(CacheInvalidator.class);
+        when(projectRepository.upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), any())).thenReturn(0);
+        when(projectRepository.deactivateFromMasterData(any(), any(), any())).thenReturn(0);
+        ExecutionPackageMasterDataHandler handler =
+                new ExecutionPackageMasterDataHandler(projectRepository, cacheInvalidator);
+
+        handler.onUpdated(executionPackage("42", Map.of("id", 42, "name", "Tramo", "enabled", true)), CONTEXT);
+        handler.onDeleted(executionPackage("42", Map.of()), CONTEXT);
+
+        verify(cacheInvalidator, never()).evictAllAfterCommit(any());
     }
 
     private static MasterDataChangedMessage executionPackage(String entityId, Map<String, Object> values) {
