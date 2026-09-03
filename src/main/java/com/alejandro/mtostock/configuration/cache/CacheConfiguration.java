@@ -47,10 +47,22 @@ import java.util.Map;
  * <h2>Serialización</h2>
  *
  * <p>Un serializador <b>tipado por caché</b> en lugar del genérico. Cada caché guarda exactamente un
- * tipo conocido, así que no hace falta escribir el nombre de la clase dentro del JSON:
- * {@code GenericJacksonJsonRedisSerializer} activa <i>default typing</i> justo para poder
- * reconstruir un tipo que aquí ya se sabe, y eso convierte cualquier cosa escrita en Redis en un
- * vector de deserialización. Con el tipado, lo que queda en Redis es JSON limpio y legible.</p>
+ * tipo conocido, así que el tipo se sabe al configurar y no hay que deducirlo al leer. El genérico
+ * obliga a elegir entre dos males, y los dos se han comprobado:</p>
+ *
+ * <ul>
+ *   <li>construido sobre un {@code ObjectMapper} normal no guarda el tipo, y lo que vuelve de Redis
+ *       es un {@code LinkedHashMap}: un {@code ClassCastException} en <b>cada acierto de caché</b>,
+ *       es decir un 500 en produccion en cuanto la cache empieza a funcionar;</li>
+ *   <li>construido con <i>default typing</i> sí lo guarda, pero escribiendo el nombre de la clase
+ *       dentro de cada entrada: mover un {@code record} de paquete deja de ser un fallo de caché y
+ *       pasa a ser un fallo al leer, y el contenido de Redis se convierte en un vector de
+ *       deserialización para quien pueda escribir en él.</li>
+ * </ul>
+ *
+ * <p>Con el tipado no hay que elegir: el record vuelve entero y lo que queda en Redis es JSON plano
+ * y legible con un {@code GET} desde {@code redis-cli}. Lo comprueba {@code CacheRedisIT} contra un
+ * Redis real.</p>
  *
  * <p>Se parte del {@link JsonMapper} de la aplicación, el mismo que usa el canal de mensajería, para
  * no mantener dos configuraciones de Jackson que se separan con el tiempo.</p>
