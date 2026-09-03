@@ -33,10 +33,15 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  *
  * <h2>Con la caché apagada</h2>
  *
- * <p>El bean existe siempre, tenga o no la aplicación una caché detrás. Se pide el
- * {@link CacheManager} por {@link ObjectProvider} justo por eso: con {@code app.cache.enabled} en
- * {@code false} no hay ninguno en el contexto, y una dependencia normal impediría arrancar. Así los
- * servicios llaman a este colaborador sin preguntar, y sin caché las llamadas no hacen nada.</p>
+ * <p>El bean existe siempre, tenga o no la aplicación una caché detrás, para que los servicios
+ * llamen a este colaborador sin preguntar si la caché está encendida. Con
+ * {@code app.cache.enabled} en {@code false} el {@link CacheManager} del contexto es un
+ * {@code NoOpCacheManager}, así que las llamadas no hacen nada.</p>
+ *
+ * <p>Se pide por {@link ObjectProvider} y no como dependencia normal para el caso en el que no haya
+ * <b>ningún</b> {@code CacheManager}: un slice de test que no arrastre {@link CacheConfiguration}.
+ * Ahí una dependencia obligatoria impediría crear el bean, y con ella los servicios que dependen
+ * de él.</p>
  *
  * <p>Los fallos se registran y se tragan, por el mismo motivo que en {@link LoggingCacheErrorHandler}:
  * a estas alturas la escritura en Postgres ya está confirmada y no hay nada que deshacer, así que
