@@ -196,6 +196,12 @@ app:
     # una pieza mas de infraestructura mientras nadie la haya pedido.
     enabled: ${APP_CACHE_ENABLED:false}
     default-ttl: ${APP_CACHE_DEFAULT_TTL:30m}
-    # El Redis de un entorno local puede ser el mismo que usa mto-configuration: sin prefijo, una
-    # cache llamada 'projects' en los dos servicios seria la misma clave.
-    key-prefix: ${APP_CACHE_KEY_PREFIX:mto-stock:}
+    # Prefijo de las claves. La primera parte separa este servicio de mto-configuration, que en un
+    # entorno local puede compartir el mismo Redis: sin ella, una cache llamada 'projects' en los
+    # dos seria la misma clave.
+    #
+    # La 'v1' es la version del FORMATO y se sube al cambiar la forma de un DTO de respuesta
+    # cacheado. Anadir un campo a un record es el caso peligroso: la entrada vieja no lo trae, se
+    # construye con null y se sirve asi, sin error, hasta que expire el TTL. Subir la version deja
+    # huerfanas las entradas viejas -caducan solas- en vez de tener que vaciar Redis a mano.
+    key-prefix: ${APP_CACHE_KEY_PREFIX:mto-stock:v1:}

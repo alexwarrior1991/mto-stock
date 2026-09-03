@@ -63,7 +63,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 @Testcontainers(disabledWithoutDocker = true)
 class CacheRedisIT {
 
-    private static final String PREFIX = "mto-stock:";
+    /** Propio del test: lo que se comprueba es que el prefijo configurado se aplique, no cual es. */
+    private static final String PREFIX = "mto-stock-it:v1:";
 
     @Container
     private static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7-alpine")

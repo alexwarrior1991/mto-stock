@@ -252,6 +252,18 @@ class CacheLayerTest {
         });
     }
 
+    /**
+     * El prefijo por defecto lleva un segmento de version, y esto lo fija a proposito con un
+     * literal en vez de con la constante: la version es la unica proteccion contra el caso en que
+     * se anade un campo a un DTO cacheado, porque entonces la entrada vieja se deserializa con
+     * null en ese campo y se sirve asi, sin error, hasta que expire el TTL. Si alguien quita la
+     * version del prefijo, ese fallo silencioso vuelve y nada mas se daria cuenta.
+     */
+    @Test
+    void defaultKeyPrefixCarriesAFormatVersion() {
+        assertEquals("mto-stock:v1:", CacheProperties.DEFAULT_KEY_PREFIX);
+    }
+
     /** Una variable de entorno declarada y vacia es el caso normal de un despliegue a medio configurar. */
     @Test
     void blankOrMeaninglessCachePropertiesFallBackToTheContract() {

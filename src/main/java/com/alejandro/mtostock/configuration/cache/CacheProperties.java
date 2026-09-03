@@ -32,11 +32,26 @@ public record CacheProperties(
 
     /**
      * El prefijo lleva los dos puntos al final a propósito: es el separador que espera
-     * {@code redis-cli --scan} y el que agrupa las claves en cualquier visor. Importa porque el
-     * Redis de un entorno local puede ser el mismo que usa {@code mto-configuration}, y sin prefijo
-     * una caché llamada {@code projects} en los dos servicios sería la misma clave.
+     * {@code redis-cli --scan} y el que agrupa las claves en cualquier visor. La primera parte
+     * importa porque el Redis de un entorno local puede ser el mismo que usa
+     * {@code mto-configuration}, y sin prefijo una caché llamada {@code projects} en los dos
+     * servicios sería la misma clave.
+     *
+     * <p>La segunda parte —{@code v1}— es la versión del <b>formato</b> de lo que se guarda, y
+     * <b>se sube al cambiar la forma de un DTO de respuesta cacheado</b>. Lo que hay en Redis es el
+     * JSON del record, y las dos derivas no son igual de benignas:</p>
+     *
+     * <ul>
+     *   <li>quitar un campo es inofensivo: la propiedad de más en la entrada vieja se ignora;</li>
+     *   <li><b>añadir</b> uno no lo es: la entrada vieja no lo trae, el record se construye con
+     *       {@code null} ahí, y eso se sirve al cliente sin error y sin traza hasta que expire el
+     *       TTL.</li>
+     * </ul>
+     *
+     * <p>Subir la versión deja huérfanas las entradas del formato viejo —caducan solas— en lugar de
+     * obligar a vaciar Redis a mano en cada despliegue, que es justo lo que nadie recuerda hacer.</p>
      */
-    static final String DEFAULT_KEY_PREFIX = "mto-stock:";
+    static final String DEFAULT_KEY_PREFIX = "mto-stock:v1:";
 
     public CacheProperties {
         defaultTtl = defaultTtl == null || defaultTtl.isNegative() || defaultTtl.isZero()
