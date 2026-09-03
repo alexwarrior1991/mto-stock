@@ -14,6 +14,7 @@ import com.alejandro.mtostock.application.service.WarehouseService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import io.micrometer.tracing.Tracer;
 import org.springframework.test.context.bean.override.mockito.MockitoBean;
 
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -71,9 +72,27 @@ class MtoStockApplicationTests {
     @Autowired(required = false)
     private MasterDataEventHandler masterDataEventHandler;
 
+    /**
+     * El puente de trazado. No lo trae Actuator por si solo: depende de que
+     * {@code spring-boot-starter-opentelemetry} este en el classpath, y quitar esa dependencia no
+     * rompe ninguna compilacion. Sin ella este servicio vuelve a ser el eslabon que corta la traza
+     * que nace en mto-gateway, y no se enteraria nadie hasta buscar una traza y verla a medias.
+     *
+     * <p>No hace falta {@code @AutoConfigureTracing}: lo que Boot desactiva en los tests es la
+     * EXPORTACION de spans ({@code spring.test.tracing.export}), no el trazado, asi que el Tracer
+     * esta en el contexto igual y no se manda nada a un colector que no existe.</p>
+     */
+    @Autowired(required = false)
+    private Tracer tracer;
+
     @Test
     void contextLoads() {
         assertNotNull(masterDataEventHandler);
+    }
+
+    @Test
+    void elPuenteDeTrazadoEstaEnElContexto() {
+        assertNotNull(tracer);
     }
 
 }

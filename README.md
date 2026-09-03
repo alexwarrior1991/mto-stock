@@ -271,6 +271,51 @@ The application exposes Actuator endpoints for health, info, metrics and Prometh
 Health and info are public so orchestrators can probe them without a token. The rest requires
 `ops-metrics`, and anything that modifies state requires `ops-write`.
 
+## Distributed tracing
+
+`mto-stock` exports traces over **OTLP** using `spring-boot-starter-opentelemetry` — the Boot 4
+replacement for the `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp` pair. The same
+setup is in `mto-configuration` and `mto-gateway`, so a request can be followed end to end:
+
+```
+mto-gateway  →  mto-configuration  →  (RabbitMQ)  →  mto-stock
+```
+
+This service is the last link, and it is the one that used to break the chain: without the starter a
+trace reached its edge and stopped there.
+
+**The queue hop is traced too.** `mto-configuration` writes `traceparent`/`tracestate` into the AMQP
+headers when it publishes from its outbox, and this side continues that trace instead of starting a
+new one, via `spring.rabbitmq.listener.simple.observation-enabled`. That property only works because
+the listener factory goes through `SimpleRabbitListenerContainerFactoryConfigurer` — a hand-rolled
+factory that skips the configurer silently discards the whole `spring.rabbitmq.listener.simple.*`
+block, this line included (see `RabbitMqConfiguration`).
+
+| Variable | Default | What it does |
+|---|---|---|
+| `MTO_TRACING_ENABLED` | `true` | Turns tracing on and off |
+| `MTO_TRACING_SAMPLING_PROBABILITY` | `0.1` | Fraction of traces recorded |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | `http://localhost:4318/v1/traces` | Collector, HTTP OTLP |
+| `SPRING_RABBITMQ_LISTENER_OBSERVATION_ENABLED` | `true` | Continue the trace across the queue |
+
+Sampling at 10% does **not** break the chain between services: an unsampled span still propagates its
+`traceparent` with the `00` flag. Sampling everything in a service with real traffic is expensive and
+is almost never needed.
+
+The collector is a **Jaeger** all-in-one, reachable at http://localhost:16686. Each stack ships its
+own so it can be brought up alone — exactly like each one ships its own Keycloak — and they collide
+on the same host ports when several are up, just as Postgres, RabbitMQ and Keycloak already do.
+
+That collision is what makes it work. In Docker this service exports to `otel.mto.local:4318`,
+resolved through the host with `extra_hosts` (the same idiom already used for Keycloak via
+`auth.mto.local`), so whichever Jaeger holds the port receives **all** the spans and a trace that
+starts at the gateway and ends here is visible whole in one place. A collector reachable only inside
+each stack would leave every distributed trace split across viewers.
+
+OTLP **metrics** export stays off (`management.otlp.metrics.export.enabled: false`): the starter also
+drags in an OTLP metrics registry, and without that line the service would push metrics to a
+collector on top of exposing them at `/actuator/prometheus`.
+
 ## Running tests
 
 Run the full test suite with:

@@ -47,6 +47,12 @@ spring:
         # lanza. No hay ack manual porque no hay nada que confirmar a medias: el listener delega en
         # un unico manejador y no reparte el trabajo entre hilos.
         acknowledge-mode: auto
+        # Continua la traza que viaja en las cabeceras del mensaje. mto-configuration escribe
+        # traceparent/tracestate al publicar desde el outbox; sin esto, consumir abria una traza
+        # nueva y el salto por la cola quedaba como un corte en el medio. Funciona porque la
+        # factory pasa por el configurer: declarada a mano y sin el, esta linea se descartaria en
+        # silencio como el resto del bloque.
+        observation-enabled: ${SPRING_RABBITMQ_LISTENER_OBSERVATION_ENABLED:true}
         concurrency: ${SPRING_RABBITMQ_LISTENER_CONCURRENCY:1}
         max-concurrency: ${SPRING_RABBITMQ_LISTENER_MAX_CONCURRENCY:5}
         prefetch: ${SPRING_RABBITMQ_LISTENER_PREFETCH:10}
@@ -87,6 +93,27 @@ management:
   info:
     env:
       enabled: true
+
+  # Trazabilidad distribuida. Este servicio es el ultimo eslabon: la traza nace en mto-gateway,
+  # pasa por mto-configuration -y por la cola, ver spring.rabbitmq.listener.simple arriba- y termina
+  # aqui. Mismos valores que los otros dos servicios, a proposito.
+  tracing:
+    enabled: ${MTO_TRACING_ENABLED:true}
+    sampling:
+      # Muestrear el 100% en un servicio con trafico real es caro y casi nunca hace falta. Ojo: un
+      # span NO muestreado sigue propagando su traceparent (con el flag a 00), asi que la cadena
+      # entre servicios no se rompe por muestrear poco.
+      probability: ${MTO_TRACING_SAMPLING_PROBABILITY:0.1}
+
+  otlp:
+    tracing:
+      endpoint: ${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:http://localhost:4318/v1/traces}
+    metrics:
+      export:
+        # Las metricas salen por Prometheus (ver /actuator/prometheus). El starter de OpenTelemetry
+        # arrastra tambien un registro OTLP de metricas, y sin esto intentaria empujarlas a un
+        # colector ademas de exponerlas.
+        enabled: false
 
 info:
   app:
