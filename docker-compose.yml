@@ -50,6 +50,43 @@ services:
     networks:
       - mto-stock-network
 
+  # Cache de datos maestros. No guarda nada que no este en PostgreSQL: si este contenedor no
+  # existe, con APP_CACHE_ENABLED=false la aplicacion funciona exactamente igual, solo que
+  # consultando siempre la base de datos.
+  redis:
+    image: redis:7-alpine
+    container_name: mto-stock-redis
+    restart: unless-stopped
+    # maxmemory-policy no es un ajuste fino: con el valor por defecto (noeviction) un Redis lleno
+    # rechaza toda escritura con un error de memoria. El CacheErrorHandler se lo tragaria en
+    # silencio y quedaria una cache que ya no cachea y que no se recupera sola. Con allkeys-lru
+    # tira lo que menos se usa, que es lo que se espera de una cache.
+    command: >-
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+      --maxmemory ${REDIS_MAXMEMORY:-256mb}
+      --maxmemory-policy allkeys-lru
+      --appendonly no
+      --save 300 1
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    # El volumen no es durabilidad -una cache perdida se rellena sola-, sino evitar el arranque en
+    # frio tras un 'docker compose restart'.
+    volumes:
+      - redis_data:/data
+    # Un socket abierto en el 6379 no dice que Redis acepte comandos: con requirepass, un PING sin
+    # autenticar responde error. Se sondea autenticado.
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli --no-auth-warning -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - mto-stock-network
+
   keycloak:
     image: quay.io/keycloak/keycloak:26.1
     container_name: mto-stock-keycloak
@@ -106,6 +143,8 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+      redis:
+        condition: service_healthy
       keycloak:
         condition: service_healthy
     environment:
@@ -122,6 +161,14 @@ services:
       SPRING_RABBITMQ_VIRTUAL_HOST: ${SPRING_RABBITMQ_VIRTUAL_HOST:-/}
       APP_RABBITMQ_ENABLED: ${APP_RABBITMQ_ENABLED:-true}
       APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED: ${APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED:-true}
+      SPRING_DATA_REDIS_HOST: ${SPRING_DATA_REDIS_HOST:-redis}
+      SPRING_DATA_REDIS_PORT: ${SPRING_DATA_REDIS_PORT:-6379}
+      SPRING_DATA_REDIS_PASSWORD: ${SPRING_DATA_REDIS_PASSWORD:?SPRING_DATA_REDIS_PASSWORD must be set}
+      SPRING_DATA_REDIS_DATABASE: ${SPRING_DATA_REDIS_DATABASE:-0}
+      APP_CACHE_ENABLED: ${APP_CACHE_ENABLED:-true}
+      APP_CACHE_DEFAULT_TTL: ${APP_CACHE_DEFAULT_TTL:-30m}
+      APP_CACHE_KEY_PREFIX: ${APP_CACHE_KEY_PREFIX:-mto-stock:v1:}
+      MANAGEMENT_HEALTH_REDIS_ENABLED: ${MANAGEMENT_HEALTH_REDIS_ENABLED:-false}
       MESSAGING_SIGNATURE_SECRET: ${MESSAGING_SIGNATURE_SECRET:-}
       MESSAGING_SIGNATURE_MODE: ${MESSAGING_SIGNATURE_MODE:-OPTIONAL}
       KEYCLOAK_ISSUER_URI: ${KEYCLOAK_ISSUER_URI:?KEYCLOAK_ISSUER_URI must be set}
@@ -155,6 +202,7 @@ services:
 volumes:
   postgres_data:
   rabbitmq_data:
+  redis_data:
 
 networks:
   mto-stock-network:

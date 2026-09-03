@@ -45,6 +45,12 @@ app:
     master-data:
       listener-enabled: ${APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED:true}
 
+  # Apagada tambien en desarrollo: levantar un Redis no puede ser requisito para arrancar la API en
+  # local. Se enciende a mano -APP_CACHE_ENABLED=true, con el redis del docker-compose- cuando se
+  # quiera probar la cache.
+  cache:
+    enabled: ${APP_CACHE_ENABLED:false}
+
 management:
   endpoint:
     health:

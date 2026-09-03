@@ -8,12 +8,15 @@ import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.mapper.SupplierMapper;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.SupplierService;
+import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
+import com.alejandro.mtostock.configuration.cache.CacheNames;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Supplier;
 import com.alejandro.mtostock.infrastructure.persistence.repository.SupplierRepository;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,6 +36,7 @@ class SupplierServiceImpl implements SupplierService {
     private final SupplierRepository supplierRepository;
     private final SupplierMapper supplierMapper;
     private final InventoryValidationService inventoryValidationService;
+    private final CacheInvalidator cacheInvalidator;
 
     @Override
     @Transactional
@@ -50,11 +54,13 @@ class SupplierServiceImpl implements SupplierService {
         inventoryValidationService.validateSupplierCodeIsUnique(request.code(), id);
         supplierMapper.updateEntity(request, supplier);
         log.info("Supplier {} updated", supplier.getCode());
+        cacheInvalidator.evictAfterCommit(CacheNames.SUPPLIERS, id);
         return supplierMapper.toResponse(supplier);
     }
 
     @Override
     @Transactional(readOnly = true)
+    @Cacheable(cacheNames = CacheNames.SUPPLIERS, key = "#id")
     public SupplierResponse findById(UUID id) {
         return supplierMapper.toResponse(supplierRepository.findById(id).orElseThrow(() -> new NotFoundException("Supplier", id)));
     }

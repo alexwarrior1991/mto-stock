@@ -14,6 +14,8 @@ import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.StockCalculationService;
 import com.alejandro.mtostock.application.service.TransferService;
 import com.alejandro.mtostock.application.service.WarehouseService;
+import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
+import com.alejandro.mtostock.configuration.cache.CacheNames;
 import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovement;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
 import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRepository;
@@ -21,6 +23,7 @@ import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,6 +47,7 @@ class WarehouseServiceImpl implements WarehouseService {
     private final InventoryValidationService inventoryValidationService;
     private final StockCalculationService stockCalculationService;
     private final TransferService transferService;
+    private final CacheInvalidator cacheInvalidator;
 
     @Override
     @Transactional
@@ -61,11 +65,13 @@ class WarehouseServiceImpl implements WarehouseService {
         inventoryValidationService.validateWarehouseCodeIsUnique(request.code(), id);
         warehouseMapper.updateEntity(request, warehouse);
         log.info("Warehouse {} updated", warehouse.getCode());
+        cacheInvalidator.evictAfterCommit(CacheNames.WAREHOUSES, id);
         return warehouseMapper.toResponse(warehouse);
     }
 
     @Override
     @Transactional(readOnly = true)
+    @Cacheable(cacheNames = CacheNames.WAREHOUSES, key = "#id")
     public WarehouseResponse findById(UUID id) {
         return warehouseMapper.toResponse(warehouseRepository.findById(id).orElseThrow(() -> new NotFoundException("Warehouse", id)));
     }

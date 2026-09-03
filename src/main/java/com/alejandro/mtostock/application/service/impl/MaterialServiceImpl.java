@@ -10,6 +10,8 @@ import com.alejandro.mtostock.application.mapper.MaterialMapper;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.MaterialService;
 import com.alejandro.mtostock.application.service.StockCalculationService;
+import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
+import com.alejandro.mtostock.configuration.cache.CacheNames;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
 import com.alejandro.mtostock.infrastructure.persistence.repository.MaterialRepository;
 import com.alejandro.mtostock.infrastructure.persistence.specification.MaterialSpecification;
@@ -17,6 +19,7 @@ import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
@@ -38,6 +41,7 @@ class MaterialServiceImpl implements MaterialService {
     private final MaterialMapper materialMapper;
     private final InventoryValidationService inventoryValidationService;
     private final StockCalculationService stockCalculationService;
+    private final CacheInvalidator cacheInvalidator;
 
     @Override
     @Transactional
@@ -55,11 +59,19 @@ class MaterialServiceImpl implements MaterialService {
         inventoryValidationService.validateMaterialCodeIsUnique(request.code(), id);
         materialMapper.updateEntity(request, material);
         log.info("Material {} updated", material.getCode());
+        cacheInvalidator.evictAfterCommit(CacheNames.MATERIALS, id);
+        // AssemblyResponse lleva dentro un MaterialSummaryResponse por cada linea de la BOM, con el
+        // codigo, el nombre, la unidad y si esta activo. Cambiar un material deja obsoleta cualquier
+        // respuesta de conjunto que lo incluya, y desde aqui no se sabe cuales son: la BOM se navega
+        // del conjunto al material, no al reves. Vaciar la cache de conjuntos es barato -son pocos y
+        // se actualizan poco- y es la unica forma de no servir una BOM con el nombre viejo.
+        cacheInvalidator.evictAllAfterCommit(CacheNames.ASSEMBLIES);
         return materialMapper.toResponse(material);
     }
 
     @Override
     @Transactional(readOnly = true)
+    @Cacheable(cacheNames = CacheNames.MATERIALS, key = "#id")
     public MaterialResponse findById(UUID id) {
         return materialMapper.toResponse(materialRepository.findById(id).orElseThrow(() -> new NotFoundException("Material", id)));
     }

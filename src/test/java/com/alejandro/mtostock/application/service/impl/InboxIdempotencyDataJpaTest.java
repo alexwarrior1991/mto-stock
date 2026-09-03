@@ -9,6 +9,7 @@ import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
 import com.alejandro.mtostock.application.service.InboxMessageService;
 import com.alejandro.mtostock.application.service.MasterDataEventHandler;
+import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
 import com.alejandro.mtostock.infrastructure.persistence.entity.InboxMessage;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
 import com.alejandro.mtostock.infrastructure.persistence.entity.InboxMessageStatus;
@@ -32,6 +33,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import static org.mockito.Mockito.mock;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -132,7 +134,7 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
     void twoDeliveriesOfAnExecutionPackageLeaveASingleSynchronizedProject() {
         InboxMessageService inbox = new InboxMessageServiceImpl(inboxMessageRepository);
         MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(
-                List.of(new ExecutionPackageMasterDataHandler(projectRepository)));
+                List.of(new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class))));
         MasterDataChangedMessage message = executionPackageCreated();
 
         inbox.process(command(), () -> dispatcher.handle(message, new MasterDataEventContext(10L)));
@@ -156,7 +158,7 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
     void aCantileverChangeIsRecordedInTheInboxAndTouchesNoProject() {
         InboxMessageService inbox = new InboxMessageServiceImpl(inboxMessageRepository);
         MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(
-                List.of(new ExecutionPackageMasterDataHandler(projectRepository)));
+                List.of(new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class))));
         MasterDataChangedMessage cantilever = new MasterDataChangedMessage(
                 UUID.fromString(MESSAGE_ID), "cantilever-7", "mto-configuration", Instant.now(),
                 "MASTER_DATA_CANTILEVER_UPDATED",

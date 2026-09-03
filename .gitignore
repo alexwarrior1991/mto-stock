@@ -31,3 +31,9 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Redis ###
+# Volcado que redis-server deja en el directorio desde el que se lanza. El de docker-compose vive
+# en su volumen, pero un redis-server arrancado a mano para probar la cache escribe aqui.
+dump.rdb
+*.rdb

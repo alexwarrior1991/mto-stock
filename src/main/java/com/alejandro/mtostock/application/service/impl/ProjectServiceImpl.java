@@ -8,12 +8,15 @@ import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.mapper.ProjectMapper;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.ProjectService;
+import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
+import com.alejandro.mtostock.configuration.cache.CacheNames;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepository;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,6 +36,7 @@ class ProjectServiceImpl implements ProjectService {
     private final ProjectRepository projectRepository;
     private final ProjectMapper projectMapper;
     private final InventoryValidationService inventoryValidationService;
+    private final CacheInvalidator cacheInvalidator;
 
     @Override
     @Transactional
@@ -50,11 +54,13 @@ class ProjectServiceImpl implements ProjectService {
         inventoryValidationService.validateProjectCodeIsUnique(request.code(), id);
         projectMapper.updateEntity(request, project);
         log.info("Project {} updated", project.getCode());
+        cacheInvalidator.evictAfterCommit(CacheNames.PROJECTS, id);
         return projectMapper.toResponse(project);
     }
 
     @Override
     @Transactional(readOnly = true)
+    @Cacheable(cacheNames = CacheNames.PROJECTS, key = "#id")
     public ProjectResponse findById(UUID id) {
         return projectMapper.toResponse(projectRepository.findById(id).orElseThrow(() -> new NotFoundException("Project", id)));
     }

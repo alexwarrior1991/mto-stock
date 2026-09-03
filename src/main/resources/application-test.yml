@@ -39,6 +39,12 @@ app:
     master-data:
       listener-enabled: ${APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED:false}
 
+  # Los tests tampoco dependen de un Redis real. Va explicito aunque el valor por defecto de
+  # application.yaml ya sea false: deja escrito que la suite no necesita cache, y no se rompe si
+  # algun dia se enciende por defecto.
+  cache:
+    enabled: ${APP_CACHE_ENABLED:false}
+
 management:
   endpoint:
     health:

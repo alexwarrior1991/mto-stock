@@ -6,6 +6,8 @@ import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
 import com.alejandro.mtostock.application.exception.ValidationException;
 import com.alejandro.mtostock.application.service.MasterDataEntityHandler;
+import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
+import com.alejandro.mtostock.configuration.cache.CacheNames;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepository;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -45,6 +47,21 @@ import java.util.Map;
  * <p>Un evento sin número de secuencia se aplica igualmente. No se puede saber que sea viejo, y
  * rechazarlo dejaría el servicio sin consumir nada si el emisor dejara de enviar la cabecera.</p>
  *
+ * <h2>Caché</h2>
+ *
+ * <p>Este es el segundo camino por el que cambia un {@code project}: el primero es
+ * {@code ProjectService}, que invalida su propia entrada. Aquí se escribe con SQL nativo sin pasar
+ * por ese servicio, así que sin invalidar a mano un proyecto renombrado o dado de baja desde
+ * {@code mto-configuration} se seguiría sirviendo viejo desde la caché hasta que expirase el TTL.</p>
+ *
+ * <p>Se tira la caché <b>entera</b> y no una entrada: las sentencias de {@code ProjectRepository}
+ * devuelven un contador de filas, no el proyecto tocado, así que no hay clave que invalidar. Son
+ * eventos poco frecuentes y el coste es un puñado de fallos de caché.</p>
+ *
+ * <p>Y se hace después del <i>commit</i> de la transacción del inbox, no al vuelo: si el mensaje
+ * acaba fallando y la transacción se deshace, una invalidación inmediata ya habría tirado la caché
+ * por un cambio que no se llegó a aplicar.</p>
+ *
  * <h2>Identidad</h2>
  *
  * <p>El proyecto se reconoce por {@code (source_service, source_entity_id)} y no por su código. El
@@ -68,6 +85,7 @@ class ExecutionPackageMasterDataHandler implements MasterDataEntityHandler {
     private static final int MAX_SOURCE_ENTITY_ID_LENGTH = 100;
 
     private final ProjectRepository projectRepository;
+    private final CacheInvalidator cacheInvalidator;
 
     @Override
     public String entityName() {
@@ -104,6 +122,7 @@ class ExecutionPackageMasterDataHandler implements MasterDataEntityHandler {
         LOGGER.info("Project deactivated after its execution package was deleted: sourceEntityId={}, code={}, "
                         + "sequenceNumber={}",
                 sourceEntityId, projectCode(sourceEntityId), context.sequenceNumber());
+        cacheInvalidator.evictAllAfterCommit(CacheNames.PROJECTS);
     }
 
     private void synchronizeProject(MasterDataChangedMessage message, MasterDataEventContext context) {
@@ -138,6 +157,7 @@ class ExecutionPackageMasterDataHandler implements MasterDataEntityHandler {
         LOGGER.info("Project synchronized from execution package: sourceEntityId={}, code={}, active={}, "
                         + "sequenceNumber={}",
                 sourceEntityId, code, active, context.sequenceNumber());
+        cacheInvalidator.evictAllAfterCommit(CacheNames.PROJECTS);
     }
 
     /**

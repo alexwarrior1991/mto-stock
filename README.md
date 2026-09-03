@@ -32,6 +32,12 @@ Main variables:
 - `APP_RABBITMQ_ENABLED`: declare the messaging topology and wire the consumer; `false` starts the application without a broker
 - `APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED`: consume from the queue; `false` still declares it, so events accumulate
 - `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`, `RABBITMQ_PORT`, `RABBITMQ_MANAGEMENT_PORT`: the RabbitMQ container of the local Compose stack
+- `SPRING_DATA_REDIS_HOST`, `SPRING_DATA_REDIS_PORT`, `SPRING_DATA_REDIS_PASSWORD`, `SPRING_DATA_REDIS_DATABASE`: Redis backing the master data cache
+- `APP_CACHE_ENABLED`: cache master data reads in Redis; `false` starts the application without Redis and serves everything from the database
+- `APP_CACHE_DEFAULT_TTL`: how long a cached entry lives (default `30m`)
+- `APP_CACHE_KEY_PREFIX`: namespace of the cache keys (default `mto-stock:v1:`); **bump the version segment when the shape of a cached response DTO changes**
+- `MANAGEMENT_HEALTH_REDIS_ENABLED`: include Redis in `/actuator/health`; off by default, like RabbitMQ, because an unreachable cache does not stop the API from serving
+- `REDIS_PASSWORD`, `REDIS_PORT`, `REDIS_MAXMEMORY`: the Redis container of the local Compose stack
 
 ## Spring profiles
 
@@ -70,9 +76,13 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The Compose stack starts PostgreSQL, Keycloak, RabbitMQ and the application on a dedicated Docker network, keeps PostgreSQL and RabbitMQ data in the `postgres_data` and `rabbitmq_data` volumes, and waits for every dependency health check before starting the API.
+The Compose stack starts PostgreSQL, Keycloak, RabbitMQ, Redis and the application on a dedicated Docker network, keeps their data in the `postgres_data`, `rabbitmq_data` and `redis_data` volumes, and waits for every dependency health check before starting the API.
 
 RabbitMQ publishes AMQP on `5672` and its management UI on <http://localhost:15672>. If the broker of `mto-configuration` is already running, comment the `rabbitmq` service out and point `SPRING_RABBITMQ_HOST` at it instead of starting a second one: it is the same exchange and the same queues.
+
+Redis publishes on `6379` and holds nothing that is not already in PostgreSQL, so it is the one
+service of the stack you can drop: comment it out, set `APP_CACHE_ENABLED=false`, and the API
+behaves exactly as it did before the cache existed, only querying the database every time.
 
 Useful commands:
 
@@ -117,6 +127,32 @@ application starts without a broker) or keep the topology and stop consuming wit
 See `docs/06-messaging.md` for the message contract, the full variable list, how the inbox behaves
 on duplicates and failures, how to publish a test message from the management UI, and where to add
 the business logic.
+
+## Caching
+
+Reads of the five master data entities by id -- material, warehouse, supplier, assembly (with its
+BOM inside) and project -- are cached in Redis. Everything else is not, and stock least of all: it
+changes with every movement and every reservation, and it already has its own read optimization in
+the `inventory_balance` projection.
+
+The cache is optional and off by default (`prod` turns it on). With `app.cache.enabled=false` the
+`CacheManager` is a no-op, nobody opens a connection, and the application starts without Redis. A
+Redis that falls over while the application is running does not break it either: the failure is
+logged and the call goes to the database, which is the whole point of a cache holding data that
+lives in PostgreSQL.
+
+Entries are invalidated **after the transaction that changed the row commits**, not when the
+writing method returns. Between those two instants a concurrent read would otherwise refill the
+cache with the value that is still committed, and leave it there until the TTL expired.
+
+Two things are worth knowing before changing a cached response DTO:
+
+- Each cache serializes exactly one known type, so what Redis holds is plain JSON, readable with
+  `redis-cli GET` and with no type marker in it.
+- **Adding** a field to one of those records makes entries written by the previous version
+  deserialize with `null` in it, and that is served without any error until the TTL expires. Bump
+  the version segment of `APP_CACHE_KEY_PREFIX` in the same deployment: the old entries are then
+  orphaned and expire on their own, instead of having to flush Redis by hand.
 
 ## Database migrations
 

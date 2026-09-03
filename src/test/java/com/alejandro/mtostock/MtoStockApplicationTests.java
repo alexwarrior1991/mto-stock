@@ -24,7 +24,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
         // El contexto se monta con el perfil por defecto (dev), donde el canal de RabbitMQ esta
         // activo. Aqui se apaga porque no hay broker: el cableado del canal se comprueba en
         // MessagingLayerTest, que no necesita ninguno.
-        "app.rabbitmq.enabled=false"
+        "app.rabbitmq.enabled=false",
+        // La cache ya viene apagada por defecto, pero va explicito por el mismo motivo que la linea
+        // de arriba: deja escrito que este contexto no necesita Redis, y no se rompe el dia que
+        // alguien la encienda por defecto.
+        "app.cache.enabled=false"
 })
 class MtoStockApplicationTests {
 
