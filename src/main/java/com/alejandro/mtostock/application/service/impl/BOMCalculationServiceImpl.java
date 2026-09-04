@@ -18,7 +18,6 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRep
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,7 +31,6 @@ import java.util.UUID;
  * Calculates virtual assembly availability from BOM component requirements and material stock.
  */
 @Service
-@ConditionalOnBean(AssemblyRepository.class)
 @RequiredArgsConstructor
 class BOMCalculationServiceImpl implements BOMCalculationService {
 

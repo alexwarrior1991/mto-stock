@@ -8,7 +8,6 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.InboxMessage
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
@@ -30,7 +29,6 @@ import org.springframework.transaction.annotation.Transactional;
  * porque una de las dos no espera un bloqueo sino una llamada.</p>
  */
 @Service
-@ConditionalOnBean(InboxMessageRepository.class)
 @RequiredArgsConstructor
 class InboxMessageServiceImpl implements InboxMessageService {
 

@@ -15,7 +15,6 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.SupplierRepo
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -27,7 +26,6 @@ import java.util.UUID;
  * Orchestrates supplier catalogue use cases without embedding inventory rules.
  */
 @Service
-@ConditionalOnBean(SupplierRepository.class)
 @RequiredArgsConstructor
 class SupplierServiceImpl implements SupplierService {
 

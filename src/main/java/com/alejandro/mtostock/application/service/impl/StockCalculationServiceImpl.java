@@ -13,7 +13,6 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.MaterialRepo
 import com.alejandro.mtostock.infrastructure.persistence.repository.StockMovementRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,7 +25,6 @@ import java.util.UUID;
  * Calculates current inventory balances from the balance projection and historical stock from movements.
  */
 @Service
-@ConditionalOnBean(StockMovementRepository.class)
 @RequiredArgsConstructor
 class StockCalculationServiceImpl implements StockCalculationService {
 

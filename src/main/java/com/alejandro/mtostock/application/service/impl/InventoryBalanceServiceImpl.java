@@ -9,7 +9,6 @@ import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
 import com.alejandro.mtostock.infrastructure.persistence.repository.InventoryBalanceRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.data.domain.AuditorAware;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,7 +20,6 @@ import java.util.UUID;
  * Coordinates atomic inventory balance updates and translates failed updates into business errors.
  */
 @Service
-@ConditionalOnBean(InventoryBalanceRepository.class)
 @RequiredArgsConstructor
 class InventoryBalanceServiceImpl implements InventoryBalanceService {
 

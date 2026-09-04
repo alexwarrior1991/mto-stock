@@ -14,7 +14,6 @@ import com.alejandro.mtostock.infrastructure.persistence.entity.ReservationStatu
 import com.alejandro.mtostock.infrastructure.persistence.repository.ReservationRepository;
 import com.alejandro.mtostock.infrastructure.persistence.specification.ReservationSpecification;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
@@ -27,7 +26,6 @@ import java.util.UUID;
  * Orchestrates reservation use cases through the dedicated reservation engine.
  */
 @Service
-@ConditionalOnBean(ReservationRepository.class)
 @RequiredArgsConstructor
 class ReservationServiceImpl implements ReservationService {
 

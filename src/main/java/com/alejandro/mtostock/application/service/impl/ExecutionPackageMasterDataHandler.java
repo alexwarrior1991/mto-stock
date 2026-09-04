@@ -12,7 +12,6 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepos
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 
@@ -70,7 +69,6 @@ import java.util.Map;
  * entre entregas en lugar de depender del nombre, que sí cambia.</p>
  */
 @Service
-@ConditionalOnBean(ProjectRepository.class)
 @RequiredArgsConstructor
 class ExecutionPackageMasterDataHandler implements MasterDataEntityHandler {
 

@@ -11,7 +11,6 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.InboxMessage
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Service;
 
 /**
@@ -27,7 +26,6 @@ import org.springframework.stereotype.Service;
  * ha aplicado.</p>
  */
 @Service
-@ConditionalOnBean(InboxMessageRepository.class)
 @RequiredArgsConstructor
 class IdempotentMasterDataEventProcessor implements MasterDataEventProcessor {
 
