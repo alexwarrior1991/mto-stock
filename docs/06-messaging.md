@@ -107,17 +107,25 @@ APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED=false ./mvnw spring-boot:run
 
 ## Running it locally
 
-RabbitMQ is part of the Compose stack (`rabbitmq:4-management-alpine`, AMQP on `5672`, management UI
-on `15672`, credentials from `RABBITMQ_DEFAULT_USER` / `RABBITMQ_DEFAULT_PASS`):
+**There is one broker, and it lives in
+[`mto-platform`](https://github.com/alexwarrior1991/mto-platform).**
+
+This used to be the sharpest trap in the whole channel. Each repository brought up its own
+RabbitMQ, so starting both stacks as they came meant `mto-configuration` published to one broker
+and this service consumed from another. The exchange declared fine, the queue declared fine, the
+consumer waited fine — and no message ever arrived. Nothing logged an error, because from each
+side everything was working. It was documented here and left for the reader to avoid; now the
+shared environment simply makes it impossible.
 
 ```bash
+cd ../mto-platform
 cp .env.example .env      # then edit the credentials
-docker compose up --build
+docker compose --profile all up -d
 ```
 
-If `mto-configuration`'s broker is already running, comment the `rabbitmq` service out and point
-`SPRING_RABBITMQ_HOST` at it instead of starting a second one: it is the same exchange and the same
-queues.
+RabbitMQ publishes AMQP on `5672` and its management UI on `15672`, with the credentials in the
+platform's `.env` (`RABBITMQ_USER` / `RABBITMQ_PASSWORD`). Both services connect with the same
+user.
 
 To publish a test message by hand, open <http://localhost:15672>, go to *Exchanges →
 `mto.master-data.exchange` → Publish message*, set the routing key to

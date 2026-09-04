@@ -15,7 +15,6 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRep
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -26,7 +25,6 @@ import java.util.List;
  * Creates paired stock movements for atomic warehouse transfers.
  */
 @Service
-@ConditionalOnBean(StockMovementRepository.class)
 @RequiredArgsConstructor
 class TransferServiceImpl implements TransferService {
 

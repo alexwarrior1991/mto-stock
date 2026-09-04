@@ -22,7 +22,6 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRep
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
@@ -35,7 +34,6 @@ import java.util.UUID;
  * Orchestrates warehouse catalogue use cases and delegates stock movements to dedicated engines.
  */
 @Service
-@ConditionalOnBean(WarehouseRepository.class)
 @RequiredArgsConstructor
 class WarehouseServiceImpl implements WarehouseService {
 

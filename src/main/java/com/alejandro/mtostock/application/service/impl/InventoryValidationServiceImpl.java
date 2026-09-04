@@ -19,7 +19,6 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepos
 import com.alejandro.mtostock.infrastructure.persistence.repository.SupplierRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRepository;
 import lombok.RequiredArgsConstructor;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,7 +29,6 @@ import java.util.UUID;
  * Centralized implementation for reusable inventory business validations.
  */
 @Service
-@ConditionalOnBean(MaterialRepository.class)
 @RequiredArgsConstructor
 class InventoryValidationServiceImpl implements InventoryValidationService {
 

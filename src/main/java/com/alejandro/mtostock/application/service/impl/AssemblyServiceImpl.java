@@ -21,7 +21,6 @@ import com.alejandro.mtostock.infrastructure.persistence.specification.AssemblyS
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -34,7 +33,6 @@ import java.util.UUID;
  * Orchestrates assembly use cases and delegates BOM calculations to a dedicated domain service.
  */
 @Service
-@ConditionalOnBean(AssemblyRepository.class)
 @RequiredArgsConstructor
 class AssemblyServiceImpl implements AssemblyService {
 

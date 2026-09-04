@@ -18,7 +18,6 @@ import com.alejandro.mtostock.infrastructure.persistence.specification.MaterialS
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
@@ -31,7 +30,6 @@ import java.util.UUID;
  * Orchestrates material catalogue use cases and delegates stock rules to focused services.
  */
 @Service
-@ConditionalOnBean(MaterialRepository.class)
 @RequiredArgsConstructor
 class MaterialServiceImpl implements MaterialService {
 

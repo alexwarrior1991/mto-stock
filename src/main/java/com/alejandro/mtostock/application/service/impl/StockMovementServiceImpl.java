@@ -30,7 +30,6 @@ import com.alejandro.mtostock.infrastructure.persistence.specification.StockMove
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
@@ -43,7 +42,6 @@ import java.util.UUID;
  * Orchestrates append-only stock movement use cases and delegates stock rules to inventory engines.
  */
 @Service
-@ConditionalOnBean(StockMovementRepository.class)
 @RequiredArgsConstructor
 class StockMovementServiceImpl implements StockMovementService {
 

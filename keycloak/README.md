@@ -14,15 +14,21 @@ por aplicación —`mto-dev`, `mto-pre`, `mto-pro`— porque los usuarios son lo
 aplicaciones y un realm compartido evita duplicar identidades. El aislamiento entre servicios lo dan
 los roles de cliente, no los realms.
 
-De ahí que haya dos ficheros y no uno:
+El realm base lo crea y lo posee
+[`mto-platform`](https://github.com/alexwarrior1991/mto-platform), y cada servicio aporta desde su
+propio repositorio lo suyo. Este trae dos ficheros:
 
-| Fichero | Cuándo |
+| Fichero | Qué aporta |
 |---|---|
-| `mto-stock-partial-import.json` | El realm ya existe porque `mto-configuration` lo creó. Añade **solo** lo que `mto-stock` posee. |
-| `mto-realm-local.json` | Realm completo y autónomo para el stack de `docker compose` de este repositorio, donde `mto-configuration` no está. Trae usuarios de desarrollo. |
+| `mto-stock-partial-import.json` | El cliente `mto-stock-api`, sus permisos y los perfiles `mto-warehouse-*`. Solo lo que `mto-stock` posee. Vale para cualquier entorno. |
+| `mto-stock-dev.json` | Los tres usuarios de desarrollo. Aparte a propósito, para poder aplicar lo anterior en un entorno desplegado sin arrastrarlos. |
 
-El realm de referencia de la otra aplicación está en `mto-configuration/keycloak/mto-realm.json`.
-Si se cambia el nombre del realm, es el campo `realm` de la primera línea del JSON.
+Los aplica `mto-platform/keycloak/apply-partials.sh`, que fija el orden: primero las parciales que
+crean los clientes, después `mto-ops-cross-service.json`, que los nombra. Ese guion es la única
+forma soportada de obtener el realm completo.
+
+Que los roles vivan aquí y no en el repositorio de plataforma es deliberado: así un permiso se
+cambia en el mismo commit que el código que lo comprueba (`SecurityRoles`).
 
 El realm `master` se reserva para administrar Keycloak. Alojar ahí la aplicación pondría a
 cualquiera de sus usuarios a un rol de distancia de administrar todo el servidor de identidad.
@@ -37,8 +43,8 @@ cualquiera de sus usuarios a un rol de distancia de administrar todo el servidor
 
 `mto-stock` no declara ningún cliente de navegador propio: usa el `mto-frontend` que ya define
 `mto-configuration`. Tampoco declara cuenta de servicio, porque no hace llamadas salientes a otros
-servicios. (`mto-realm-local.json` sí trae un `mto-frontend` mínimo, porque en el stack local no hay
-nadie más que lo defina.)
+servicios. `mto-frontend` vive en el realm base de `mto-platform`, con audience mapper hacia los
+tres API.
 
 ### Permisos y perfiles
 
@@ -80,19 +86,19 @@ comprueba contra un servidor real—, pero conviene no tentar a la suerte.
 
 ## Cómo cargarlo
 
-### Automático: el stack local de este repositorio
-
-No hay que hacer nada. El servicio `keycloak` de `docker-compose.yml` monta
-`mto-realm-local.json` en `/opt/keycloak/data/import` y arranca con `--import-realm`:
+### Lo normal: el guion de `mto-platform`
 
 ```bash
-cp .env.example .env    # define al menos KC_BOOTSTRAP_ADMIN_PASSWORD
-docker compose up --build
+cd ../mto-platform
+docker compose up -d                         # Keycloak, entre otras cosas
+./keycloak/apply-partials.sh                 # con los usuarios de desarrollo
+./keycloak/apply-partials.sh --no-dev-users  # solo cliente, permisos y perfiles
 ```
 
-Keycloak queda en `http://localhost:8082` (consola: `admin` / lo que pusieras en
-`KC_BOOTSTRAP_ADMIN_PASSWORD`) con el realm `mto` importado y tres usuarios de desarrollo, todos con
-contraseña `local`:
+Aplica los ficheros de los tres servicios en orden y con `ifResourceExists: OVERWRITE`, de modo que
+se puede reejecutar. Keycloak queda en `http://localhost:8082` con el realm `mto` completo y, salvo
+que se pase `--no-dev-users`, los tres usuarios de desarrollo de este servicio, todos con contraseña
+`local`:
 
 | Usuario | Perfil |
 |---|---|
@@ -100,20 +106,11 @@ contraseña `local`:
 | `almacen.operario` | `mto-warehouse-operator` |
 | `almacen.responsable` | `mto-warehouse-admin` |
 
-Esos usuarios existen **solo** en `mto-realm-local.json` y no deben acercarse a un entorno
-desplegado; `mto-stock-partial-import.json` no trae ninguno a propósito.
+Viven en `mto-stock-dev.json` y no deben acercarse a un entorno desplegado.
 
-Si ya tienes en marcha el Keycloak de `mto-configuration`, comenta el servicio `keycloak` de
-`docker-compose.yml` en lugar de levantar un segundo servidor: usan el mismo emisor
-(`http://auth.mto.local:8082/realms/mto`), de modo que los tokens sirven para las dos aplicaciones.
+Lo de abajo es lo mismo a mano, por si hace falta en un entorno.
 
-### Automático: un Keycloak nuevo, fuera de compose
-
-```bash
-kc.sh start --import-realm     # con el fichero en /opt/keycloak/data/import/
-```
-
-### Sobre un realm que ya existe
+### A mano, sobre un realm que ya existe
 
 Es el caso normal en un entorno donde `mto-configuration` ya desplegó el realm. Desde la consola:
 **Realm settings → Partial import**, subiendo `mto-stock-partial-import.json` y con la estrategia de
@@ -134,7 +131,8 @@ curl -X POST "$KC_URL/admin/realms/mto/partialImport" \
 
 El fichero no lleva `"ifResourceExists"`, así que Keycloak aplica su estrategia por defecto (`FAIL`)
 y aborta si algo ya existe. Para reejecutarlo sobre un realm que ya tiene parte de esto, añade
-`"ifResourceExists": "SKIP"` al objeto raíz del JSON, o usa la consola, que lo pregunta.
+`"ifResourceExists": "OVERWRITE"` al objeto raíz del JSON —que es lo que hace `apply-partials.sh`
+al vuelo— o usa la consola, que lo pregunta.
 
 ## Después de importar
 
@@ -148,7 +146,9 @@ Dos cosas que el fichero no puede traer. Las otras dos, que eran cruzadas con el
    conceden aquí a propósito — qué puede tocar un servicio en el almacén de otro es una decisión, no
    un valor por defecto.
 
-2. **Crear los usuarios y asignarles su perfil.** El fichero de importación parcial no trae ninguno.
+2. **Crear los usuarios y asignarles su perfil.** `mto-stock-partial-import.json` no trae ninguno a
+   propósito. Los de desarrollo están en `mto-stock-dev.json`, que aplica `apply-partials.sh` salvo
+   que se le pase `--no-dev-users`.
 
 ## Lo que aporta `mto-configuration`
 
@@ -157,8 +157,8 @@ los define el otro repositorio, y allí ya está hecho lo que `mto-stock` necesi
 
 ### La audiencia del frontal
 
-`mto-configuration/keycloak/mto-realm.json` da a `mto-frontend` un *audience mapper* hacia
-`mto-stock-api`, junto al que ya tenía para su propia API. Sin él, un token del navegador puede
+`mto-platform/keycloak/mto-realm.json` da a `mto-frontend` un *audience mapper* hacia
+`mto-stock-api`, junto a los de las otras dos API. Sin él, un token del navegador puede
 llegar aquí sin `mto-stock-api` en `aud`.
 
 Conviene saber que **no es lo único que pone la audiencia**: el mapper *audience resolve* del scope
@@ -181,11 +181,12 @@ que redefine `mto-ops` con los roles de las dos APIs. Se aplica **después** de
 
 > **Un compuesto solo puede nombrar roles de clientes que existan en el realm que se está
 > importando.** Keycloak aborta la importación entera con *App doesn't exist in role definitions*.
-> Por eso el `mto-ops` que cubre las dos aplicaciones no puede vivir dentro de `mto-realm.json` —el
-> fichero que **crea** el realm, cuando `mto-stock-api` todavía no está— y va en un fichero aparte.
-> Es la misma razón por la que `mto-stock-partial-import.json` lleva dentro el cliente
-> `mto-stock-api` además de los perfiles que lo nombran, y por la que en `mto-realm-local.json` el
-> `mto-ops` viene resuelto con solo los roles de esta aplicación: en el stack local no hay otra.
+> Por eso el `mto-ops` que cubre las tres aplicaciones no puede vivir dentro de `mto-realm.json` —el
+> fichero que **crea** el realm, cuando `mto-stock-api` todavía no está— y va en
+> `mto-platform/keycloak/mto-ops-cross-service.json`, aplicado después. Es la misma razón por la que
+> `mto-stock-partial-import.json` lleva dentro el cliente `mto-stock-api` además de los perfiles que
+> lo nombran. `mto-platform/scripts/check_realm_consistency.py` recorre los ficheros en el orden en
+> que se aplican y falla si alguno nombra un cliente o un rol que todavía no existe.
 
 Los *audience mapper* no tienen esa restricción: su destino se resuelve al emitir el token, no al
 importar, así que sí pueden nombrar un cliente que aún no existe.
