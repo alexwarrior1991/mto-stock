@@ -67,7 +67,7 @@ class CacheRedisIT {
     private static final String PREFIX = "mto-stock-it:v1:";
 
     @Container
-    private static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7-alpine")
+    private static final GenericContainer<?> REDIS = new GenericContainer<>("redis:7.4-alpine")
             .withExposedPorts(6379);
 
     private final ApplicationContextRunner contextRunner = new ApplicationContextRunner()

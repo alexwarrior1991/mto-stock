@@ -20,11 +20,21 @@ Build / test (use `mvnw.cmd` instead of `./mvnw` on Windows PowerShell):
 ./mvnw spring-boot:run                            # run the app (needs SPRING_PROFILES_ACTIVE + DATABASE_* env vars, see README)
 ```
 
-Docker Compose stack (Postgres + app):
+Local environment. PostgreSQL, Redis, RabbitMQ, Keycloak and the trace collector live in the
+sibling repository `mto-platform`, which is the single shared local infrastructure for the whole
+domain — one broker, so the master data channel cannot silently split in two as it did when each
+repository brought up its own:
+
+```bash
+cd ../mto-platform && docker compose --profile all up -d && ./keycloak/apply-partials.sh
+```
+
+`compose.yaml` here holds **only the application**, for running a local build against that
+infrastructure:
 
 ```bash
 cp .env.example .env   # then edit credentials
-docker compose up --build
+docker compose up -d --build
 ```
 
 - Flyway runs automatically on startup against `src/main/resources/db/migration`; Hibernate is `ddl-auto: validate` in every profile, so schema changes always go through a new Flyway migration, never through entity annotations alone.
@@ -108,5 +118,5 @@ repository's `README_MESSAGING.md`) before changing anything under `application/
 
 ### Testing
 
-- `PostgreSQLTestContainer` (in `support/`) is the shared base for integration tests needing a real Postgres (`postgres:16-alpine` via Testcontainers) with Flyway migrations applied — extend it rather than mocking the datasource for repository/persistence tests.
+- `PostgreSQLTestContainer` (in `support/`) is the shared base for integration tests needing a real Postgres (`postgres:17-alpine` via Testcontainers — the same version `mto-platform` runs, so CI and local do not test against different engines) with Flyway migrations applied — extend it rather than mocking the datasource for repository/persistence tests.
 - Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` + `InboxMessageRepositoryDataJpaTest` (repositories), `InboxIdempotencyDataJpaTest` (inbox end to end on real Postgres), `MapperLayerTest` (mappers), `MessagingLayerTest` (RabbitMQ contract, consumer and topology), `CacheLayerTest` (cache wiring and invalidation, no Redis needed), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class.

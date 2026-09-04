@@ -7,7 +7,7 @@ import org.testcontainers.junit.jupiter.Container;
 public abstract class PostgreSQLTestContainer {
 
     @Container
-    protected static final PostgreSQLContainer<?> POSTGRESQL = new PostgreSQLContainer<>("postgres:16-alpine")
+    protected static final PostgreSQLContainer<?> POSTGRESQL = new PostgreSQLContainer<>("postgres:17-alpine")
             .withDatabaseName("mto_stock_test")
             .withUsername("mto_stock")
             .withPassword("mto_stock");

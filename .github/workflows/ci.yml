@@ -30,7 +30,7 @@ jobs:
           cache: maven
 
       # GitHub-hosted Ubuntu runners ship with a running Docker daemon, which is
-      # what the Testcontainers-backed tests need to start postgres:16-alpine.
+      # what the Testcontainers-backed tests need to start postgres:17-alpine.
       - name: Build and run the test suite
         run: ./mvnw -B --no-transfer-progress verify
 
@@ -42,3 +42,111 @@ jobs:
           path: target/surefire-reports/
           if-no-files-found: ignore
           retention-days: 7
+
+  image:
+    name: Build image
+    needs: test
+    runs-on: ubuntu-latest
+
+    # The smoke test below needs a real database: Hibernate runs with ddl-auto: validate and the
+    # context does not come up without a connection.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: mto_stock
+          POSTGRES_USER: mto_stock_user
+          POSTGRES_PASSWORD: mto_stock_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mto_stock_user -d mto_stock"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    permissions:
+      contents: read
+      # Only needed to publish. On a pull request from a fork the token is read-only anyway, which
+      # is why the login and the push are conditional below.
+      packages: write
+
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # The image is built on every pull request too, so a broken Dockerfile shows up before the
+      # merge rather than after it. What stays conditional is publishing.
+      - name: Log in to GHCR
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=sha,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          # A working branch must not publish an image someone could deploy by mistake.
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          # Without publishing, the image stays in the runner's local daemon: enough to know the
+          # Dockerfile builds and the jar lands where the ENTRYPOINT expects it.
+          load: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Building does not prove the container starts. Unlike mto-gateway, this service does not
+      # run without a database -- Hibernate is ddl-auto: validate, so it needs a connection at
+      # boot -- so the smoke test gives it a real PostgreSQL and lets Flyway run. Redis and
+      # RabbitMQ stay off: the application is designed to work without them.
+      #
+      # The container runs with --network host so that localhost means the same thing to it and to
+      # the service container the runner published.
+      - name: Smoke test the image
+        if: ${{ github.event_name != 'push' || github.ref != 'refs/heads/master' }}
+        run: |
+          IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -1)
+          docker run -d --name mto-stock-smoke --network host \
+            -e SPRING_PROFILES_ACTIVE=prod \
+            -e SERVER_PORT=8080 \
+            -e DATABASE_URL=jdbc:postgresql://localhost:5432/mto_stock \
+            -e DATABASE_USERNAME=mto_stock_user \
+            -e DATABASE_PASSWORD=mto_stock_password \
+            -e SPRING_FLYWAY_ENABLED=true \
+            -e APP_RABBITMQ_ENABLED=false \
+            -e APP_CACHE_ENABLED=false \
+            -e MANAGEMENT_HEALTH_REDIS_ENABLED=false \
+            -e MANAGEMENT_HEALTH_RABBIT_ENABLED=false \
+            -e KEYCLOAK_ISSUER_URI=http://localhost:8082/realms/mto \
+            -e KEYCLOAK_CLIENT_ID=mto-stock-api \
+            -e KEYCLOAK_AUDIENCE=mto-stock-api \
+            -e APP_CORS_ALLOWED_ORIGIN=http://localhost:4200 \
+            "$IMAGE"
+          for i in $(seq 1 45); do
+            if curl -fsS http://localhost:8080/actuator/health > /dev/null; then
+              echo "The container answers on /actuator/health"
+              docker rm -f mto-stock-smoke
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "The image did not answer within 90s. Container log:"
+          docker logs mto-stock-smoke
+          docker rm -f mto-stock-smoke
+          exit 1

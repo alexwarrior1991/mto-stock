@@ -28,7 +28,7 @@ Main variables:
 - `APP_SECURITY_EXPOSE_API_DOCS`: publish Swagger UI and the OpenAPI document without a token
 - `APP_CORS_ALLOWED_ORIGIN`: browser origin allowed to call the API
 - `KC_BOOTSTRAP_ADMIN_USERNAME`, `KC_BOOTSTRAP_ADMIN_PASSWORD`, `KEYCLOAK_PORT`, `KEYCLOAK_MANAGEMENT_PORT`: the Keycloak container of the local Compose stack
-- `SPRING_RABBITMQ_HOST`, `SPRING_RABBITMQ_PORT`, `SPRING_RABBITMQ_USERNAME`, `SPRING_RABBITMQ_PASSWORD`, `SPRING_RABBITMQ_VIRTUAL_HOST`: broker this API consumes master data events from
+- `SPRING_RABBITMQ_HOST`, `SPRING_RABBITMQ_PORT`, `SPRING_RABBITMQ_USERNAME`, `SPRING_RABBITMQ_PASSWORD`, `SPRING_RABBITMQ_VIRTUAL_HOST`: broker this API consumes master data events from. It must be **the same broker** `mto-configuration` publishes to — the one in `mto-platform`
 - `APP_RABBITMQ_ENABLED`: declare the messaging topology and wire the consumer; `false` starts the application without a broker
 - `APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED`: consume from the queue; `false` still declares it, so events accumulate
 - `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`, `RABBITMQ_PORT`, `RABBITMQ_MANAGEMENT_PORT`: the RabbitMQ container of the local Compose stack
@@ -69,20 +69,36 @@ $env:DATABASE_PASSWORD = "your_password"
 
 ## Docker
 
-Create an environment file from the example and update the credentials:
+PostgreSQL, Redis, RabbitMQ, Keycloak and the trace collector live in
+[`mto-platform`](https://github.com/alexwarrior1991/mto-platform), the shared local environment for
+the whole domain. This repository no longer starts any of them.
+
+That is not tidiness. This service consumes the master data events `mto-configuration` publishes,
+and while each repository brought up its own broker, the publisher wrote to one and this consumer
+listened on another: **nothing arrived and nothing failed**. One broker is the fix.
+
+The usual way to run it is from the platform, which pulls the published image:
 
 ```bash
+cd ../mto-platform
 cp .env.example .env
-docker compose up --build
+docker compose --profile all up -d
+./keycloak/apply-partials.sh
 ```
 
-The Compose stack starts PostgreSQL, Keycloak, RabbitMQ, Redis and the application on a dedicated Docker network, keeps their data in the `postgres_data`, `rabbitmq_data` and `redis_data` volumes, and waits for every dependency health check before starting the API.
+To run a **local build** of this service against that same infrastructure, `compose.yaml` here
+holds only the application:
 
-RabbitMQ publishes AMQP on `5672` and its management UI on <http://localhost:15672>. If the broker of `mto-configuration` is already running, comment the `rabbitmq` service out and point `SPRING_RABBITMQ_HOST` at it instead of starting a second one: it is the same exchange and the same queues.
+```bash
+cd ../mto-platform && docker compose up -d   # infrastructure only
+cd ../mto-stock
+cp .env.example .env
+docker compose up -d --build
+```
 
-Redis publishes on `6379` and holds nothing that is not already in PostgreSQL, so it is the one
-service of the stack you can drop: comment it out, set `APP_CACHE_ENABLED=false`, and the API
-behaves exactly as it did before the cache existed, only querying the database every time.
+It reaches PostgreSQL, Redis and RabbitMQ through `host.docker.internal`, where the platform
+publishes them, and Keycloak and the collector through `auth.mto.local` / `otel.mto.local` — the
+same names a run from the IDE uses, because the token `iss` is one of them.
 
 Useful commands:
 
@@ -90,7 +106,6 @@ Useful commands:
 docker compose logs -f app
 docker compose ps
 docker compose down
-docker compose down -v
 ```
 
 ## Messaging
@@ -215,9 +230,11 @@ Rejections use the same `ApiErrorResponse` payload as any other API error: `401`
 
 ### Authenticating
 
-`docker compose up` starts a Keycloak on `http://localhost:8082` with the realm already imported and
-three development users (`almacen.lector`, `almacen.operario`, `almacen.responsable`), all with
-password `local`. Get a token and send it as a bearer token:
+`mto-platform` starts a Keycloak on `http://localhost:8082`. Its `apply-partials.sh` applies this
+repository's `keycloak/mto-stock-partial-import.json` (the `mto-stock-api` client, its permissions
+and the `mto-warehouse-*` profiles) and `keycloak/mto-stock-dev.json` (the three development users
+`almacen.lector`, `almacen.operario` and `almacen.responsable`, all with password `local`). Get a
+token and send it as a bearer token:
 
 ```bash
 TOKEN=$(curl -s -X POST \
