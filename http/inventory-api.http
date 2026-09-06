@@ -85,6 +85,14 @@ GET {{baseUrl}}/materials/{{materialId}}/movements?warehouseId={{warehouseId}}&d
 Authorization: Bearer {{accessToken}}
 Accept: application/json
 
+### Materials - Get material change history
+# Ojo con la de arriba: /movements es el libro mayor de existencias -que entro y que salio- y
+# /revisions es el historial del registro -quien cambio el stock minimo, la unidad o la baja logica,
+# y que decia antes-. Son dos preguntas distintas. Ver docs/07-auditing.md.
+GET {{baseUrl}}/materials/{{materialId}}/revisions?page=0&size=20
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
 ### Warehouses - Create warehouse
 POST {{baseUrl}}/warehouses
 Authorization: Bearer {{accessToken}}
@@ -139,6 +147,11 @@ Content-Type: application/json
   "externalReference": "TRF-2026-00011",
   "notes": "Rebalance stock for project start"
 }
+
+### Warehouses - Get warehouse change history
+GET {{baseUrl}}/warehouses/{{warehouseId}}/revisions?page=0&size=20
+Authorization: Bearer {{accessToken}}
+Accept: application/json
 
 ### Stock Movements - Register entry
 POST {{baseUrl}}/movements/entries
@@ -278,6 +291,14 @@ GET {{baseUrl}}/assemblies/{{assemblyId}}/production-capacity?warehouseId={{ware
 Authorization: Bearer {{accessToken}}
 Accept: application/json
 
+### Assemblies - Get assembly change history
+# El caso que motiva el historial: al actualizar un conjunto se reemplaza el despiece entero, asi que
+# sin esto una linea borrada no dejaba rastro en ningun sitio. La revision de borrado conserva lo que
+# decia la linea, no solo su id.
+GET {{baseUrl}}/assemblies/{{assemblyId}}/revisions?page=0&size=20
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
 ### Reservations - Create reservation
 POST {{baseUrl}}/reservations
 Authorization: Bearer {{accessToken}}
@@ -329,6 +350,11 @@ GET {{baseUrl}}/reservations?warehouseId={{warehouseId}}&status=ACTIVE&projectId
 Authorization: Bearer {{accessToken}}
 Accept: application/json
 
+### Reservations - Get reservation change history
+GET {{baseUrl}}/reservations/{{reservationId}}/revisions?page=0&size=20
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
 ### Suppliers - Create supplier
 POST {{baseUrl}}/suppliers
 Authorization: Bearer {{accessToken}}
@@ -363,6 +389,11 @@ GET {{baseUrl}}/suppliers?page=0&size=20&sort=code,asc
 Authorization: Bearer {{accessToken}}
 Accept: application/json
 
+### Suppliers - Get supplier change history
+GET {{baseUrl}}/suppliers/{{supplierId}}/revisions?page=0&size=20
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
 ### Projects - Create project
 POST {{baseUrl}}/projects
 Authorization: Bearer {{accessToken}}
@@ -394,6 +425,14 @@ Accept: application/json
 
 ### Projects - List projects
 GET {{baseUrl}}/projects?page=0&size=20&sort=code,asc
+Authorization: Bearer {{accessToken}}
+Accept: application/json
+
+### Projects - Get project change history
+# Solo recoge los cambios hechos por esta API. Un proyecto que cambia por un evento de datos maestros
+# de mto-configuration no deja revision: se escribe con SQL nativo y Envers no lo ve. Es un hueco
+# conocido y aceptado, explicado en docs/07-auditing.md.
+GET {{baseUrl}}/projects/{{projectId}}/revisions?page=0&size=20
 Authorization: Bearer {{accessToken}}
 Accept: application/json
 

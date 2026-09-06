@@ -1,6 +1,6 @@
 # MTO Stock
 
-MTO Stock is a Spring Boot inventory API for make-to-order operations. It manages materials, suppliers, warehouses, projects, stock movements, reservations, virtual assemblies, BOM definitions and availability calculations.
+MTO Stock is a Spring Boot inventory API for make-to-order operations. It manages materials, suppliers, warehouses, projects, stock movements, reservations, virtual assemblies, BOM definitions, availability calculations and the change history of the master data.
 
 ## Requirements
 
@@ -205,7 +205,7 @@ realm roles** that group them, so what a profile can do changes in Keycloak with
 
 | Client role | Grants |
 |---|---|
-| `stock-read` | Read the catalogue, stock levels, movement history and reservations |
+| `stock-read` | Read the catalogue, stock levels, movement history, reservations and the change history — including who changed each record and from which IP |
 | `stock-write` | Create and update catalogue entries; register entries, outputs, transfers and reservations |
 | `stock-delete` | Cancel reservations (`DELETE`) |
 | `stock-adjust` | Register inventory adjustments — required **in addition to** `stock-write` |

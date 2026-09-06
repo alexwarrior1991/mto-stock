@@ -9,5 +9,6 @@ Read the documents in this order:
 5. 04-rest-api.md
 6. 05-development-roadmap.md
 7. 06-messaging.md
+8. 07-auditing.md
 
 These documents are the source of truth for the project.

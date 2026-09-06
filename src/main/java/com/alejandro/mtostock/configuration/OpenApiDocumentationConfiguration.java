@@ -54,7 +54,23 @@ import org.springframework.http.HttpStatus;
 import java.util.List;
 
 /**
- * Defines the public OpenAPI contract for the planned REST API without creating REST controllers.
+ * Aporta la cabecera del documento OpenAPI: metadatos, servidores, tags, esquemas y respuestas de
+ * error reutilizables, y el requisito global de bearer.
+ *
+ * <p>Se escribió antes que los controllers, para publicar el contrato sin haberlo implementado
+ * todavía, y de ahí que {@link #paths()} describa endpoints a mano. Eso ya <b>no</b> es lo que se
+ * sirve: springdoc parte de este bean y le añade lo que escanea de los controllers, y para una ruta
+ * que esté en los dos sitios <b>gana el controller</b>. Comprobado sobre {@code /v3/api-docs}: en
+ * {@code /materials/{id}/revisions} la descripción que sale es la del
+ * {@code @ApiResponse} del controller, no la de aquí.</p>
+ *
+ * <p>La consecuencia práctica, que conviene saber antes de tocar este fichero: <b>un endpoint nuevo
+ * se documenta con anotaciones en su controller, no añadiéndolo aquí</b>. Añadirlo en los dos sitios
+ * no cambia lo que se sirve y crea una segunda copia que se desincroniza en silencio — que es
+ * exactamente lo que le ha pasado a {@link #paths()}, donde todavía figuran {@code /stock/low} y
+ * {@code /movements/entry|output|adjustment|transfer} mientras los controllers mapean
+ * {@code /materials/low-stock} y {@code /movements/entries|outputs|adjustments|transfers}. Nada falla
+ * por ello: simplemente queda documentación muerta.</p>
  */
 @Configuration
 public class OpenApiDocumentationConfiguration {
