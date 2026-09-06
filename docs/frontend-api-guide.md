@@ -148,6 +148,46 @@ The examples below reuse these IDs:
 }
 ```
 
+### Revision response
+
+Every `/revisions` endpoint returns the paginated envelope described in [Pagination](#pagination),
+with this entry shape. `entity` is the same resource payload the normal `GET` returns, as it stood at
+that revision, so there is no second shape to learn:
+
+```json
+{
+  "revision": {
+    "revision": 42,
+    "revisionAt": "2026-09-01T10:15:30Z",
+    "operation": "UPDATED",
+    "author": "warehouse.operator",
+    "source": "HTTP",
+    "correlationId": "corr-20260901-0001"
+  },
+  "entity": {
+    "id": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a020",
+    "code": "MAT-COPPER-50",
+    "name": "Copper contact wire 150 mm2",
+    "unitOfMeasure": "M",
+    "minimumStockLevel": 250.000000,
+    "active": true,
+    "audit": null
+  }
+}
+```
+
+Three things worth knowing before you render this:
+
+- `operation` is `CREATED`, `UPDATED` or `DELETED`. On a `DELETED` entry `entity` still carries the
+  last known values, not nulls — that is what makes a removed BOM line readable.
+- The resource's own `audit` block comes back empty on purpose. The who and when of each revision
+  live in `revision`; repeating them per row would be the same fact twice.
+- `author` may be `system` (an internal process wrote it) or `unknown` (the identity was lost on the
+  way). The two are recorded separately on purpose, so do not collapse them in the UI.
+- `source` says where the write came from — `HTTP`, `MESSAGING`, `SYSTEM` or `BASELINE` — and
+  therefore which identifier space `correlationId` belongs to. `BASELINE` marks the snapshot taken
+  when change history was first switched on; it is not a creation event.
+
 ## Materials
 
 ### Create material
@@ -256,6 +296,18 @@ Accept: application/json
 - Response example: paginated stock movement response.
 - Possible errors: `400`, `500`.
 
+### Get material change history
+
+- URL: `/api/v1/inventory/materials/{id}/revisions?page=&size=`
+- Method: `GET`
+- Description: Returns the audited change history of one material, newest revision first. Not the
+  same thing as the movements endpoint above: that one is the stock ledger (what came in and out),
+  this one is who changed the record — the minimum stock level, the unit, the active flag — and what
+  it said before.
+- Request example: `GET /api/v1/inventory/materials/018f60be-1b9a-7cc3-8c6b-2f93e8c6a020/revisions?page=0&size=20`
+- Response example: paginated revision response.
+- Possible errors: `404`, `500`.
+
 ## Warehouses
 
 ### Create warehouse
@@ -320,6 +372,15 @@ Accept: application/json
 - Request example: stock transfer body documented under Stock Movements.
 - Response example: array of stock movement responses.
 - Possible errors: `400`, `409`, `422`, `500`.
+
+### Get warehouse change history
+
+- URL: `/api/v1/inventory/warehouses/{id}/revisions?page=&size=`
+- Method: `GET`
+- Description: Returns the audited change history of one warehouse, newest revision first.
+- Request example: `GET /api/v1/inventory/warehouses/018f60be-1b9a-7cc3-8c6b-2f93e8c6a001/revisions?page=0&size=20`
+- Response example: paginated revision response.
+- Possible errors: `404`, `500`.
 
 ## Stock Movements
 
@@ -491,6 +552,17 @@ Accept: application/json
 - Response example: assembly availability response.
 - Possible errors: `404`, `422`, `500`.
 
+### Get assembly change history
+
+- URL: `/api/v1/inventory/assemblies/{id}/revisions?page=&size=`
+- Method: `GET`
+- Description: Returns the audited change history of one assembly, newest revision first. Editing the
+  bill of materials also produces a revision of the assembly itself, even when its own fields did not
+  change — what the assembly is made of is part of what it is.
+- Request example: `GET /api/v1/inventory/assemblies/018f60be-1b9a-7cc3-8c6b-2f93e8c6a040/revisions?page=0&size=20`
+- Response example: paginated revision response.
+- Possible errors: `404`, `500`.
+
 ## Reservations
 
 ### Create reservation
@@ -576,6 +648,16 @@ Accept: application/json
 - Response example: paginated reservation response.
 - Possible errors: `400`, `500`.
 
+### Get reservation change history
+
+- URL: `/api/v1/inventory/reservations/{id}/revisions?page=&size=`
+- Method: `GET`
+- Description: Returns the audited change history of one reservation, newest revision first: every
+  status transition and every quantity change, not just the state it ended in.
+- Request example: `GET /api/v1/inventory/reservations/018f60be-1b9a-7cc3-8c6b-2f93e8c6a060/revisions?page=0&size=20`
+- Response example: paginated revision response.
+- Possible errors: `404`, `500`.
+
 ## Suppliers
 
 ### Create supplier
@@ -623,6 +705,15 @@ Accept: application/json
 - Response example: paginated supplier response.
 - Possible errors: `500`.
 
+### Get supplier change history
+
+- URL: `/api/v1/inventory/suppliers/{id}/revisions?page=&size=`
+- Method: `GET`
+- Description: Returns the audited change history of one supplier, newest revision first.
+- Request example: `GET /api/v1/inventory/suppliers/018f60be-1b9a-7cc3-8c6b-2f93e8c6a030/revisions?page=0&size=20`
+- Response example: paginated revision response.
+- Possible errors: `404`, `500`.
+
 ## Projects
 
 ### Create project
@@ -669,3 +760,16 @@ Accept: application/json
 - Request example: `GET /api/v1/inventory/projects?page=0&size=20&sort=code,asc`
 - Response example: paginated project response.
 - Possible errors: `500`.
+
+### Get project change history
+
+- URL: `/api/v1/inventory/projects/{id}/revisions?page=&size=`
+- Method: `GET`
+- Description: Returns the audited change history of one project, newest revision first. **Only
+  changes made through this API are recorded.** A project updated by a master data event from
+  `mto-configuration` leaves no revision, because that path writes with native SQL that the audit
+  layer cannot observe. Do not present this history as complete for projects synchronised from
+  another service.
+- Request example: `GET /api/v1/inventory/projects/018f60be-1b9a-7cc3-8c6b-2f93e8c6a010/revisions?page=0&size=20`
+- Response example: paginated revision response.
+- Possible errors: `404`, `500`.

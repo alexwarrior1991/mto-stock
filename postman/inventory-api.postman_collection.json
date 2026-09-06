@@ -224,6 +224,20 @@
             ],
             "url": "{{baseUrl}}/materials/{{materialId}}/movements?warehouseId={{warehouseId}}&dateFrom=2026-08-01T00:00:00Z&dateTo=2026-08-31T23:59:59Z&page=0&size=20&sort=occurredAt,desc"
           }
+        },
+        {
+          "name": "Get material change history",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/materials/{{materialId}}/revisions?page=0&size=20",
+            "description": "Returns the audited change history of one material, newest revision first. Not to be confused with 'Get material movement history': that one is the stock ledger (what came in and out), this one is who changed the record and what it said before. See docs/07-auditing.md."
+          }
         }
       ]
     },
@@ -345,6 +359,20 @@
               }
             },
             "url": "{{baseUrl}}/warehouses/transfers"
+          }
+        },
+        {
+          "name": "Get warehouse change history",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/warehouses/{{warehouseId}}/revisions?page=0&size=20",
+            "description": "Returns the audited change history of one warehouse, newest revision first."
           }
         }
       ]
@@ -590,6 +618,20 @@
             ],
             "url": "{{baseUrl}}/assemblies/{{assemblyId}}/production-capacity?warehouseId={{warehouseId}}"
           }
+        },
+        {
+          "name": "Get assembly change history",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/assemblies/{{assemblyId}}/revisions?page=0&size=20",
+            "description": "Returns the audited change history of one assembly, newest revision first. Changing the bill of materials also revises the assembly, and a removed BOM line keeps its values on the deletion revision."
+          }
         }
       ]
     },
@@ -712,6 +754,20 @@
             ],
             "url": "{{baseUrl}}/reservations?warehouseId={{warehouseId}}&status=ACTIVE&projectId={{projectId}}&materialId={{materialId}}&page=0&size=20&sort=reservedAt,desc"
           }
+        },
+        {
+          "name": "Get reservation change history",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/reservations/{{reservationId}}/revisions?page=0&size=20",
+            "description": "Returns the audited change history of one reservation, newest revision first: every status transition and every quantity change."
+          }
         }
       ]
     },
@@ -795,6 +851,20 @@
             ],
             "url": "{{baseUrl}}/suppliers?page=0&size=20&sort=code,asc"
           }
+        },
+        {
+          "name": "Get supplier change history",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/suppliers/{{supplierId}}/revisions?page=0&size=20",
+            "description": "Returns the audited change history of one supplier, newest revision first."
+          }
         }
       ]
     },
@@ -877,6 +947,20 @@
               }
             ],
             "url": "{{baseUrl}}/projects?page=0&size=20&sort=code,asc"
+          }
+        },
+        {
+          "name": "Get project change history",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{baseUrl}}/projects/{{projectId}}/revisions?page=0&size=20",
+            "description": "Returns the audited change history of one project, newest revision first. Only API changes are recorded: a project updated by a master data event from mto-configuration is written with native SQL and leaves no revision. See docs/07-auditing.md."
           }
         }
       ]
