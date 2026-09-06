@@ -1,11 +1,18 @@
 package com.alejandro.mtostock.infrastructure.persistence.entity;
 
+import jakarta.persistence.Entity;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
+import org.hibernate.envers.Audited;
+import org.hibernate.envers.NotAudited;
 import org.junit.jupiter.api.Test;
 
+import java.lang.reflect.Field;
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -117,4 +124,65 @@ class JpaEntityModelTest {
                 .build();
     }
 
+
+    /**
+     * El reparto entre lo que tiene historial y lo que no, fijado donde se puede romper sin que
+     * nadie se entere: en las anotaciones.
+     *
+     * <p>La forma cómoda de anotar esto sería poner {@code @Audited} en {@code AuditableEntity}, y
+     * entonces {@code stock_movement} —un libro mayor que ya es inmutable— duplicaría la tabla más
+     * grande del sistema, e {@code inventory_balance} e {@code inbox_message} tendrían gemelas
+     * permanentemente vacías, porque se escriben con SQL nativo y Envers no ve esas escrituras. Una
+     * gemela vacía no se lee como «aquí no hay auditoría», se lee como «esto no ha cambiado nunca».
+     * Además Envers pediría tres tablas que {@code V7} no crea y, con {@code ddl-auto: validate}, la
+     * aplicación no arrancaría — en el entorno que ejecute la migración primero, no aquí.</p>
+     */
+    @Test
+    void auditedEntitiesAreExactlyTheMasterDataAndTheReservation() {
+        List<Class<?>> entities = List.of(
+                Material.class, Supplier.class, Warehouse.class, Project.class, Assembly.class,
+                AssemblyComponent.class, Reservation.class,
+                StockMovement.class, InventoryBalance.class, InboxMessage.class);
+
+        entities.forEach(entity -> assertTrue(entity.isAnnotationPresent(Entity.class),
+                entity.getSimpleName() + " should be a JPA entity"));
+
+        Set<Class<?>> audited = entities.stream()
+                .filter(entity -> entity.isAnnotationPresent(Audited.class))
+                .collect(java.util.stream.Collectors.toSet());
+
+        assertEquals(Set.of(Material.class, Supplier.class, Warehouse.class, Project.class,
+                Assembly.class, AssemblyComponent.class, Reservation.class), audited);
+
+        Stream.of(StockMovement.class, InventoryBalance.class, InboxMessage.class)
+                .forEach(entity -> assertFalse(entity.isAnnotationPresent(Audited.class),
+                        entity.getSimpleName() + " must not be audited: see AuditableEntity"));
+    }
+
+    /**
+     * {@code audit_revision} ya guarda quién y cuándo una vez por revisión, así que las gemelas
+     * {@code _aud} no repiten estas cuatro columnas. La anotación es explícita y no confianza en el
+     * valor por defecto: lo que hace Envers con las propiedades de un {@code @MappedSuperclass} sin
+     * {@code @Audited} ha cambiado entre versiones, y dejarlo al criterio de la versión convierte una
+     * subida de Hibernate en un fallo de arranque por una columna que sobra o falta en la gemela.
+     */
+    @Test
+    void auditMetadataColumnsAreNotCopiedIntoTheHistoryTables() {
+        Stream.of("createdAt", "updatedAt", "createdBy", "updatedBy")
+                .map(JpaEntityModelTest::auditableField)
+                .forEach(field -> assertTrue(field.isAnnotationPresent(NotAudited.class),
+                        field.getName() + " must be @NotAudited"));
+
+        // El identificador es la mitad de la clave primaria de la tabla de historial: Envers lo mapea
+        // siempre, y marcarlo aqui no tendria sentido.
+        assertFalse(auditableField("id").isAnnotationPresent(NotAudited.class));
+    }
+
+    private static Field auditableField(String name) {
+        try {
+            return AuditableEntity.class.getDeclaredField(name);
+        } catch (NoSuchFieldException cause) {
+            throw new AssertionError("AuditableEntity should declare " + name, cause);
+        }
+    }
 }

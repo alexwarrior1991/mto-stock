@@ -15,10 +15,12 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
+import org.hibernate.envers.Audited;
 
 /**
  * Persistent project that can own reservations and stock consumption movements.
  */
+@Audited
 @Entity
 @Table(
         name = "project",

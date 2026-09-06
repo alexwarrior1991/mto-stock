@@ -1,11 +1,13 @@
 package com.alejandro.mtostock.application.service.impl;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.supplier.SupplierRequest;
 import com.alejandro.mtostock.application.dto.supplier.SupplierResponse;
 import com.alejandro.mtostock.application.dto.supplier.SupplierUpdateRequest;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.mapper.SupplierMapper;
+import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.SupplierService;
 import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
@@ -33,6 +35,7 @@ class SupplierServiceImpl implements SupplierService {
 
     private final SupplierRepository supplierRepository;
     private final SupplierMapper supplierMapper;
+    private final EntityAuditService entityAuditService;
     private final InventoryValidationService inventoryValidationService;
     private final CacheInvalidator cacheInvalidator;
 
@@ -67,5 +70,15 @@ class SupplierServiceImpl implements SupplierService {
     @Transactional(readOnly = true)
     public PageResponse<SupplierResponse> findAll(Pageable pageable) {
         return supplierMapper.toPageResponse(supplierRepository.findAll(pageable));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<EntityRevisionResponse<SupplierResponse>> findRevisions(UUID id, Pageable pageable) {
+        return entityAuditService.findRevisions(
+                Supplier.class,
+                id,
+                supplierMapper::toResponse,
+                pageable);
     }
 }

@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.infrastructure.web.controller;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.error.ApiErrorResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialStockResponse;
@@ -148,5 +149,22 @@ public class WarehouseController {
         LOGGER.debug("HTTP request to transfer stock materialId={} sourceWarehouseId={} targetWarehouseId={}",
                 request.materialId(), request.sourceWarehouseId(), request.targetWarehouseId());
         return ResponseEntity.created(URI.create("/api/v1/inventory/movements")).body(warehouseService.transfer(request));
+    }
+
+    /**
+     * Returns the change history recorded by Hibernate Envers, newest revision first.
+     */
+    @Operation(summary = "Get warehouse change history", description = "Returns the audited change history of one warehouse, newest revision first.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Revision page returned"),
+            @ApiResponse(responseCode = "404", description = "Warehouse not found", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
+    })
+    @GetMapping("/{id}/revisions")
+    public ResponseEntity<PageResponse<EntityRevisionResponse<WarehouseResponse>>> revisions(
+            @Parameter(description = "Warehouse UUID") @PathVariable UUID id,
+            @PageableDefault(size = 20) Pageable pageable) {
+        LOGGER.debug("HTTP request to read warehouse revision history id={}", id);
+        return ResponseEntity.ok(warehouseService.findRevisions(id, pageable));
     }
 }

@@ -173,6 +173,23 @@ Two things are worth knowing before changing a cached response DTO:
 
 Flyway is enabled by default in every profile and runs automatically during application startup. Migration scripts live in `src/main/resources/db/migration` and are validated by Hibernate with `ddl-auto=validate`.
 
+A migration that changes a column on one of the seven audited tables (`material`, `supplier`, `warehouse`, `project`, `assembly`, `assembly_component`, `reservation`) must apply the same change to its `<table>_aud` twin in the same migration — nullable, and with no constraints. Hibernate derives the Envers mapping from the entity, so a base column added without its twin makes `ddl-auto=validate` fail and the application will not start. See `docs/07-auditing.md`.
+
+## Auditing
+
+Two layers. The `created_at` / `updated_at` / `created_by` / `updated_by` columns record who touched a row **last**; Hibernate Envers keeps the **history** of previous values for the seven mutable entities above.
+
+`stock_movement` is not audited — it is already an immutable append-only ledger — and neither are `inventory_balance` nor `inbox_message`, which are written with native SQL that Envers cannot observe. A `project` changed by a master data event from `mto-configuration` also leaves no revision, for the same reason; the REST path is recorded.
+
+History is read per resource, newest revision first:
+
+```
+GET /api/v1/inventory/materials/{id}/revisions
+GET /api/v1/inventory/assemblies/{id}/revisions
+```
+
+The same endpoint exists for suppliers, warehouses, projects and reservations. It requires `STOCK_READ`, like every other `GET` under the API prefix — which means anyone who can read the catalogue can also see who changed it and from which IP. `docs/07-auditing.md` covers the full model and the options if that is too broad.
+
 ## Security
 
 The API is an OAuth2 **resource server**. It does not issue tokens and stores no users: Keycloak
@@ -264,7 +281,7 @@ application in the same realm would be accepted here. See [`keycloak/README.md`]
 — a missing mapper is the failure that looks intermittent, because Keycloak supplies the audience on
 its own only for users who hold roles in the client.
 
-The authenticated username also becomes the author recorded in the JPA audit columns.
+The authenticated username also becomes the author recorded in the JPA audit columns and in every Envers revision — both resolve it through the same class, so they cannot disagree.
 
 ## API documentation
 

@@ -17,12 +17,14 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
+import org.hibernate.envers.Audited;
 
 import java.math.BigDecimal;
 
 /**
  * Persistent catalogue material stored and moved through warehouses.
  */
+@Audited
 @Entity
 @Table(
         name = "material",

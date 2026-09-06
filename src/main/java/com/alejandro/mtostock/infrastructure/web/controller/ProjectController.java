@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.infrastructure.web.controller;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.error.ApiErrorResponse;
 import com.alejandro.mtostock.application.dto.project.ProjectRequest;
@@ -108,5 +109,22 @@ public class ProjectController {
     public ResponseEntity<PageResponse<ProjectResponse>> findAll(@PageableDefault(size = 20) Pageable pageable) {
         LOGGER.debug("HTTP request to list projects");
         return ResponseEntity.ok(projectService.findAll(pageable));
+    }
+
+    /**
+     * Returns the change history recorded by Hibernate Envers, newest revision first.
+     */
+    @Operation(summary = "Get project change history", description = "Returns the audited change history of one project, newest revision first. Only API changes are recorded: master data events are written with native SQL and leave no revision.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Revision page returned"),
+            @ApiResponse(responseCode = "404", description = "Project not found", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
+    })
+    @GetMapping("/{id}/revisions")
+    public ResponseEntity<PageResponse<EntityRevisionResponse<ProjectResponse>>> revisions(
+            @Parameter(description = "Project UUID") @PathVariable UUID id,
+            @PageableDefault(size = 20) Pageable pageable) {
+        LOGGER.debug("HTTP request to read project revision history id={}", id);
+        return ResponseEntity.ok(projectService.findRevisions(id, pageable));
     }
 }

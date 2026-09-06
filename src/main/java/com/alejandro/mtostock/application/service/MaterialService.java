@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.application.service;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialRequest;
 import com.alejandro.mtostock.application.dto.material.MaterialResponse;
@@ -23,4 +24,11 @@ public interface MaterialService {
     PageResponse<MaterialResponse> search(String code, String name, Boolean active, UUID warehouseId, Boolean belowMinimum, Pageable pageable);
 
     MaterialStockResponse calculateStock(UUID materialId, UUID warehouseId);
+
+    /**
+     * Historial de cambios del material: qué decía el catálogo en cada revisión y quién lo dejó así.
+     *
+     * @throws com.alejandro.mtostock.application.exception.NotFoundException si no existe
+     */
+    PageResponse<EntityRevisionResponse<MaterialResponse>> findRevisions(UUID id, Pageable pageable);
 }

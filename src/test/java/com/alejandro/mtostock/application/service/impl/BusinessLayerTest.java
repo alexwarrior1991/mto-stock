@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.application.service.impl;
 
+import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyAvailabilityResponse;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyComponentRequest;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyRequest;
@@ -1176,6 +1177,7 @@ class BusinessLayerTest {
         MaterialServiceImpl service = new MaterialServiceImpl(
                 materialRepository,
                 mock(MaterialMapper.class),
+                mock(EntityAuditService.class),
                 validationService,
                 mock(StockCalculationService.class),
                 mock(CacheInvalidator.class)
@@ -1214,6 +1216,7 @@ class BusinessLayerTest {
                 assemblyRepository,
                 materialRepository,
                 assemblyMapper,
+                mock(EntityAuditService.class),
                 validationService,
                 mock(BOMCalculationService.class),
                 mock(CacheInvalidator.class)
@@ -1721,6 +1724,7 @@ class BusinessLayerTest {
         MaterialServiceImpl service = new MaterialServiceImpl(
                 materialRepository,
                 mock(MaterialMapper.class),
+                mock(EntityAuditService.class),
                 mock(InventoryValidationService.class),
                 mock(StockCalculationService.class),
                 cacheInvalidator
@@ -1750,6 +1754,7 @@ class BusinessLayerTest {
         new WarehouseServiceImpl(
                 warehouseRepository,
                 mock(WarehouseMapper.class),
+                mock(EntityAuditService.class),
                 mock(StockMovementMapper.class),
                 mock(InventoryValidationService.class),
                 mock(StockCalculationService.class),
@@ -1760,6 +1765,7 @@ class BusinessLayerTest {
         new SupplierServiceImpl(
                 supplierRepository,
                 mock(SupplierMapper.class),
+                mock(EntityAuditService.class),
                 mock(InventoryValidationService.class),
                 cacheInvalidator
         ).update(supplier.getId(), new SupplierUpdateRequest("SUP-1", "Cables SA", true));
@@ -1767,6 +1773,7 @@ class BusinessLayerTest {
         new ProjectServiceImpl(
                 projectRepository,
                 mock(ProjectMapper.class),
+                mock(EntityAuditService.class),
                 mock(InventoryValidationService.class),
                 cacheInvalidator
         ).update(project.getId(), new ProjectUpdateRequest("PRJ-1", "Tramo norte", true));
@@ -1789,6 +1796,7 @@ class BusinessLayerTest {
         new MaterialServiceImpl(
                 materialRepository,
                 materialMapper,
+                mock(EntityAuditService.class),
                 mock(InventoryValidationService.class),
                 mock(StockCalculationService.class),
                 cacheInvalidator

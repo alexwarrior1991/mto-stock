@@ -1,11 +1,13 @@
 package com.alejandro.mtostock.application.service.impl;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.reservation.ReservationRequest;
 import com.alejandro.mtostock.application.dto.reservation.ReservationResponse;
 import com.alejandro.mtostock.application.dto.reservation.ReservationUpdateRequest;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.mapper.ReservationMapper;
+import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.service.ReservationEngine;
 import com.alejandro.mtostock.application.service.ReservationService;
 import com.alejandro.mtostock.infrastructure.persistence.entity.EntityReferenceFactory;
@@ -31,6 +33,7 @@ class ReservationServiceImpl implements ReservationService {
 
     private final ReservationRepository reservationRepository;
     private final ReservationMapper reservationMapper;
+    private final EntityAuditService entityAuditService;
     private final ReservationEngine reservationEngine;
     private final EntityReferenceFactory entityReferenceFactory;
 
@@ -87,5 +90,15 @@ class ReservationServiceImpl implements ReservationService {
                 .and(ReservationSpecification.projectIdEquals(projectId))
                 .and(ReservationSpecification.materialIdEquals(materialId));
         return reservationMapper.toPageResponse(reservationRepository.findAll(specification, pageable));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<EntityRevisionResponse<ReservationResponse>> findRevisions(UUID id, Pageable pageable) {
+        return entityAuditService.findRevisions(
+                Reservation.class,
+                id,
+                reservationMapper::toResponse,
+                pageable);
     }
 }

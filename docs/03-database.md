@@ -270,6 +270,49 @@ Phase 3 adds Spring Data JPA auditing metadata to every persistent entity. In ad
 | `RELEASED` | Reservation was consumed or released and no longer reduces availability. |
 | `CANCELLED` | Reservation was cancelled and no longer reduces availability. |
 
+This type is reused by `reservation_aud.status`, so any future `ALTER TYPE` affects both tables.
+
+### Audit tables (Hibernate Envers)
+
+`V7__add_envers_audit_tables.sql` adds the change history. `audit_revision` replaces the `REVINFO`
+table Envers would create on its own, and seven `<table>_aud` twins hold the state of each audited
+entity at each revision. Full rationale — including what is deliberately **not** audited and why — is
+in `07-auditing.md`.
+
+#### `audit_revision`
+
+One row per transaction that changed an audited entity.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `id` | `integer` | Revision number, from `audit_revision_seq`. Shared by every entity changed in the same transaction. |
+| `timestamp` | `bigint` | Epoch milliseconds. Not `timestamptz`: this is the type `@RevisionTimestamp` accepts on every Envers version. |
+| `username` | `varchar(100)` | The same actor as `updated_by`; may be `system` or `unknown`. |
+| `user_id` | `varchar(100)` | Token `sub`, which survives a rename in Keycloak. |
+| `source` | `varchar(20)` | `HTTP`, `MESSAGING`, `SYSTEM` or `BASELINE`. Says which identifier space `correlation_id` belongs to. |
+| `correlation_id` | `varchar(200)` | `X-Correlation-Id` header, or the RabbitMQ message id. |
+| `ip_address` | `varchar(100)` | First `X-Forwarded-For` hop; behind the gateway `getRemoteAddr()` would be the gateway. |
+| `user_agent` | `varchar(500)` | HTTP path only. |
+| `request_method` | `varchar(20)` | HTTP path only. |
+| `request_uri` | `varchar(500)` | HTTP path only. |
+
+Revision `1` is the baseline written by the migration itself: a snapshot of every row that existed
+when history started being kept. It is marked `source = 'BASELINE'` because it is not a creation
+event.
+
+#### `<table>_aud`
+
+Seven twins: `material_aud`, `supplier_aud`, `warehouse_aud`, `project_aud`, `assembly_aud`,
+`assembly_component_aud`, `reservation_aud`.
+
+Each carries `id uuid`, `rev integer`, `revtype smallint` (`0` add, `1` modify, `2` delete) and the
+business columns of its base table — **not** the four audit-metadata columns, which live once per
+revision in `audit_revision` instead of being repeated per row.
+
+`reservation_aud.status` is the native `reservation_status` enum, the same type as the base table:
+the entity maps it with `@JdbcTypeCode(SqlTypes.NAMED_ENUM)`, so a `varchar` here would fail
+`ddl-auto: validate` and stop the application from booting.
+
 ### Constraints
 
 - All primary keys use `uuid` and default to `gen_random_uuid()`.
@@ -281,6 +324,7 @@ Phase 3 adds Spring Data JPA auditing metadata to every persistent entity. In ad
 - Foreign keys use restrictive deletes to preserve inventory history and auditability.
 - `stock_movement.related_movement_id` cannot point to itself.
 - No table stores current stock or assembly availability.
+- The `_aud` twins carry no `CHECK`, no `UNIQUE` and no foreign key to their base table: a history row records states that were valid at the time, and must outlive the row it describes. Their only foreign key is `rev` to `audit_revision`, and every business column is nullable because a deletion row writes nulls.
 
 ### Indexes
 
@@ -293,3 +337,5 @@ Phase 3 adds Spring Data JPA auditing metadata to every persistent entity. In ad
 - `idx_reservation_project_status` supports project reservation views.
 - `idx_assembly_component_assembly_id` supports loading BOMs.
 - `idx_assembly_component_material_id` supports impact analysis when a material changes.
+- `idx_<table>_aud_id_rev` on each audit twin supports the query that is actually made — "history of this entity" — which filters on `id`, while the primary key `(rev, id)` leads with `rev`.
+- `idx_audit_revision_timestamp`, `idx_audit_revision_username` and the partial `idx_audit_revision_correlation_id` support auditing queries by time, author and correlation.

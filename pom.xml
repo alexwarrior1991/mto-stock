@@ -50,6 +50,16 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-jpa</artifactId>
         </dependency>
+        <!--
+            Historial de cambios de los datos maestros y de las reservas. Envers se engancha a los
+            eventos del contexto de persistencia, asi que solo ve lo que pasa por una entidad: lo
+            que se escribe con SQL nativo -inventory_balance, inbox_message y el proyecto que llega
+            por RabbitMQ- no deja revision. Ver docs/07-auditing.md.
+        -->
+        <dependency>
+            <groupId>org.hibernate.orm</groupId>
+            <artifactId>hibernate-envers</artifactId>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-data-redis</artifactId>

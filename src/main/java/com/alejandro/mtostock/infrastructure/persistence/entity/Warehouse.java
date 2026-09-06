@@ -15,10 +15,12 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
+import org.hibernate.envers.Audited;
 
 /**
  * Persistent warehouse or logical storage location affected by stock movements.
  */
+@Audited
 @Entity
 @Table(
         name = "warehouse",

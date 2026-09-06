@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.infrastructure.web.controller;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.error.ApiErrorResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialRequest;
@@ -182,5 +183,26 @@ public class MaterialController {
             @PageableDefault(size = 20) Pageable pageable) {
         LOGGER.debug("HTTP request to search material movements id={}", id);
         return ResponseEntity.ok(stockMovementService.search(null, warehouseId, null, id, dateFrom, dateTo, user, pageable));
+    }
+
+    /**
+     * Returns the change history recorded by Hibernate Envers, newest revision first.
+     *
+     * <p>Se llama {@code /revisions} y no {@code /history} a propósito: {@code /movements} ya
+     * está documentado como «movement history» y son dos cosas distintas — aquello es el libro mayor
+     * de existencias, esto es quién cambió el registro.</p>
+     */
+    @Operation(summary = "Get material change history", description = "Returns the audited change history of one material, newest revision first.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Revision page returned"),
+            @ApiResponse(responseCode = "404", description = "Material not found", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
+    })
+    @GetMapping("/{id}/revisions")
+    public ResponseEntity<PageResponse<EntityRevisionResponse<MaterialResponse>>> revisions(
+            @Parameter(description = "Material UUID") @PathVariable UUID id,
+            @PageableDefault(size = 20) Pageable pageable) {
+        LOGGER.debug("HTTP request to read material revision history id={}", id);
+        return ResponseEntity.ok(materialService.findRevisions(id, pageable));
     }
 }

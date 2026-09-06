@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.infrastructure.web.controller;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.error.ApiErrorResponse;
 import com.alejandro.mtostock.application.dto.supplier.SupplierRequest;
@@ -108,5 +109,22 @@ public class SupplierController {
     public ResponseEntity<PageResponse<SupplierResponse>> findAll(@PageableDefault(size = 20) Pageable pageable) {
         LOGGER.debug("HTTP request to list suppliers");
         return ResponseEntity.ok(supplierService.findAll(pageable));
+    }
+
+    /**
+     * Returns the change history recorded by Hibernate Envers, newest revision first.
+     */
+    @Operation(summary = "Get supplier change history", description = "Returns the audited change history of one supplier, newest revision first.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Revision page returned"),
+            @ApiResponse(responseCode = "404", description = "Supplier not found", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
+    })
+    @GetMapping("/{id}/revisions")
+    public ResponseEntity<PageResponse<EntityRevisionResponse<SupplierResponse>>> revisions(
+            @Parameter(description = "Supplier UUID") @PathVariable UUID id,
+            @PageableDefault(size = 20) Pageable pageable) {
+        LOGGER.debug("HTTP request to read supplier revision history id={}", id);
+        return ResponseEntity.ok(supplierService.findRevisions(id, pageable));
     }
 }
