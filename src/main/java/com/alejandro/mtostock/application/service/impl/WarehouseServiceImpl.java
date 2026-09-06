@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.application.service.impl;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialStockResponse;
 import com.alejandro.mtostock.application.dto.stock.StockMovementResponse;
@@ -10,6 +11,7 @@ import com.alejandro.mtostock.application.dto.warehouse.WarehouseUpdateRequest;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.mapper.StockMovementMapper;
 import com.alejandro.mtostock.application.mapper.WarehouseMapper;
+import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.StockCalculationService;
 import com.alejandro.mtostock.application.service.TransferService;
@@ -41,6 +43,7 @@ class WarehouseServiceImpl implements WarehouseService {
 
     private final WarehouseRepository warehouseRepository;
     private final WarehouseMapper warehouseMapper;
+    private final EntityAuditService entityAuditService;
     private final StockMovementMapper stockMovementMapper;
     private final InventoryValidationService inventoryValidationService;
     private final StockCalculationService stockCalculationService;
@@ -91,5 +94,15 @@ class WarehouseServiceImpl implements WarehouseService {
     public List<StockMovementResponse> transfer(StockMovementTransferRequest request) {
         List<StockMovement> movements = transferService.transfer(request);
         return stockMovementMapper.toResponseList(movements);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<EntityRevisionResponse<WarehouseResponse>> findRevisions(UUID id, Pageable pageable) {
+        return entityAuditService.findRevisions(
+                Warehouse.class,
+                id,
+                warehouseMapper::toResponse,
+                pageable);
     }
 }

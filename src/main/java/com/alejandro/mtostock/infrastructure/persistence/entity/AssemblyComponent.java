@@ -19,12 +19,14 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
+import org.hibernate.envers.Audited;
 
 import java.math.BigDecimal;
 
 /**
  * Persistent BOM line linking an assembly to the material quantity required per unit.
  */
+@Audited
 @Entity
 @Table(
         name = "assembly_component",

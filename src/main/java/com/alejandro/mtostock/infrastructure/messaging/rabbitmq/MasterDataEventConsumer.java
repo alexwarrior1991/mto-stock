@@ -4,6 +4,7 @@ import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
 import com.alejandro.mtostock.application.service.MasterDataEventProcessor;
+import com.alejandro.mtostock.infrastructure.persistence.audit.MessagingAuditContext;
 import com.alejandro.mtostock.configuration.messaging.MessagePayloadSignatureVerifier;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
@@ -80,7 +81,19 @@ public class MasterDataEventConsumer {
         rejectIfUnprocessable(message, properties);
 
         InboxMessageCommand command = InboxMessageCommandFactory.from(message, rawMessage);
-        InboxProcessingResult result = masterDataEventProcessor.process(command, message);
+
+        // Deja el identificador del mensaje al alcance del listener de revisiones de Envers, para que
+        // un cambio provocado por este evento se pueda cruzar con su fila de inbox_message en lugar de
+        // quedar como una escritura de 'system' sin nada que la ate a su causa. Se limpia siempre: los
+        // hilos del listener salen de un pool, y un contexto colgado atribuiria el proximo mensaje a
+        // este identificador.
+        MessagingAuditContext.set(new MessagingAuditContext.Context(command.messageId(), command.sourceService()));
+        InboxProcessingResult result;
+        try {
+            result = masterDataEventProcessor.process(command, message);
+        } finally {
+            MessagingAuditContext.clear();
+        }
 
         LOGGER.info("Master data message settled: messageId={}, idempotencyKey={}, result={}",
                 properties.getMessageId(), command.messageId(), result);

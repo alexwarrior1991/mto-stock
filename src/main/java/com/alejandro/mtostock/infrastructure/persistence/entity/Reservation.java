@@ -21,6 +21,7 @@ import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
 import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.envers.Audited;
 import org.hibernate.type.SqlTypes;
 
 import java.math.BigDecimal;
@@ -30,6 +31,7 @@ import java.util.Objects;
 /**
  * Persistent reservation that temporarily subtracts material from available stock for a project.
  */
+@Audited
 @Entity
 @Table(
         name = "reservation",

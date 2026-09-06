@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.infrastructure.web.controller;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyAvailabilityResponse;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyRequest;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyResponse;
@@ -153,5 +154,22 @@ public class AssemblyController {
                                                                            @Parameter(description = "Warehouse UUID used for component availability") @RequestParam UUID warehouseId) {
         LOGGER.debug("HTTP request to calculate assembly production capacity id={} warehouseId={}", id, warehouseId);
         return ResponseEntity.ok(assemblyService.calculateAvailability(id, warehouseId));
+    }
+
+    /**
+     * Returns the change history recorded by Hibernate Envers, newest revision first.
+     */
+    @Operation(summary = "Get assembly change history", description = "Returns the audited change history of one assembly, newest revision first. Changing the bill of materials also revises the assembly itself.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Revision page returned"),
+            @ApiResponse(responseCode = "404", description = "Assembly not found", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
+    })
+    @GetMapping("/{id}/revisions")
+    public ResponseEntity<PageResponse<EntityRevisionResponse<AssemblyResponse>>> revisions(
+            @Parameter(description = "Assembly UUID") @PathVariable UUID id,
+            @PageableDefault(size = 20) Pageable pageable) {
+        LOGGER.debug("HTTP request to read assembly revision history id={}", id);
+        return ResponseEntity.ok(assemblyService.findRevisions(id, pageable));
     }
 }

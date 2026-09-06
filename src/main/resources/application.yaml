@@ -12,6 +12,24 @@ spring:
         jwt:
           issuer-uri: ${KEYCLOAK_ISSUER_URI:http://auth.mto.local:8082/realms/mto}
 
+  # Historial de cambios (Hibernate Envers). Vive aqui y no en los application-*.yml porque no
+  # cambia por perfil; las propiedades de hibernate se acumulan entre ficheros, asi que esto convive
+  # con el format_sql que anade el perfil dev.
+  jpa:
+    properties:
+      org.hibernate.envers:
+        # En minusculas a proposito. El sufijo por defecto es _AUD y el nombre final depende de como
+        # trate la estrategia de nombres a los identificadores de Envers; fijarlo aqui hace que la
+        # tabla se llame igual pase lo que pase. Equivocarse en esto no da un aviso: con
+        # ddl-auto: validate la aplicacion no arranca.
+        audit_table_suffix: _aud
+        revision_field_name: rev
+        revision_type_field_name: revtype
+        # Guarda el ultimo estado conocido en la fila de borrado. Sin esto un DEL deja solo el id y
+        # nulos, y la pregunta que motiva todo esto -que decia la linea de despiece que alguien
+        # quito- habria que contestarla yendo a buscar la revision anterior.
+        store_data_at_delete: true
+
   # Conexion con Redis, que respalda la cache de datos maestros. Estos valores solo se usan si
   # app.cache.enabled esta activo: con la cache apagada el CacheManager es un NoOp que no guarda
   # nada y nadie abre una conexion, asi que la aplicacion arranca sin Redis.

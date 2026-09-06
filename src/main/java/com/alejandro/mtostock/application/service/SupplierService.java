@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.application.service;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.supplier.SupplierRequest;
 import com.alejandro.mtostock.application.dto.supplier.SupplierResponse;
@@ -20,4 +21,11 @@ public interface SupplierService {
     SupplierResponse findById(UUID id);
 
     PageResponse<SupplierResponse> findAll(Pageable pageable);
+
+    /**
+     * Historial de cambios del proveedor.
+     *
+     * @throws com.alejandro.mtostock.application.exception.NotFoundException si no existe
+     */
+    PageResponse<EntityRevisionResponse<SupplierResponse>> findRevisions(UUID id, Pageable pageable);
 }

@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.infrastructure.web.controller;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.error.ApiErrorResponse;
 import com.alejandro.mtostock.application.dto.reservation.ReservationRequest;
@@ -169,5 +170,22 @@ public class ReservationController {
             @PageableDefault(size = 20) Pageable pageable) {
         LOGGER.debug("HTTP request to search reservations");
         return ResponseEntity.ok(reservationService.search(warehouseId, status, projectId, materialId, pageable));
+    }
+
+    /**
+     * Returns the change history recorded by Hibernate Envers, newest revision first.
+     */
+    @Operation(summary = "Get reservation change history", description = "Returns the audited change history of one reservation, newest revision first.")
+    @ApiResponses({
+            @ApiResponse(responseCode = "200", description = "Revision page returned"),
+            @ApiResponse(responseCode = "404", description = "Reservation not found", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
+    })
+    @GetMapping("/{id}/revisions")
+    public ResponseEntity<PageResponse<EntityRevisionResponse<ReservationResponse>>> revisions(
+            @Parameter(description = "Reservation UUID") @PathVariable UUID id,
+            @PageableDefault(size = 20) Pageable pageable) {
+        LOGGER.debug("HTTP request to read reservation revision history id={}", id);
+        return ResponseEntity.ok(reservationService.findRevisions(id, pageable));
     }
 }

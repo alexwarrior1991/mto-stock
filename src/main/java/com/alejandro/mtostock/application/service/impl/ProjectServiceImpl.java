@@ -1,11 +1,13 @@
 package com.alejandro.mtostock.application.service.impl;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.project.ProjectRequest;
 import com.alejandro.mtostock.application.dto.project.ProjectResponse;
 import com.alejandro.mtostock.application.dto.project.ProjectUpdateRequest;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.mapper.ProjectMapper;
+import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.ProjectService;
 import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
@@ -33,6 +35,7 @@ class ProjectServiceImpl implements ProjectService {
 
     private final ProjectRepository projectRepository;
     private final ProjectMapper projectMapper;
+    private final EntityAuditService entityAuditService;
     private final InventoryValidationService inventoryValidationService;
     private final CacheInvalidator cacheInvalidator;
 
@@ -67,5 +70,15 @@ class ProjectServiceImpl implements ProjectService {
     @Transactional(readOnly = true)
     public PageResponse<ProjectResponse> findAll(Pageable pageable) {
         return projectMapper.toPageResponse(projectRepository.findAll(pageable));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<EntityRevisionResponse<ProjectResponse>> findRevisions(UUID id, Pageable pageable) {
+        return entityAuditService.findRevisions(
+                Project.class,
+                id,
+                projectMapper::toResponse,
+                pageable);
     }
 }

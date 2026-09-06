@@ -4,11 +4,13 @@ import com.alejandro.mtostock.application.dto.assembly.AssemblyAvailabilityRespo
 import com.alejandro.mtostock.application.dto.assembly.AssemblyRequest;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyResponse;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyUpdateRequest;
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.mapper.AssemblyMapper;
 import com.alejandro.mtostock.application.service.AssemblyService;
 import com.alejandro.mtostock.application.service.BOMCalculationService;
+import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
 import com.alejandro.mtostock.configuration.cache.CacheNames;
@@ -41,6 +43,7 @@ class AssemblyServiceImpl implements AssemblyService {
     private final AssemblyRepository assemblyRepository;
     private final MaterialRepository materialRepository;
     private final AssemblyMapper assemblyMapper;
+    private final EntityAuditService entityAuditService;
     private final InventoryValidationService inventoryValidationService;
     private final BOMCalculationService bomCalculationService;
     private final CacheInvalidator cacheInvalidator;
@@ -100,5 +103,15 @@ class AssemblyServiceImpl implements AssemblyService {
             component.setMaterial(material);
             component.setAssembly(assembly);
         }
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PageResponse<EntityRevisionResponse<AssemblyResponse>> findRevisions(UUID id, Pageable pageable) {
+        return entityAuditService.findRevisions(
+                Assembly.class,
+                id,
+                assemblyMapper::toResponse,
+                pageable);
     }
 }

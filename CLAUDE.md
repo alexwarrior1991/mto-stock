@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 MTO Stock: a Spring Boot 4 / Java 25 inventory API for a make-to-order warehouse (railway catenary construction). The warehouse stores individual component materials, not assembled catenary sets; assemblies are virtual products defined by a Bill of Materials (BOM) and have no stock of their own.
 
-Read `docs/` in order for full domain/architecture context: `00-project-overview.md`, `01-architecture.md`, `02-domain-model.md`, `03-database.md`, `04-rest-api.md`, `05-development-roadmap.md`. Those documents (plus this file) are the source of truth for the project — `03-database.md` in particular documents the full schema, enums, constraints and indexes and should be checked before changing persistence code.
+Read `docs/` in order for full domain/architecture context: `00-project-overview.md`, `01-architecture.md`, `02-domain-model.md`, `03-database.md`, `04-rest-api.md`, `05-development-roadmap.md`, `06-messaging.md`, `07-auditing.md`. Those documents (plus this file) are the source of truth for the project — `03-database.md` in particular documents the full schema, enums, constraints and indexes and should be checked before changing persistence code.
 
 ## Commands
 
@@ -37,7 +37,7 @@ cp .env.example .env   # then edit credentials
 docker compose up -d --build
 ```
 
-- Flyway runs automatically on startup against `src/main/resources/db/migration`; Hibernate is `ddl-auto: validate` in every profile, so schema changes always go through a new Flyway migration, never through entity annotations alone.
+- Flyway runs automatically on startup against `src/main/resources/db/migration`; Hibernate is `ddl-auto: validate` in every profile, so schema changes always go through a new Flyway migration, never through entity annotations alone. A migration that changes a column on one of the seven audited tables must change its `<table>_aud` twin in the same migration (nullable, no constraints) — see **Auditing** below.
 - Swagger UI: `http://localhost:8080/swagger-ui.html`; OpenAPI JSON: `/v3/api-docs`; Actuator health/info/metrics/prometheus under `/actuator/*`.
 - Profiles: `dev`, `test`, `prod` (`application-*.yml`), selected via `SPRING_PROFILES_ACTIVE`.
 
@@ -59,6 +59,31 @@ Stock is never stored directly on `material`/`warehouse`. It is derived from an 
 - `inventory_balance` (added in `V3__add_inventory_balance_projection.sql`) is a per material/warehouse projection with `physical_quantity`, `reserved_quantity` and `available_quantity` (`available = physical - reserved`, enforced by a DB check constraint), plus an optimistic-lock `version` column. `InventoryBalanceRepository`/`InventoryBalanceServiceImpl` update it atomically (conditional `UPDATE ... WHERE` row counts, not read-then-write) whenever a movement or reservation changes it, so reads never need to sum `stock_movement`/`reservation` history. `StockCalculationServiceImpl` reads from this projection, not from `stock_movement`, for `calculatePhysicalStock`/`calculateReservedStock`/`calculateAvailableStock`.
 - `reservation.status` (`ACTIVE`/`RELEASED`/`CANCELLED`/`CONSUMED`) drives `reserved_quantity`; only `ACTIVE` reservations reduce availability.
 - Assemblies never have stock — availability is computed on demand from the BOM (`assembly_component`) against current component stock (`BOMCalculationService`).
+
+### Auditing
+
+Two layers, answering different questions. The `created_at`/`updated_at`/`created_by`/`updated_by`
+columns (Spring Data JPA auditing) say who touched a row **last**; Hibernate Envers keeps the
+**history** of previous values. Both resolve the actor through `configuration/AuditActorResolver`, so
+they cannot disagree about who wrote something — the `system` vs `unknown` distinction lives there.
+Full detail in `docs/07-auditing.md`.
+
+- **Audited (7)**: `Material`, `Supplier`, `Warehouse`, `Project`, `Assembly`, `AssemblyComponent`,
+  `Reservation` — one `<table>_aud` twin each, plus `audit_revision` (a custom `@RevisionEntity`
+  replacing `REVINFO`) in `infrastructure/persistence/audit`.
+- **Not audited (3), on purpose**: `StockMovement` is already an immutable append-only ledger, so a
+  twin would double the biggest table for no new information; `InventoryBalance` and `InboxMessage`
+  are written **only** with native SQL, which Envers cannot see, so their twins would sit empty and
+  read as "never changed". `@Audited` therefore goes on each entity and **never** on
+  `AuditableEntity`, which would sweep in all three and stop the application from booting under
+  `ddl-auto: validate`. `JpaEntityModelTest` guards the split.
+- **Known gap**: a `project` changed by a master data event leaves no revision —
+  `ProjectRepository.upsertFromMasterData`/`deactivateFromMasterData` are native SQL because the
+  sequence watermark has to be checked inside the writing statement. `project_aud` covers the REST
+  path only.
+- History is read at `GET /api/v1/inventory/<resource>/{id}/revisions` (not `/history`: `/movements`
+  already means the stock ledger). No new security rule — `GET` under the API prefix is already
+  `STOCK_READ`.
 
 ### Messaging
 
@@ -120,4 +145,4 @@ repository's `README_MESSAGING.md`) before changing anything under `application/
 
 - `PostgreSQLTestContainer` (in `support/`) is the shared base for integration tests needing a real Postgres (`postgres:17-alpine` via Testcontainers — the same version `mto-platform` runs, so CI and local do not test against different engines) with Flyway migrations applied — extend it rather than mocking the datasource for repository/persistence tests.
 - `MtoStockApplicationTests` is the only `@SpringBootTest`: it boots the whole context against a real Postgres (`PostgreSQLTestContainer`), with no service replaced by a mock, and asserts every business service bean is present. It needs Docker for that reason. It used to mock the ten services and exclude `DataSourceAutoConfiguration`, which is why nothing caught that the 16 `@Service` impls carried `@ConditionalOnBean(XRepository.class)` — an annotation Spring only supports on auto-configurations, always false on a scanned `@Service`, so no service bean was ever created and the packaged application could not start. Do not reintroduce it.
-- Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` + `InboxMessageRepositoryDataJpaTest` (repositories), `InboxIdempotencyDataJpaTest` (inbox end to end on real Postgres), `MapperLayerTest` (mappers), `MessagingLayerTest` (RabbitMQ contract, consumer and topology), `CacheLayerTest` (cache wiring and invalidation, no Redis needed), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class.
+- Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` + `InboxMessageRepositoryDataJpaTest` (repositories), `InboxIdempotencyDataJpaTest` (inbox end to end on real Postgres), `EnversAuditDataJpaTest` (change history end to end — **it disables the test transaction on purpose: Envers writes at transaction completion, not on flush, so a rolled-back slice test would record nothing and look like Envers is broken**), `MapperLayerTest` (mappers), `MessagingLayerTest` (RabbitMQ contract, consumer and topology), `CacheLayerTest` (cache wiring and invalidation, no Redis needed), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class.

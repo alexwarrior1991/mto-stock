@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.application.service;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialStockResponse;
 import com.alejandro.mtostock.application.dto.stock.StockMovementResponse;
@@ -28,4 +29,11 @@ public interface WarehouseService {
     MaterialStockResponse calculateMaterialStock(UUID warehouseId, UUID materialId);
 
     List<StockMovementResponse> transfer(StockMovementTransferRequest request);
+
+    /**
+     * Historial de cambios del almacén.
+     *
+     * @throws com.alejandro.mtostock.application.exception.NotFoundException si no existe
+     */
+    PageResponse<EntityRevisionResponse<WarehouseResponse>> findRevisions(UUID id, Pageable pageable);
 }

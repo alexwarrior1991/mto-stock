@@ -15,10 +15,12 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
+import org.hibernate.envers.Audited;
 
 /**
  * Persistent supplier that can be referenced by material entry movements.
  */
+@Audited
 @Entity
 @Table(
         name = "supplier",

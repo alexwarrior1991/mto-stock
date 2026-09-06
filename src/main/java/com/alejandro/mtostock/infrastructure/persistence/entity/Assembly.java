@@ -18,6 +18,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 import lombok.ToString;
+import org.hibernate.envers.Audited;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +27,7 @@ import java.util.Objects;
 /**
  * Persistent virtual assembly defined by a bill of materials instead of stored stock.
  */
+@Audited
 @Entity
 @Table(
         name = "assembly",

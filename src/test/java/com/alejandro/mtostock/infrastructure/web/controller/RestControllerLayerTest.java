@@ -1,5 +1,8 @@
 package com.alejandro.mtostock.infrastructure.web.controller;
 
+import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
+import com.alejandro.mtostock.application.dto.audit.RevisionMetadataResponse;
+import com.alejandro.mtostock.application.dto.audit.RevisionOperation;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyAvailabilityResponse;
 import com.alejandro.mtostock.application.dto.common.PageMetadataResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
@@ -275,5 +278,50 @@ class RestControllerLayerTest {
     private static <T> PageResponse<T> page(T... items) {
         return new PageResponse<>(List.of(items), new PageMetadataResponse(0, items.length == 0 ? 20 : items.length,
                 items.length, 1, true, true));
+    }
+
+    /**
+     * El historial se expone en {@code /revisions} y no en {@code /history} a proposito:
+     * {@code /materials/{id}/movements} ya esta documentado como «movement history» y son dos cosas
+     * distintas —el libro mayor de existencias frente a quien cambio el registro—, asi que el nombre
+     * se fija aqui para que nadie lo unifique por parecer mas natural.
+     */
+    @Test
+    void everyAuditedResourceExposesItsChangeHistoryUnderRevisions() throws NoSuchMethodException {
+        assertRevisionsEndpoint(MaterialController.class);
+        assertRevisionsEndpoint(SupplierController.class);
+        assertRevisionsEndpoint(WarehouseController.class);
+        assertRevisionsEndpoint(ProjectController.class);
+        assertRevisionsEndpoint(AssemblyController.class);
+        assertRevisionsEndpoint(ReservationController.class);
+    }
+
+    @Test
+    void materialControllerDelegatesTheChangeHistoryToTheService() {
+        MaterialService materialService = mock(MaterialService.class);
+        MaterialController controller = new MaterialController(materialService, mock(StockMovementService.class));
+        UUID materialId = UUID.randomUUID();
+        Pageable pageable = PageRequest.of(0, 20);
+        PageResponse<EntityRevisionResponse<MaterialResponse>> history = new PageResponse<>(
+                List.of(new EntityRevisionResponse<>(
+                        new RevisionMetadataResponse(7L, Instant.EPOCH, RevisionOperation.UPDATED,
+                                "alejandro", "HTTP", "corr-1"),
+                        materialResponse(materialId))),
+                new PageMetadataResponse(0, 20, 1, 1, true, true));
+
+        when(materialService.findRevisions(materialId, pageable)).thenReturn(history);
+
+        var response = controller.revisions(materialId, pageable);
+
+        assertEquals(HttpStatus.OK, response.getStatusCode());
+        assertSame(history, response.getBody());
+        verify(materialService).findRevisions(materialId, pageable);
+    }
+
+    private static void assertRevisionsEndpoint(Class<?> controller) throws NoSuchMethodException {
+        var method = controller.getDeclaredMethod("revisions", UUID.class, Pageable.class);
+        var mapping = method.getAnnotation(org.springframework.web.bind.annotation.GetMapping.class);
+        assertNotNull(mapping, controller.getSimpleName() + " should expose revisions as a GET");
+        assertEquals("/{id}/revisions", mapping.value()[0]);
     }
 }
