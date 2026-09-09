@@ -18,6 +18,25 @@ Core tables:
 
 Create indexes for stock queries and movement history.
 
+### What is actually in the database today
+
+That list is the original proposal and stops at the core tables. The schema has grown since, always
+through a Flyway migration — `ddl-auto` is `validate` in every profile, so an entity annotation alone
+never changes anything:
+
+| Migration | What it added |
+| --- | --- |
+| `V1__create_inventory_schema.sql` | The eight core tables and the two enums. |
+| `V2__add_audit_user_columns.sql` | `created_by` / `updated_by` on all eight, plus the `updated_at` that `assembly_component` and `stock_movement` were missing. |
+| `V3__add_inventory_balance_projection.sql` | `inventory_balance`, the `CONSUMED` reservation status, and the widened release-timestamp check. |
+| `V4__create_inbox_message_table.sql` | `inbox_message` and `inbox_message_status`. |
+| `V5__add_project_master_data_source.sql` | `project.source_service` / `source_entity_id`. |
+| `V6__add_project_master_data_sequence.sql` | `project.source_sequence_number`. |
+| `V7__add_envers_audit_tables.sql` | `audit_revision` and the seven `<table>_aud` twins. |
+
+A migration that changes a column on one of the seven audited tables has to change its `_aud` twin in
+the same migration, or the application stops booting under `validate`.
+
 ## Phase 2 schema design
 
 ### Design improvements over the initial proposal
@@ -25,7 +44,8 @@ Create indexes for stock queries and movement history.
 The documented proposal intentionally lists only the core tables. The Phase 2 schema keeps those tables but adds the following production-oriented details:
 
 - PostgreSQL enum types are used for movement and reservation statuses to keep valid values centralized and consistent with the domain model.
-- Stock is not stored in `material`, `warehouse`, or any stock snapshot table. Current stock is calculated from `stock_movement.quantity` using the sign implied by `stock_movement.type`.
+- Stock is not stored in `material` or `warehouse`. The ledger `stock_movement` is the truth: every change is one signed row, and stock is what those rows add up to.
+- What the ledger says is *also* kept in `inventory_balance`, a per material/warehouse projection added in `V3`. It is not a second source of truth but a cached one, rebuilt from the ledger and the active reservations in the migration that creates it, and maintained from then on by the same transaction that writes the movement or the reservation. Reads go to the projection so they never have to sum history; a check constraint keeps `available = physical - reserved` from drifting inside a row, and the conditional `UPDATE ... WHERE` idiom keeps two concurrent writers from overdrawing it.
 - BOM data is normalized through `assembly_component`, with one row per assembly/material pair and a positive required quantity.
 - `stock_movement` includes optional source references (`supplier`, `project`, `reservation`, `related_movement`, `external_reference`) so entries, outputs, adjustments, and transfers can be audited without denormalizing stock.
 - Transfers are represented as two movement rows, one `OUTGOING_TRANSFER` and one `INCOMING_TRANSFER`, linked by `related_movement_id`. This keeps stock calculation simple per warehouse and scales better than a polymorphic transfer table.
@@ -43,6 +63,8 @@ The documented proposal intentionally lists only the core tables. The Phase 2 sc
 - `reservation` reserves a positive quantity of a material in a warehouse for a project. Only `ACTIVE` reservations reduce availability.
 - `stock_movement.reservation_id` can reference the reservation released by an output movement, preserving traceability between reservations and consumption.
 - `stock_movement.related_movement_id` links transfer pairs or correction movements without changing the stock calculation model.
+- `inventory_balance` is the current-stock projection: one row per material/warehouse pair, holding what `stock_movement` and the `ACTIVE` reservations add up to. It is derived data with a unique key, not a relationship, so it hangs off `material` and `warehouse` and nothing points at it.
+- `inbox_message` is not part of the inventory model at all. It records the master data messages this service has received from `mto-configuration` and what it did with each one, so a redelivery is applied at most once. It has no foreign key to anything: it describes traffic, not stock.
 
 ### Mermaid ER diagram
 
@@ -59,6 +81,8 @@ erDiagram
     MATERIAL ||--o{ RESERVATION : reserved
     WAREHOUSE ||--o{ RESERVATION : reserved_in
     PROJECT ||--o{ RESERVATION : reserves_for
+    MATERIAL ||--o{ INVENTORY_BALANCE : projected_as
+    WAREHOUSE ||--o{ INVENTORY_BALANCE : projected_in
 
     MATERIAL {
         uuid id PK
@@ -143,7 +167,38 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+
+    INVENTORY_BALANCE {
+        uuid id PK
+        uuid material_id FK
+        uuid warehouse_id FK
+        numeric physical_quantity
+        numeric reserved_quantity
+        numeric available_quantity
+        bigint version
+        timestamptz created_at
+        timestamptz updated_at
+    }
+
+    INBOX_MESSAGE {
+        uuid id PK
+        varchar message_id UK
+        varchar source_service UK
+        varchar event_type
+        varchar aggregate_type
+        varchar aggregate_id
+        varchar payload_hash
+        json payload
+        inbox_message_status status
+        timestamptz received_at
+        timestamptz processed_at
+        timestamptz failed_at
+        integer processing_attempts
+    }
 ```
+
+`INBOX_MESSAGE` is drawn without a single relationship line on purpose: it has no foreign key to any
+inventory table, because it records the messages that arrived and not the stock they moved.
 
 ### Table definitions and column descriptions
 
@@ -189,11 +244,20 @@ Phase 3 adds Spring Data JPA auditing metadata to every persistent entity. In ad
 | Column | Type | Description |
 | --- | --- | --- |
 | `id` | `uuid` | Primary key. |
-| `code` | `varchar(64)` | Stable project code. |
+| `code` | `varchar(64)` | Stable project code. For a synchronized project it is derived as `EP-<source_entity_id>`, because an execution package publishes no code of its own and `code` is mandatory and unique. |
 | `name` | `varchar(255)` | Project name. |
-| `active` | `boolean` | Whether the project can be used in new operations. |
+| `active` | `boolean` | Whether the project can be used in new operations. A project synchronized from a deleted execution package is deactivated, never deleted: `reservation` and `stock_movement` reference it with `on delete restrict`. |
+| `source_service` | `varchar(100)` | Service the project came from (`mto-configuration`), or `NULL` when a person created it through the API. Added in `V5`. |
+| `source_entity_id` | `varchar(100)` | Identifier of the entity it came from in that service. Together with `source_service` it is the key a later delivery of the same execution package is matched on — not `code`, which people read and write. Added in `V5`. |
+| `source_sequence_number` | `bigint` | Watermark: the sequence number of the last master data change applied to this row, from the `sequenceNumber` header. A change that arrives below it is discarded, which is what stops a delayed `UPDATE` behind a `DELETE` from reactivating the project. `NULL` on projects created through the API. Added in `V6`. |
 | `created_at` | `timestamptz` | Creation timestamp. |
 | `updated_at` | `timestamptz` | Last update timestamp. |
+
+The watermark is compared **inside** the `where` of the writing statement and never read first: between
+a `select` and an `update` fit two deliveries. That is also why
+`ProjectRepository.upsertFromMasterData` and `deactivateFromMasterData` are native SQL, and why a
+`project` changed by a master data event leaves no Envers revision — see the `Project` gap in
+`07-auditing.md`.
 
 #### `assembly`
 
@@ -249,6 +313,62 @@ Phase 3 adds Spring Data JPA auditing metadata to every persistent entity. In ad
 | `created_at` | `timestamptz` | Creation timestamp. |
 | `updated_at` | `timestamptz` | Last update timestamp. |
 
+#### `inventory_balance`
+
+Added in `V3__add_inventory_balance_projection.sql`. One row per material/warehouse pair with the
+current stock, so a read never has to sum `stock_movement` and `reservation` history. The migration
+fills it from exactly those two tables, so the projection starts life agreeing with the ledger it
+comes from.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `id` | `uuid` | Primary key. |
+| `material_id` | `uuid` | Projected material. |
+| `warehouse_id` | `uuid` | Warehouse the quantities belong to. |
+| `physical_quantity` | `numeric(19,6)` | What is on the shelf: the signed sum of this pair's movements. |
+| `reserved_quantity` | `numeric(19,6)` | What `ACTIVE` reservations hold. |
+| `available_quantity` | `numeric(19,6)` | `physical_quantity - reserved_quantity`, stored rather than computed so a query can filter on it, and held to that definition by a check constraint. |
+| `version` | `bigint` | Optimistic-lock column, mapped `@Version`. Today nothing writes this row through JPA — every update is native — so the statements increment it by hand, which keeps it honest for whatever writes it that way later. |
+| `created_at` | `timestamptz` | Creation timestamp. |
+| `updated_at` | `timestamptz` | Last update timestamp. |
+
+Every write goes through `InventoryBalanceRepository` as a conditional native
+`UPDATE ... WHERE <the quantity is there>`, and the caller reads the row count: nothing is ever read
+and then written back. The guard against overdrawing stock is therefore the `where` of that statement
+and not a check in Java, which two concurrent deliveries would both pass.
+
+The row is created lazily, by the `on conflict (material_id, warehouse_id) do nothing` insert that
+precedes the first increase. So a material that has never entered a warehouse has no row there, and
+its stock reads as zero through `coalesce`, not as a missing row.
+
+#### `inbox_message`
+
+Added in `V4__create_inbox_message_table.sql`. The consumer-side counterpart of the outbox
+`mto-configuration` publishes with: the outbox guarantees a message is **published** at least once,
+this table guarantees it is **applied** exactly once. Full detail in `06-messaging.md`.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `id` | `uuid` | Primary key. |
+| `message_id` | `varchar(200)` | Idempotency key: the envelope's `operationId`, or the AMQP `message_id` header when that is missing. Never truncated — two different identifiers cut to the same value would make a legitimate event look like a duplicate. |
+| `source_service` | `varchar(100)` | Publisher (`origin` of the envelope). Part of the key so two publishers cannot collide on one identifier. |
+| `event_type` | `varchar(150)` | Event type as published. |
+| `aggregate_type`, `aggregate_id` | `varchar(150)`, `varchar(100)` | Entity and id that changed. |
+| `exchange_name`, `routing_key`, `queue_name` | `varchar(255)` | Where the message came through. |
+| `payload_hash` | `varchar(64)` | SHA-256 of the payload, for correlating and for spotting a redelivery whose content changed. Deliberately **not** the idempotency key: two legitimately identical events would hash the same. |
+| `payload` | `json` | The JSON exactly as it arrived. `json` and not `jsonb`: `jsonb` reorders keys and collapses whitespace, so what is read back would no longer be what was received and would stop matching `payload_hash`. |
+| `status` | `inbox_message_status` | Where the message got to. |
+| `received_at` | `timestamptz` | When it was recorded. |
+| `processed_at` | `timestamptz` | When it was applied. |
+| `failed_at` | `timestamptz` | When it last failed. Kept even after a later success, as history. |
+| `failure_reason` | `text` | Exception class and message of the last failure, truncated to 2000 characters by the service. |
+| `processing_attempts` | `integer` | How many times the handler actually ran. A skipped duplicate does not increment it. |
+| `created_at`, `updated_at` | `timestamptz` | Row timestamps. |
+
+The guarantee is `uq_inbox_message_message_id_source`, not any check in code: `InboxMessageRepository`
+claims and marks with conditional native `UPDATE`s and an `on conflict` insert — the same idiom as
+`inventory_balance` — because a read-then-write lets two concurrent deliveries through.
+
 ### Enums
 
 #### `stock_movement_type`
@@ -266,11 +386,21 @@ Phase 3 adds Spring Data JPA auditing metadata to every persistent entity. In ad
 
 | Value | Meaning |
 | --- | --- |
-| `ACTIVE` | Reservation currently reduces available stock. |
-| `RELEASED` | Reservation was consumed or released and no longer reduces availability. |
-| `CANCELLED` | Reservation was cancelled and no longer reduces availability. |
+| `ACTIVE` | Reservation currently reduces available stock. It is the only value that does. |
+| `RELEASED` | Reservation was given back without the material leaving the warehouse. `reserved` drops, `physical` does not. |
+| `CANCELLED` | Reservation was cancelled. Same effect on stock as `RELEASED`; the difference is why, and it is worth keeping apart in the history. |
+| `CONSUMED` | The material actually left against this reservation. Both `reserved` and `physical` drop. Added in `V3`, which is also what split it from `RELEASED`. |
 
 This type is reused by `reservation_aud.status`, so any future `ALTER TYPE` affects both tables.
+
+#### `inbox_message_status`
+
+| Value | Meaning |
+| --- | --- |
+| `RECEIVED` | Recorded on arrival, not claimed yet. |
+| `PROCESSING` | Claimed by one delivery. The claim is conditional, so a second concurrent delivery finds nothing to claim and skips the handler. |
+| `PROCESSED` | Applied. An event whose entity has no handler ends up here too: what to do with it was decided — nothing — and redelivering it would not change that. |
+| `FAILED` | The handler threw. Written by `recordFailure` in its own `REQUIRES_NEW` transaction, because the attempt's transaction has to roll back and would take the mark with it. |
 
 ### Audit tables (Hibernate Envers)
 
@@ -320,10 +450,15 @@ the entity maps it with `@JdbcTypeCode(SqlTypes.NAMED_ENUM)`, so a `varchar` her
 - Quantities use `numeric(19,6)` to avoid floating-point errors and support future fractional units.
 - All quantities are constrained to non-negative or positive according to the domain rule.
 - `assembly_component` has a unique `(assembly_id, material_id)` constraint to prevent duplicated BOM lines.
-- `reservation.released_at` must be set when status is `RELEASED` or `CANCELLED`, and must be `null` when status is `ACTIVE`.
+- `reservation.released_at` must be set for every status other than `ACTIVE`, and must be `null` when status is `ACTIVE`. `V3` widened this from an explicit `RELEASED`/`CANCELLED` list when it added `CONSUMED`, so a future status cannot slip past it.
 - Foreign keys use restrictive deletes to preserve inventory history and auditability.
 - `stock_movement.related_movement_id` cannot point to itself.
-- No table stores current stock or assembly availability.
+- `inventory_balance` has a unique `(material_id, warehouse_id)` constraint — it is what makes the `on conflict do nothing` insert safe — and three non-negative checks plus `chk_inventory_balance_available_matches_quantities`, which pins `available_quantity = physical_quantity - reserved_quantity`. A projection that could drift from its own definition would be worse than no projection.
+- `inbox_message` has a unique `(message_id, source_service)` constraint. It is the whole idempotency guarantee, so it belongs in the schema and not in Java.
+- `inbox_message` status timestamps are one-way implications, not equivalences: `PROCESSED` requires `processed_at` and `FAILED` requires `failed_at`, but a message that failed and was later reprocessed stays `PROCESSED` and keeps its `failed_at` as history.
+- `project` requires `source_service` and `source_entity_id` either both set or both null (`chk_project_source_columns_together`), and `uq_project_source` makes the pair unique. A half-filled row would be inserted again on the next delivery instead of updated. `source_sequence_number` cannot be set without a `source_service`.
+- No table stores assembly availability; it is always computed from the BOM against component stock.
+- `inventory_balance` is the one table that stores current stock, and it is a projection: derived from `stock_movement` and the active reservations, rebuildable from them, and never the thing that is corrected by hand.
 - The `_aud` twins carry no `CHECK`, no `UNIQUE` and no foreign key to their base table: a history row records states that were valid at the time, and must outlive the row it describes. Their only foreign key is `rev` to `audit_revision`, and every business column is nullable because a deletion row writes nulls.
 
 ### Indexes
@@ -337,5 +472,7 @@ the entity maps it with `@JdbcTypeCode(SqlTypes.NAMED_ENUM)`, so a `varchar` her
 - `idx_reservation_project_status` supports project reservation views.
 - `idx_assembly_component_assembly_id` supports loading BOMs.
 - `idx_assembly_component_material_id` supports impact analysis when a material changes.
+- `idx_inventory_balance_material_id`, `idx_inventory_balance_warehouse_id` and `idx_inventory_balance_material_warehouse` support the three shapes of stock read: one material everywhere, one warehouse's inventory, and the exact pair every conditional balance update goes through.
+- `idx_inbox_message_status_received_at` and `idx_inbox_message_received_at` support the operational queries — "what failed", "what arrived in this window". There is deliberately **no** standalone index on `message_id`: `uq_inbox_message_message_id_source` already indexes it as the leading column, and an extra one would only make every insert dearer on a table that takes one insert per incoming message.
 - `idx_<table>_aud_id_rev` on each audit twin supports the query that is actually made — "history of this entity" — which filters on `id`, while the primary key `(rev, id)` leads with `rev`.
 - `idx_audit_revision_timestamp`, `idx_audit_revision_username` and the partial `idx_audit_revision_correlation_id` support auditing queries by time, author and correlation.

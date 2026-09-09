@@ -61,18 +61,6 @@ class StockCalculationServiceImpl implements StockCalculationService {
 
     @Override
     @Transactional(readOnly = true)
-    public BigDecimal calculateWarehouseStock(UUID materialId, UUID warehouseId) {
-        return calculatePhysicalStock(materialId, warehouseId);
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public BigDecimal calculateGlobalStock(UUID materialId) {
-        return calculatePhysicalStock(materialId, null);
-    }
-
-    @Override
-    @Transactional(readOnly = true)
     public BigDecimal calculateHistoricalStock(UUID materialId, UUID warehouseId, Instant asOf) {
         return stockMovementRepository.calculateSignedQuantity(
                 materialId,

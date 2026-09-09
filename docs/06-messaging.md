@@ -1,9 +1,12 @@
 # Messaging: master data events from `mto-configuration`
 
 `mto-stock` consumes the master data change events that `mto-configuration` publishes to RabbitMQ.
-Today the consumer **only logs what it receives**: it does not write to the database and does not
-call any stock service. The channel is wired, observable and testable so that the business logic can
-be added later in one place, without touching the transport.
+Every message is logged, recorded in the inbox and then routed by entity name to the
+`MasterDataEntityHandler` that claims it. Of the eight entities the publisher sends today, **one has
+a handler**: `execution-package`, which keeps a `project` in step with it — see
+[`execution-package` → `project`](#execution-package--project). The other seven describe catenary
+geometry, have no equivalent in a warehouse, and are logged and skipped on purpose; adding a handler
+for one of them is [a `@Service` and nothing else](#adding-another-handler).
 
 ## The contract
 

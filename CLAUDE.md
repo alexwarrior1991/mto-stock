@@ -89,7 +89,9 @@ Full detail in `docs/07-auditing.md`.
 
 `mto-stock` consumes the master data change events that `mto-configuration` publishes to RabbitMQ
 (`mto.master-data.exchange`, routing key `mto.master-data.#`, own queue `mto.stock.master-data.queue`
-with its own DLX/DLQ). The consumer currently **only logs**: no business logic yet.
+with its own DLX/DLQ). Every message is logged and then routed by entity name; **one** of the eight
+entities has business logic behind it (`execution-package` → `project`, see below), and the other
+seven are logged and ignored on purpose.
 
 - `configuration/rabbitmq` — `MasterDataRabbitProperties` (`app.rabbitmq.master-data.*`) and
   `RabbitMqConfiguration` (topology, JSON converter, listener factory). The whole block is gated on

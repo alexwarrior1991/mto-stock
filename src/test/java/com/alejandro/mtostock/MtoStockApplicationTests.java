@@ -1,10 +1,13 @@
 package com.alejandro.mtostock;
 
+import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
 import com.alejandro.mtostock.application.service.AssemblyService;
 import com.alejandro.mtostock.application.service.BOMCalculationService;
+import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.service.InboxMessageService;
 import com.alejandro.mtostock.application.service.InventoryBalanceService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
+import com.alejandro.mtostock.application.service.MasterDataEntityHandler;
 import com.alejandro.mtostock.application.service.MasterDataEventHandler;
 import com.alejandro.mtostock.application.service.MasterDataEventProcessor;
 import com.alejandro.mtostock.application.service.MaterialService;
@@ -73,6 +76,12 @@ class MtoStockApplicationTests extends PostgreSQLTestContainer {
     private MasterDataEventHandler masterDataEventHandler;
 
     /**
+     * Los manejadores por entidad, que es la lista que recibe el despachador.
+     */
+    @Autowired(required = false)
+    private List<MasterDataEntityHandler> masterDataEntityHandlers;
+
+    /**
      * El puente de trazado. No lo trae Actuator por sí solo: depende de que
      * {@code spring-boot-starter-opentelemetry} esté en el classpath, y quitar esa dependencia no
      * rompe ninguna compilación. Sin ella este servicio vuelve a ser el eslabón que corta la traza
@@ -100,6 +109,10 @@ class MtoStockApplicationTests extends PostgreSQLTestContainer {
         List<Class<?>> servicios = List.of(
                 AssemblyService.class,
                 BOMCalculationService.class,
+                // Lo piden por constructor los seis impls que sirven /revisions. Faltaba de esta
+                // lista desde que llegó con Envers, que es justo cuando un guardián de arranque
+                // deja de servir: el hueco lo abre siempre el servicio recién añadido.
+                EntityAuditService.class,
                 InboxMessageService.class,
                 InventoryBalanceService.class,
                 InventoryValidationService.class,
@@ -124,6 +137,29 @@ class MtoStockApplicationTests extends PostgreSQLTestContainer {
                             servicio.getSimpleName())
                     .isNotEmpty();
         }
+    }
+
+    /**
+     * El manejador del paquete de ejecución es el único que sincroniza datos maestros, y se
+     * comprueba aparte de los servicios porque falla de otra manera: si dejara de ser bean la
+     * aplicación arrancaría igual. El despachador ignora a propósito las entidades que nadie
+     * atiende —la cola está enlazada a {@code mto.master-data.#} y llega todo—, así que sus eventos
+     * pasarían a marcarse como aplicados sin hacer nada y los proyectos dejarían de sincronizarse en
+     * silencio, sin un error en ninguna parte.
+     */
+    @Test
+    void elManejadorDelPaqueteDeEjecucionEstaRegistrado() {
+        assertThat(masterDataEntityHandlers)
+                .withFailMessage("No hay ningun MasterDataEntityHandler en el contexto")
+                .isNotNull();
+        assertThat(masterDataEntityHandlers)
+                .extracting(MasterDataEntityHandler::entityName)
+                .withFailMessage("""
+                        Ningun MasterDataEntityHandler atiende '%s'. La aplicacion arranca igual y \
+                        el despachador tratara sus eventos como entidad desconocida: se marcaran \
+                        como aplicados sin sincronizar ningun proyecto y no fallara nada.""",
+                        MasterDataEntityNames.EXECUTION_PACKAGE)
+                .contains(MasterDataEntityNames.EXECUTION_PACKAGE);
     }
 
     @Test
