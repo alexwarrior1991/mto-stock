@@ -2,7 +2,6 @@ package com.alejandro.mtostock.application.service.impl;
 
 import com.alejandro.mtostock.application.dto.assembly.AssemblyAvailabilityComponentResponse;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyAvailabilityResponse;
-import com.alejandro.mtostock.application.exception.AssemblyException;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.mapper.AssemblyMapper;
 import com.alejandro.mtostock.application.mapper.MaterialMapper;
@@ -74,16 +73,6 @@ class BOMCalculationServiceImpl implements BOMCalculationService {
                 markedComponents,
                 Instant.now()
         );
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public void validateComponentAvailability(UUID assemblyId, UUID warehouseId) {
-        AssemblyAvailabilityResponse availability = calculateAvailability(assemblyId, warehouseId);
-        if (availability.availableQuantity().signum() <= 0) {
-            throw new AssemblyException("Assembly '%s' cannot be produced with the current component availability"
-                    .formatted(availability.assembly().code()));
-        }
     }
 
     private AssemblyAvailabilityComponentResponse toAvailabilityComponent(AssemblyComponent component, UUID warehouseId) {

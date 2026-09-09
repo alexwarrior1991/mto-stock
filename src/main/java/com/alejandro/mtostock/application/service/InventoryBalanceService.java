@@ -1,9 +1,5 @@
 package com.alejandro.mtostock.application.service;
 
-import com.alejandro.mtostock.infrastructure.persistence.entity.InventoryBalance;
-import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
-import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
-
 import java.math.BigDecimal;
 import java.util.UUID;
 
@@ -21,6 +17,4 @@ public interface InventoryBalanceService {
     void releaseReserved(UUID materialId, UUID warehouseId, BigDecimal quantity);
 
     void consumeReserved(UUID materialId, UUID warehouseId, BigDecimal quantity);
-
-    InventoryBalance findOrCreateBalance(Material material, Warehouse warehouse);
 }

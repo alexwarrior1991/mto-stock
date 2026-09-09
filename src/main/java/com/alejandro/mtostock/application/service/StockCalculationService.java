@@ -3,7 +3,6 @@ package com.alejandro.mtostock.application.service;
 import com.alejandro.mtostock.application.dto.material.MaterialStockResponse;
 
 import java.math.BigDecimal;
-import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -21,8 +20,6 @@ public interface StockCalculationService {
     BigDecimal calculateReservedStock(UUID materialId, UUID warehouseId);
 
     BigDecimal calculateAvailableStock(UUID materialId, UUID warehouseId);
-
-    BigDecimal calculateHistoricalStock(UUID materialId, UUID warehouseId, Instant asOf);
 
     MaterialStockResponse calculateMaterialStock(UUID materialId, UUID warehouseId);
 }
