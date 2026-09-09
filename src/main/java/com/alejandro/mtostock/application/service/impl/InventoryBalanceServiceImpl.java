@@ -4,9 +4,6 @@ import com.alejandro.mtostock.application.exception.InsufficientStockException;
 import com.alejandro.mtostock.application.exception.ReservationException;
 import com.alejandro.mtostock.application.exception.ValidationException;
 import com.alejandro.mtostock.application.service.InventoryBalanceService;
-import com.alejandro.mtostock.infrastructure.persistence.entity.InventoryBalance;
-import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
-import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
 import com.alejandro.mtostock.infrastructure.persistence.repository.InventoryBalanceRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.AuditorAware;
@@ -79,14 +76,6 @@ class InventoryBalanceServiceImpl implements InventoryBalanceService {
         if (updatedRows == 0) {
             throw new ReservationException("Reserved stock could not be consumed");
         }
-    }
-
-    @Override
-    @Transactional
-    public InventoryBalance findOrCreateBalance(Material material, Warehouse warehouse) {
-        inventoryBalanceRepository.insertZeroBalanceIfMissing(material.getId(), warehouse.getId(), currentActor());
-        return inventoryBalanceRepository.findByMaterialIdAndWarehouseId(material.getId(), warehouse.getId())
-                .orElseThrow(() -> new ReservationException("Inventory balance could not be created"));
     }
 
     private String currentActor() {

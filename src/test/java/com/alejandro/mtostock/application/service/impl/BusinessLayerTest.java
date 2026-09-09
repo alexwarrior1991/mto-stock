@@ -51,7 +51,6 @@ import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
 import com.alejandro.mtostock.configuration.cache.CacheNames;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Assembly;
 import com.alejandro.mtostock.infrastructure.persistence.entity.AssemblyComponent;
-import com.alejandro.mtostock.infrastructure.persistence.entity.InventoryBalance;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Reservation;
@@ -102,7 +101,6 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyCollection;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
@@ -125,9 +123,8 @@ class BusinessLayerTest {
     private static final MasterDataEventContext CONTEXT = new MasterDataEventContext(7L);
 
     @Test
-    void stockCalculationReadsCurrentBalancesFromInventoryBalanceAndKeepsHistoricalFromMovements() {
+    void stockCalculationReadsCurrentBalancesFromInventoryBalance() {
         InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
-        StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
         UUID materialId = UUID.randomUUID();
         UUID warehouseId = UUID.randomUUID();
         when(inventoryBalanceRepository.calculatePhysicalQuantity(materialId, warehouseId, BigDecimal.ZERO))
@@ -136,11 +133,8 @@ class BusinessLayerTest {
                 .thenReturn(new BigDecimal("3.000000"));
         when(inventoryBalanceRepository.calculateAvailableQuantity(materialId, warehouseId, BigDecimal.ZERO))
                 .thenReturn(new BigDecimal("5.000000"));
-        when(stockMovementRepository.calculateSignedQuantity(eq(materialId), eq(warehouseId), isNull(), anyCollection(), eq(BigDecimal.ZERO)))
-                .thenReturn(new BigDecimal("8.000000"));
         StockCalculationServiceImpl service = new StockCalculationServiceImpl(
                 inventoryBalanceRepository,
-                stockMovementRepository,
                 mock(MaterialRepository.class),
                 mock(WarehouseRepository.class),
                 mock(MaterialMapper.class),
@@ -150,8 +144,6 @@ class BusinessLayerTest {
         assertEquals(new BigDecimal("8.000000"), service.calculatePhysicalStock(materialId, warehouseId));
         assertEquals(new BigDecimal("3.000000"), service.calculateReservedStock(materialId, warehouseId));
         assertEquals(new BigDecimal("5.000000"), service.calculateAvailableStock(materialId, warehouseId));
-        assertEquals(new BigDecimal("8.000000"), service.calculateHistoricalStock(materialId, warehouseId, null));
-        verify(stockMovementRepository).calculateSignedQuantity(eq(materialId), eq(warehouseId), isNull(), anyCollection(), eq(BigDecimal.ZERO));
     }
 
     @Test
@@ -425,7 +417,6 @@ class BusinessLayerTest {
         when(inventoryBalanceRepository.calculateAvailableQuantity(materialId, warehouseId, BigDecimal.ZERO)).thenReturn(BigDecimal.ZERO);
         StockCalculationServiceImpl service = new StockCalculationServiceImpl(
                 inventoryBalanceRepository,
-                mock(StockMovementRepository.class),
                 mock(MaterialRepository.class),
                 mock(WarehouseRepository.class),
                 mock(MaterialMapper.class),
@@ -510,25 +501,6 @@ class BusinessLayerTest {
         );
 
         assertThrows(WarehouseException.class, () -> service.transfer(request));
-    }
-
-    @Test
-    void inventoryValidationRejectsInsufficientAvailableStock() {
-        StockCalculationService stockCalculationService = mock(StockCalculationService.class);
-        UUID materialId = UUID.randomUUID();
-        UUID warehouseId = UUID.randomUUID();
-        when(stockCalculationService.calculateAvailableStock(materialId, warehouseId)).thenReturn(new BigDecimal("1.000000"));
-        InventoryValidationServiceImpl service = new InventoryValidationServiceImpl(
-                mock(MaterialRepository.class),
-                mock(AssemblyRepository.class),
-                mock(WarehouseRepository.class),
-                mock(SupplierRepository.class),
-                mock(ProjectRepository.class),
-                stockCalculationService
-        );
-
-        assertThrows(InsufficientStockException.class,
-                () -> service.validateAvailableStock(materialId, warehouseId, new BigDecimal("2.000000")));
     }
 
     @Test
@@ -954,8 +926,7 @@ class BusinessLayerTest {
                 assemblyRepository,
                 warehouseRepository,
                 supplierRepository,
-                projectRepository,
-                mock(StockCalculationService.class)
+                projectRepository
         );
 
         assertThrows(DuplicateCodeException.class, () -> service.validateMaterialCodeIsUnique("MAT-DUP", null));
@@ -978,8 +949,7 @@ class BusinessLayerTest {
                 mock(AssemblyRepository.class),
                 mock(WarehouseRepository.class),
                 mock(SupplierRepository.class),
-                mock(ProjectRepository.class),
-                mock(StockCalculationService.class)
+                mock(ProjectRepository.class)
         );
         Material inactiveMaterial = Material.builder()
                 .code("MAT-OFF")
@@ -1024,7 +994,6 @@ class BusinessLayerTest {
                 .thenReturn(new WarehouseSummaryResponse(warehouse.getId(), warehouse.getCode(), warehouse.getName(), warehouse.getActive()));
         StockCalculationServiceImpl service = new StockCalculationServiceImpl(
                 inventoryBalanceRepository,
-                mock(StockMovementRepository.class),
                 materialRepository,
                 warehouseRepository,
                 materialMapper,
@@ -1048,7 +1017,6 @@ class BusinessLayerTest {
         when(materialRepository.findById(missingId)).thenReturn(Optional.empty());
         StockCalculationServiceImpl service = new StockCalculationServiceImpl(
                 mock(InventoryBalanceRepository.class),
-                mock(StockMovementRepository.class),
                 materialRepository,
                 mock(WarehouseRepository.class),
                 mock(MaterialMapper.class),
@@ -1105,26 +1073,6 @@ class BusinessLayerTest {
         assertThrows(ReservationException.class, () -> service.increasePhysical(materialId, warehouseId, quantity));
         assertThrows(ReservationException.class, () -> service.releaseReserved(materialId, warehouseId, quantity));
         assertThrows(ReservationException.class, () -> service.consumeReserved(materialId, warehouseId, quantity));
-    }
-
-    @Test
-    void inventoryBalanceServiceCreatesTheProjectionRowBeforeReadingIt() {
-        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
-        Material material = material("MAT-BAL");
-        Warehouse warehouse = warehouse("WH-BAL");
-        InventoryBalance balance = InventoryBalance.builder().material(material).warehouse(warehouse).build();
-        when(inventoryBalanceRepository.findByMaterialIdAndWarehouseId(material.getId(), warehouse.getId()))
-                .thenReturn(Optional.of(balance));
-        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, Optional::empty);
-
-        assertSame(balance, service.findOrCreateBalance(material, warehouse));
-        verify(inventoryBalanceRepository).insertZeroBalanceIfMissing(material.getId(), warehouse.getId(), "system");
-
-        InventoryBalanceRepository failingRepository = mock(InventoryBalanceRepository.class);
-        when(failingRepository.findByMaterialIdAndWarehouseId(material.getId(), warehouse.getId())).thenReturn(Optional.empty());
-        InventoryBalanceServiceImpl failingService = new InventoryBalanceServiceImpl(failingRepository, Optional::empty);
-
-        assertThrows(ReservationException.class, () -> failingService.findOrCreateBalance(material, warehouse));
     }
 
     @Test
@@ -1229,41 +1177,6 @@ class BusinessLayerTest {
         assertSame(assembly, storedComponent.getAssembly());
         verify(validationService).validateActive(managedMaterial);
         verify(validationService).validateAssemblyHasComponents(assembly);
-    }
-
-    @Test
-    void bomCalculationRejectsAssembliesThatCannotBeProducedWithCurrentComponentStock() {
-        AssemblyRepository assemblyRepository = mock(AssemblyRepository.class);
-        WarehouseRepository warehouseRepository = mock(WarehouseRepository.class);
-        StockCalculationService stockCalculationService = mock(StockCalculationService.class);
-        AssemblyMapper assemblyMapper = mock(AssemblyMapper.class);
-        MaterialMapper materialMapper = mock(MaterialMapper.class);
-        WarehouseMapper warehouseMapper = mock(WarehouseMapper.class);
-        Material material = material("MAT-SHORT");
-        Warehouse warehouse = warehouse("WH-SHORT");
-        Assembly assembly = Assembly.builder().code("ASM-SHORT").name("Section").build();
-        setId(assembly, UUID.randomUUID());
-        assembly.addComponent(component(material, "5.000000"));
-        when(assemblyRepository.findWithComponentsById(assembly.getId())).thenReturn(Optional.of(assembly));
-        when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
-        when(stockCalculationService.calculatePhysicalStock(material.getId(), warehouse.getId())).thenReturn(new BigDecimal("2.000000"));
-        when(stockCalculationService.calculateReservedStock(material.getId(), warehouse.getId())).thenReturn(BigDecimal.ZERO);
-        when(assemblyMapper.toSummaryResponse(assembly))
-                .thenReturn(new AssemblySummaryResponse(assembly.getId(), assembly.getCode(), assembly.getName(), assembly.getActive()));
-        when(warehouseMapper.toSummaryResponse(warehouse))
-                .thenReturn(new WarehouseSummaryResponse(warehouse.getId(), warehouse.getCode(), warehouse.getName(), warehouse.getActive()));
-        when(materialMapper.toSummaryResponse(material)).thenReturn(materialSummary(material));
-        BOMCalculationServiceImpl service = new BOMCalculationServiceImpl(
-                assemblyRepository,
-                warehouseRepository,
-                stockCalculationService,
-                mock(InventoryValidationService.class),
-                assemblyMapper,
-                materialMapper,
-                warehouseMapper
-        );
-
-        assertThrows(AssemblyException.class, () -> service.validateComponentAvailability(assembly.getId(), warehouse.getId()));
     }
 
     // -----------------------------------------------------------------------------------------

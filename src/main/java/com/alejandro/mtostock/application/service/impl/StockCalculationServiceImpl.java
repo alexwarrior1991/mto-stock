@@ -6,11 +6,9 @@ import com.alejandro.mtostock.application.mapper.MaterialMapper;
 import com.alejandro.mtostock.application.mapper.WarehouseMapper;
 import com.alejandro.mtostock.application.service.StockCalculationService;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
-import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementType;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
 import com.alejandro.mtostock.infrastructure.persistence.repository.InventoryBalanceRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.MaterialRepository;
-import com.alejandro.mtostock.infrastructure.persistence.repository.StockMovementRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -18,24 +16,16 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.Instant;
-import java.util.Set;
 import java.util.UUID;
 
 /**
- * Calculates current inventory balances from the balance projection and historical stock from movements.
+ * Calculates current inventory balances from the balance projection.
  */
 @Service
 @RequiredArgsConstructor
 class StockCalculationServiceImpl implements StockCalculationService {
 
-    private static final Set<StockMovementType> POSITIVE_MOVEMENT_TYPES = Set.of(
-            StockMovementType.ENTRY,
-            StockMovementType.POSITIVE_ADJUSTMENT,
-            StockMovementType.INCOMING_TRANSFER
-    );
-
     private final InventoryBalanceRepository inventoryBalanceRepository;
-    private final StockMovementRepository stockMovementRepository;
     private final MaterialRepository materialRepository;
     private final WarehouseRepository warehouseRepository;
     private final MaterialMapper materialMapper;
@@ -57,30 +47,6 @@ class StockCalculationServiceImpl implements StockCalculationService {
     @Transactional(readOnly = true)
     public BigDecimal calculateAvailableStock(UUID materialId, UUID warehouseId) {
         return inventoryBalanceRepository.calculateAvailableQuantity(materialId, warehouseId, BigDecimal.ZERO);
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public BigDecimal calculateWarehouseStock(UUID materialId, UUID warehouseId) {
-        return calculatePhysicalStock(materialId, warehouseId);
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public BigDecimal calculateGlobalStock(UUID materialId) {
-        return calculatePhysicalStock(materialId, null);
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public BigDecimal calculateHistoricalStock(UUID materialId, UUID warehouseId, Instant asOf) {
-        return stockMovementRepository.calculateSignedQuantity(
-                materialId,
-                warehouseId,
-                asOf,
-                POSITIVE_MOVEMENT_TYPES,
-                BigDecimal.ZERO
-        );
     }
 
     @Override

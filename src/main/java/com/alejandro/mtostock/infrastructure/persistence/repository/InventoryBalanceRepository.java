@@ -7,15 +7,12 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.math.BigDecimal;
-import java.util.Optional;
 import java.util.UUID;
 
 /**
  * Spring Data repository for the current stock projection and atomic balance updates.
  */
 public interface InventoryBalanceRepository extends JpaRepository<InventoryBalance, UUID> {
-
-    Optional<InventoryBalance> findByMaterialIdAndWarehouseId(UUID materialId, UUID warehouseId);
 
     @Query("""
             select coalesce(sum(balance.physicalQuantity), :zero)

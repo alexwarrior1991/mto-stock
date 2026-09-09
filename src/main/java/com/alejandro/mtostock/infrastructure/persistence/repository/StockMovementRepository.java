@@ -19,6 +19,15 @@ public interface StockMovementRepository extends JpaRepository<StockMovement, UU
 
     /**
      * Aggregates the signed stock quantity from the movement ledger without relying on a stored stock column.
+     *
+     * <p><b>Hoy no la llama ningún servicio.</b> Es la única forma que queda de responder «cuánto
+     * había el día X»: las lecturas de stock corriente van a {@code inventory_balance}, que solo
+     * guarda el ahora. Se conserva porque la consulta es lo difícil de rehacer —el signo sale del
+     * tipo del movimiento y el corte temporal tiene que dejar pasar las filas sin fecha— y porque
+     * {@code InventoryRepositoryDataJpaTest} la ejecuta contra un Postgres de verdad, así que no se
+     * puede pudrir en silencio. El envoltorio que la exponía, {@code calculateHistoricalStock}, se
+     * quitó al no llamarlo nadie; el día que haga falta un histórico por API, se vuelve a envolver
+     * desde aquí.</p>
      */
     @Query("""
             select coalesce(sum(

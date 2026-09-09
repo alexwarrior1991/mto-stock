@@ -10,6 +10,4 @@ import java.util.UUID;
 public interface BOMCalculationService {
 
     AssemblyAvailabilityResponse calculateAvailability(UUID assemblyId, UUID warehouseId);
-
-    void validateComponentAvailability(UUID assemblyId, UUID warehouseId);
 }

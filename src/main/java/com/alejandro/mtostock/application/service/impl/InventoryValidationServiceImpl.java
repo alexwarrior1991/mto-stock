@@ -2,12 +2,10 @@ package com.alejandro.mtostock.application.service.impl;
 
 import com.alejandro.mtostock.application.exception.AssemblyException;
 import com.alejandro.mtostock.application.exception.DuplicateCodeException;
-import com.alejandro.mtostock.application.exception.InsufficientStockException;
 import com.alejandro.mtostock.application.exception.ReservationException;
 import com.alejandro.mtostock.application.exception.ValidationException;
 import com.alejandro.mtostock.application.exception.WarehouseException;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
-import com.alejandro.mtostock.application.service.StockCalculationService;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Assembly;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Reservation;
@@ -37,7 +35,6 @@ class InventoryValidationServiceImpl implements InventoryValidationService {
     private final WarehouseRepository warehouseRepository;
     private final SupplierRepository supplierRepository;
     private final ProjectRepository projectRepository;
-    private final StockCalculationService stockCalculationService;
 
     @Override
     @Transactional(readOnly = true)
@@ -114,23 +111,6 @@ class InventoryValidationServiceImpl implements InventoryValidationService {
     public void validatePositiveQuantity(BigDecimal quantity) {
         if (quantity == null || quantity.signum() <= 0) {
             throw new ValidationException("Quantity must be greater than zero");
-        }
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public void validateAvailableStock(UUID materialId, UUID warehouseId, BigDecimal requestedQuantity) {
-        validateAvailableStock(materialId, warehouseId, requestedQuantity, BigDecimal.ZERO);
-    }
-
-    @Override
-    @Transactional(readOnly = true)
-    public void validateAvailableStock(UUID materialId, UUID warehouseId, BigDecimal requestedQuantity, BigDecimal alreadyReservedQuantity) {
-        validatePositiveQuantity(requestedQuantity);
-        BigDecimal available = stockCalculationService.calculateAvailableStock(materialId, warehouseId)
-                .add(alreadyReservedQuantity == null ? BigDecimal.ZERO : alreadyReservedQuantity);
-        if (available.compareTo(requestedQuantity) < 0) {
-            throw new InsufficientStockException(materialId, warehouseId, requestedQuantity, available);
         }
     }
 

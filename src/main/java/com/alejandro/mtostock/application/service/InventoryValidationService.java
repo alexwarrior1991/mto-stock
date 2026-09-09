@@ -26,8 +26,6 @@ public interface InventoryValidationService {
     void validateActive(Warehouse warehouse);
     void validateActive(Assembly assembly);
     void validatePositiveQuantity(BigDecimal quantity);
-    void validateAvailableStock(UUID materialId, UUID warehouseId, BigDecimal requestedQuantity);
-    void validateAvailableStock(UUID materialId, UUID warehouseId, BigDecimal requestedQuantity, BigDecimal alreadyReservedQuantity);
     void validateReservationCanChange(Reservation reservation);
     void validateAssemblyHasComponents(Assembly assembly);
     void validateDifferentWarehouses(UUID sourceWarehouseId, UUID targetWarehouseId);
