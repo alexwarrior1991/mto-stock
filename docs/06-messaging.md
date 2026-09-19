@@ -302,7 +302,7 @@ what is stored.
 | `cantilever` | Cantilever geometry: heights, stagger, arm angle |
 | `steady-arm` | Steady arm |
 | `disconnector` | Disconnector |
-| `section-insulator` | Section insulator |
+| `section-insulator` | Section insulator, with its kp, the two tracks it connects and the turnouts it sits on (`switches[]`) |
 
 They describe the catenary being built, not materials or warehouses — there is no one-to-one
 correspondence with anything in `mto-stock`. `DispatchingMasterDataEventHandler` therefore does not
