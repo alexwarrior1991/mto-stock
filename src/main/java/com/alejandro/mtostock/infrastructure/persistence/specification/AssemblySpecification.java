@@ -11,6 +11,11 @@ public final class AssemblySpecification {
     private AssemblySpecification() {
     }
 
+    /** The free-text search of the catalogue: code or name, case-insensitive; blank matches everything. */
+    public static Specification<Assembly> codeOrNameContains(String search) {
+        return SpecificationUtils.containsIgnoreCaseAny(search, "code", "name");
+    }
+
     public static Specification<Assembly> codeContains(String code) {
         return SpecificationUtils.containsIgnoreCase("code", code);
     }

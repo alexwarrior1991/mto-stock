@@ -183,7 +183,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{baseUrl}}/materials?name=Copper&active=true&page=0&size=20&sort=code,asc"
+            "url": "{{baseUrl}}/materials?search=copper&active=true&page=0&size=20&sort=code,asc"
           }
         },
         {
@@ -319,7 +319,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{baseUrl}}/warehouses?page=0&size=20&sort=code,asc"
+            "url": "{{baseUrl}}/warehouses?search=&active=true&page=0&size=20&sort=code,asc"
           }
         },
         {
@@ -590,7 +590,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{baseUrl}}/assemblies?name=Bracket&active=true&page=0&size=20&sort=code,asc"
+            "url": "{{baseUrl}}/assemblies?search=bracket&active=true&page=0&size=20&sort=code,asc"
           }
         },
         {
@@ -849,7 +849,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{baseUrl}}/suppliers?page=0&size=20&sort=code,asc"
+            "url": "{{baseUrl}}/suppliers?search=&active=true&page=0&size=20&sort=code,asc"
           }
         },
         {
@@ -946,7 +946,7 @@
                 "value": "application/json"
               }
             ],
-            "url": "{{baseUrl}}/projects?page=0&size=20&sort=code,asc"
+            "url": "{{baseUrl}}/projects?search=&active=true&page=0&size=20&sort=code,asc"
           }
         },
         {

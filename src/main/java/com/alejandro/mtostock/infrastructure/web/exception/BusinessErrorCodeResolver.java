@@ -5,6 +5,7 @@ import com.alejandro.mtostock.application.exception.BusinessException;
 import com.alejandro.mtostock.application.exception.DuplicateCodeException;
 import com.alejandro.mtostock.application.exception.InsufficientStockException;
 import com.alejandro.mtostock.application.exception.NotFoundException;
+import com.alejandro.mtostock.application.exception.ProjectException;
 import com.alejandro.mtostock.application.exception.ReservationException;
 import com.alejandro.mtostock.application.exception.StockMovementException;
 import com.alejandro.mtostock.application.exception.ValidationException;
@@ -42,6 +43,7 @@ final class BusinessErrorCodeResolver {
             case ReservationException ignored -> "RES-001";
             case AssemblyException ignored -> "ASM-001";
             case WarehouseException ignored -> "WH-001";
+            case ProjectException ignored -> "PRJ-001";
             case ValidationException ignored -> "VAL-001";
             default -> "BUS-001";
         };

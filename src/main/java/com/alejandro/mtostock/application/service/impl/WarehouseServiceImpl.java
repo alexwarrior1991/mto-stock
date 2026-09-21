@@ -21,11 +21,13 @@ import com.alejandro.mtostock.configuration.cache.CacheNames;
 import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovement;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
 import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRepository;
+import com.alejandro.mtostock.infrastructure.persistence.specification.WarehouseSpecification;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -79,8 +81,10 @@ class WarehouseServiceImpl implements WarehouseService {
 
     @Override
     @Transactional(readOnly = true)
-    public PageResponse<WarehouseResponse> findAll(Pageable pageable) {
-        return warehouseMapper.toPageResponse(warehouseRepository.findAll(pageable));
+    public PageResponse<WarehouseResponse> search(String search, Boolean active, Pageable pageable) {
+        Specification<Warehouse> specification = Specification.where(WarehouseSpecification.codeOrNameContains(search))
+                .and(WarehouseSpecification.activeEquals(active));
+        return warehouseMapper.toPageResponse(warehouseRepository.findAll(specification, pageable));
     }
 
     @Override

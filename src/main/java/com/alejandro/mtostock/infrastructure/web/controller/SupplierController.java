@@ -27,6 +27,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
@@ -100,15 +101,19 @@ public class SupplierController {
     /**
      * Lists suppliers with pageable/sort parameters.
      */
-    @Operation(summary = "List suppliers", description = "Returns a pageable supplier list.")
+    @Operation(summary = "List suppliers", description = "Returns a pageable supplier list, filtered by free text (code or name) and active state.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Supplier page returned"),
+            @ApiResponse(responseCode = "400", description = "Invalid filter", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
             @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
     })
     @GetMapping
-    public ResponseEntity<PageResponse<SupplierResponse>> findAll(@PageableDefault(size = 20) Pageable pageable) {
+    public ResponseEntity<PageResponse<SupplierResponse>> search(
+            @Parameter(description = "Text contained in the code or the name, case-insensitive", example = "acme") @RequestParam(required = false) String search,
+            @Parameter(description = "Active state filter", example = "true") @RequestParam(required = false) Boolean active,
+            @PageableDefault(size = 20) Pageable pageable) {
         LOGGER.debug("HTTP request to list suppliers");
-        return ResponseEntity.ok(supplierService.findAll(pageable));
+        return ResponseEntity.ok(supplierService.search(search, active, pageable));
     }
 
     /**

@@ -22,6 +22,7 @@ import java.util.List;
 public interface ProjectMapper {
 
     @Mapping(target = "audit", source = ".")
+    @Mapping(target = "synchronizedFromMasterData", expression = "java(project.isSynchronized())")
     ProjectResponse toResponse(Project project);
 
     ProjectSummaryResponse toSummaryResponse(Project project);

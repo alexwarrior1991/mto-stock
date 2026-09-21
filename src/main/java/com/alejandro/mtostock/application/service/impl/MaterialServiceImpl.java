@@ -79,8 +79,9 @@ class MaterialServiceImpl implements MaterialService {
 
     @Override
     @Transactional(readOnly = true)
-    public PageResponse<MaterialResponse> search(String code, String name, Boolean active, UUID warehouseId, Boolean belowMinimum, Pageable pageable) {
-        Specification<Material> specification = Specification.where(MaterialSpecification.codeContains(code))
+    public PageResponse<MaterialResponse> search(String search, String code, String name, Boolean active, UUID warehouseId, Boolean belowMinimum, Pageable pageable) {
+        Specification<Material> specification = Specification.where(MaterialSpecification.codeOrNameContains(search))
+                .and(MaterialSpecification.codeContains(code))
                 .and(MaterialSpecification.nameContains(name))
                 .and(MaterialSpecification.activeEquals(active))
                 .and(MaterialSpecification.storedInWarehouse(warehouseId));

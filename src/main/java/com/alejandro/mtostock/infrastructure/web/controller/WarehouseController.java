@@ -106,15 +106,19 @@ public class WarehouseController {
     /**
      * Lists warehouses using pageable/sort parameters.
      */
-    @Operation(summary = "List warehouses", description = "Returns a pageable list of warehouses.")
+    @Operation(summary = "List warehouses", description = "Returns a pageable warehouse list, filtered by free text (code or name) and active state.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Warehouse page returned"),
+            @ApiResponse(responseCode = "400", description = "Invalid filter", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
             @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
     })
     @GetMapping
-    public ResponseEntity<PageResponse<WarehouseResponse>> findAll(@PageableDefault(size = 20) Pageable pageable) {
+    public ResponseEntity<PageResponse<WarehouseResponse>> search(
+            @Parameter(description = "Text contained in the code or the name, case-insensitive", example = "central") @RequestParam(required = false) String search,
+            @Parameter(description = "Active state filter", example = "true") @RequestParam(required = false) Boolean active,
+            @PageableDefault(size = 20) Pageable pageable) {
         LOGGER.debug("HTTP request to list warehouses");
-        return ResponseEntity.ok(warehouseService.findAll(pageable));
+        return ResponseEntity.ok(warehouseService.search(search, active, pageable));
     }
 
     /**

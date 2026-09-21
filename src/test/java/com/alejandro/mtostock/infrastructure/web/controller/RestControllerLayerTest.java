@@ -4,6 +4,7 @@ import com.alejandro.mtostock.application.dto.audit.EntityRevisionResponse;
 import com.alejandro.mtostock.application.dto.audit.RevisionMetadataResponse;
 import com.alejandro.mtostock.application.dto.audit.RevisionOperation;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyAvailabilityResponse;
+import com.alejandro.mtostock.application.dto.assembly.AssemblyResponse;
 import com.alejandro.mtostock.application.dto.common.PageMetadataResponse;
 import com.alejandro.mtostock.application.dto.common.PageResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialRequest;
@@ -82,12 +83,12 @@ class RestControllerLayerTest {
         MaterialStockResponse stock = materialStockResponse();
 
         when(materialService.create(request)).thenReturn(material);
-        when(materialService.search("MAT", "Copper", true, warehouseId, false, pageable)).thenReturn(materialPage);
+        when(materialService.search("cop", "MAT", "Copper", true, warehouseId, false, pageable)).thenReturn(materialPage);
         when(materialService.calculateStock(materialId, warehouseId)).thenReturn(stock);
         when(stockMovementService.search(null, warehouseId, null, materialId, Instant.EPOCH, Instant.EPOCH.plusSeconds(60), "operator", pageable)).thenReturn(movementPage);
 
         var createResponse = controller.create(request);
-        var searchResponse = controller.search("MAT", "Copper", true, warehouseId, false, pageable);
+        var searchResponse = controller.search("cop", "MAT", "Copper", true, warehouseId, false, pageable);
         var stockResponse = controller.stock(materialId, warehouseId);
         var movementsResponse = controller.movements(materialId, warehouseId, Instant.EPOCH, Instant.EPOCH.plusSeconds(60), "operator", pageable);
 
@@ -97,7 +98,7 @@ class RestControllerLayerTest {
         assertSame(stock, stockResponse.getBody());
         assertSame(movementPage, movementsResponse.getBody());
         verify(materialService).create(request);
-        verify(materialService).search("MAT", "Copper", true, warehouseId, false, pageable);
+        verify(materialService).search("cop", "MAT", "Copper", true, warehouseId, false, pageable);
         verify(materialService).calculateStock(materialId, warehouseId);
         verify(stockMovementService).search(null, warehouseId, null, materialId, Instant.EPOCH, Instant.EPOCH.plusSeconds(60), "operator", pageable);
     }
@@ -166,7 +167,9 @@ class RestControllerLayerTest {
         ReservationResponse reservation = reservationResponse(reservationId);
         PageResponse<ReservationResponse> reservations = page(reservation);
 
+        PageResponse<AssemblyResponse> assemblies = page();
         when(assemblyService.calculateAvailability(assemblyId, warehouseId)).thenReturn(availability);
+        when(assemblyService.search("bra", "ASM", "Bracket", true, pageable)).thenReturn(assemblies);
         when(reservationService.create(request)).thenReturn(reservation);
         when(reservationService.release(reservationId)).thenReturn(reservation);
         when(reservationService.consume(reservationId)).thenReturn(reservation);
@@ -174,6 +177,7 @@ class RestControllerLayerTest {
 
         var availabilityResponse = assemblyController.availability(assemblyId, warehouseId);
         var productionCapacityResponse = assemblyController.productionCapacity(assemblyId, warehouseId);
+        var assembliesResponse = assemblyController.search("bra", "ASM", "Bracket", true, pageable);
         var createResponse = reservationController.create(request);
         var releaseResponse = reservationController.release(reservationId);
         var consumeResponse = reservationController.consume(reservationId);
@@ -181,11 +185,13 @@ class RestControllerLayerTest {
 
         assertSame(availability, availabilityResponse.getBody());
         assertSame(availability, productionCapacityResponse.getBody());
+        assertSame(assemblies, assembliesResponse.getBody());
         assertEquals(HttpStatus.CREATED, createResponse.getStatusCode());
         assertSame(reservation, releaseResponse.getBody());
         assertSame(reservation, consumeResponse.getBody());
         assertSame(reservations, searchResponse.getBody());
         verify(assemblyService, times(2)).calculateAvailability(assemblyId, warehouseId);
+        verify(assemblyService).search("bra", "ASM", "Bracket", true, pageable);
         verify(reservationService).create(request);
         verify(reservationService).release(reservationId);
         verify(reservationService).consume(reservationId);
@@ -212,24 +218,24 @@ class RestControllerLayerTest {
         PageResponse<ProjectResponse> projects = page(project);
 
         when(warehouseService.create(warehouseRequest)).thenReturn(warehouse);
-        when(warehouseService.findAll(pageable)).thenReturn(warehouses);
+        when(warehouseService.search("main", true, pageable)).thenReturn(warehouses);
         when(supplierService.create(supplierRequest)).thenReturn(supplier);
-        when(supplierService.findAll(pageable)).thenReturn(suppliers);
+        when(supplierService.search("rail", true, pageable)).thenReturn(suppliers);
         when(projectService.create(projectRequest)).thenReturn(project);
-        when(projectService.findAll(pageable)).thenReturn(projects);
+        when(projectService.search("catenary", true, pageable)).thenReturn(projects);
 
         assertEquals(HttpStatus.CREATED, warehouseController.create(warehouseRequest).getStatusCode());
-        assertSame(warehouses, warehouseController.findAll(pageable).getBody());
+        assertSame(warehouses, warehouseController.search("main", true, pageable).getBody());
         assertEquals(HttpStatus.CREATED, supplierController.create(supplierRequest).getStatusCode());
-        assertSame(suppliers, supplierController.findAll(pageable).getBody());
+        assertSame(suppliers, supplierController.search("rail", true, pageable).getBody());
         assertEquals(HttpStatus.CREATED, projectController.create(projectRequest).getStatusCode());
-        assertSame(projects, projectController.findAll(pageable).getBody());
+        assertSame(projects, projectController.search("catenary", true, pageable).getBody());
         verify(warehouseService).create(warehouseRequest);
-        verify(warehouseService).findAll(pageable);
+        verify(warehouseService).search("main", true, pageable);
         verify(supplierService).create(supplierRequest);
-        verify(supplierService).findAll(pageable);
+        verify(supplierService).search("rail", true, pageable);
         verify(projectService).create(projectRequest);
-        verify(projectService).findAll(pageable);
+        verify(projectService).search("catenary", true, pageable);
     }
 
     private static void assertController(Class<?> controllerType, String basePath, String tagName) {
@@ -257,7 +263,7 @@ class RestControllerLayerTest {
     }
 
     private static ProjectResponse projectResponse(UUID id) {
-        return new ProjectResponse(id, "PRJ-001", "Catenary renewal", true, null);
+        return new ProjectResponse(id, "PRJ-001", "Catenary renewal", true, null, false, null);
     }
 
     private static StockMovementResponse stockMovementResponse(UUID id) {

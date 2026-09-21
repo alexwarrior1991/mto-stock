@@ -21,7 +21,7 @@ public interface AssemblyService {
 
     AssemblyResponse findById(UUID id);
 
-    PageResponse<AssemblyResponse> search(String code, String name, Boolean active, Pageable pageable);
+    PageResponse<AssemblyResponse> search(String search, String code, String name, Boolean active, Pageable pageable);
 
     AssemblyAvailabilityResponse calculateAvailability(UUID assemblyId, UUID warehouseId);
 

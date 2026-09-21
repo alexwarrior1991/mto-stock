@@ -66,7 +66,7 @@ Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Materials - Search materials
-GET {{baseUrl}}/materials?name=Copper&active=true&page=0&size=20&sort=code,asc
+GET {{baseUrl}}/materials?search=copper&active=true&page=0&size=20&sort=code,asc
 Authorization: Bearer {{accessToken}}
 Accept: application/json
 
@@ -123,7 +123,7 @@ Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Warehouses - List warehouses
-GET {{baseUrl}}/warehouses?page=0&size=20&sort=code,asc
+GET {{baseUrl}}/warehouses?search=&active=true&page=0&size=20&sort=code,asc
 Authorization: Bearer {{accessToken}}
 Accept: application/json
 
@@ -277,7 +277,7 @@ Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Assemblies - Search assemblies
-GET {{baseUrl}}/assemblies?name=Bracket&active=true&page=0&size=20&sort=code,asc
+GET {{baseUrl}}/assemblies?search=bracket&active=true&page=0&size=20&sort=code,asc
 Authorization: Bearer {{accessToken}}
 Accept: application/json
 
@@ -385,7 +385,7 @@ Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Suppliers - List suppliers
-GET {{baseUrl}}/suppliers?page=0&size=20&sort=code,asc
+GET {{baseUrl}}/suppliers?search=&active=true&page=0&size=20&sort=code,asc
 Authorization: Bearer {{accessToken}}
 Accept: application/json
 
@@ -424,7 +424,7 @@ Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Projects - List projects
-GET {{baseUrl}}/projects?page=0&size=20&sort=code,asc
+GET {{baseUrl}}/projects?search=&active=true&page=0&size=20&sort=code,asc
 Authorization: Bearer {{accessToken}}
 Accept: application/json
 

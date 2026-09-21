@@ -19,8 +19,11 @@ import com.alejandro.mtostock.infrastructure.persistence.repository.SupplierRepo
 import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRepository;
 import com.alejandro.mtostock.infrastructure.persistence.specification.AssemblySpecification;
 import com.alejandro.mtostock.infrastructure.persistence.specification.MaterialSpecification;
+import com.alejandro.mtostock.infrastructure.persistence.specification.ProjectSpecification;
 import com.alejandro.mtostock.infrastructure.persistence.specification.ReservationSpecification;
 import com.alejandro.mtostock.infrastructure.persistence.specification.StockMovementSpecification;
+import com.alejandro.mtostock.infrastructure.persistence.specification.SupplierSpecification;
+import com.alejandro.mtostock.infrastructure.persistence.specification.WarehouseSpecification;
 import org.junit.jupiter.api.Test;
 import org.springframework.data.jpa.domain.Specification;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -41,13 +44,16 @@ class PersistenceLayerTest {
         assertJpaRepository(AssemblyRepository.class);
         assertSpecificationRepository(AssemblyRepository.class);
         assertJpaRepository(WarehouseRepository.class);
+        assertSpecificationRepository(WarehouseRepository.class);
         assertJpaRepository(StockMovementRepository.class);
         assertSpecificationRepository(StockMovementRepository.class);
         assertJpaRepository(ReservationRepository.class);
         assertJpaRepository(InboxMessageRepository.class);
         assertSpecificationRepository(ReservationRepository.class);
         assertJpaRepository(SupplierRepository.class);
+        assertSpecificationRepository(SupplierRepository.class);
         assertJpaRepository(ProjectRepository.class);
+        assertSpecificationRepository(ProjectRepository.class);
     }
 
     @Test
@@ -56,12 +62,14 @@ class PersistenceLayerTest {
         UUID projectId = UUID.randomUUID();
         UUID materialId = UUID.randomUUID();
 
-        Specification<Material> materialSpecification = Specification.where(MaterialSpecification.codeContains("MAT"))
+        Specification<Material> materialSpecification = Specification.where(MaterialSpecification.codeOrNameContains("copper"))
+                .and(MaterialSpecification.codeContains("MAT"))
                 .and(MaterialSpecification.nameContains("wire"))
                 .and(MaterialSpecification.activeEquals(true))
                 .and(MaterialSpecification.storedInWarehouse(warehouseId))
                 .and(MaterialSpecification.stockBelowMinimum(warehouseId));
-        Specification<Assembly> assemblySpecification = Specification.where(AssemblySpecification.codeContains("ASM"))
+        Specification<Assembly> assemblySpecification = Specification.where(AssemblySpecification.codeOrNameContains("bracket"))
+                .and(AssemblySpecification.codeContains("ASM"))
                 .and(AssemblySpecification.nameContains("section"))
                 .and(AssemblySpecification.activeEquals(true));
         Specification<StockMovement> stockMovementSpecification = Specification.where(StockMovementSpecification.typeEquals(StockMovementType.ENTRY))
@@ -76,8 +84,18 @@ class PersistenceLayerTest {
                 .and(ReservationSpecification.projectIdEquals(projectId))
                 .and(ReservationSpecification.materialIdEquals(materialId));
 
+        Specification<Warehouse> warehouseSpecification = Specification.where(WarehouseSpecification.codeOrNameContains("main"))
+                .and(WarehouseSpecification.activeEquals(true));
+        Specification<Supplier> supplierSpecification = Specification.where(SupplierSpecification.codeOrNameContains("rail"))
+                .and(SupplierSpecification.activeEquals(true));
+        Specification<Project> projectSpecification = Specification.where(ProjectSpecification.codeOrNameContains("ep-"))
+                .and(ProjectSpecification.activeEquals(true));
+
         assertNotNull(materialSpecification);
         assertNotNull(assemblySpecification);
+        assertNotNull(warehouseSpecification);
+        assertNotNull(supplierSpecification);
+        assertNotNull(projectSpecification);
         assertNotNull(stockMovementSpecification);
         assertNotNull(reservationSpecification);
     }

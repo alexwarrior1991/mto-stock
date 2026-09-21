@@ -27,6 +27,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
@@ -68,11 +69,12 @@ public class ProjectController {
     /**
      * Updates a project.
      */
-    @Operation(summary = "Update project", description = "Updates an existing project catalogue record.")
+    @Operation(summary = "Update project", description = "Updates an existing project catalogue record. A project synchronized from master data (sourceService set) is owned by its source and cannot be edited here.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Project updated"),
             @ApiResponse(responseCode = "400", description = "Invalid request", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
             @ApiResponse(responseCode = "404", description = "Project not found", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "422", description = "Project synchronized from master data (PRJ-001)", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
             @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
     })
     @PutMapping("/{id}")
@@ -100,15 +102,19 @@ public class ProjectController {
     /**
      * Lists projects with pageable/sort parameters.
      */
-    @Operation(summary = "List projects", description = "Returns a pageable project list.")
+    @Operation(summary = "List projects", description = "Returns a pageable project list, filtered by free text (code or name) and active state.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Project page returned"),
+            @ApiResponse(responseCode = "400", description = "Invalid filter", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
             @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
     })
     @GetMapping
-    public ResponseEntity<PageResponse<ProjectResponse>> findAll(@PageableDefault(size = 20) Pageable pageable) {
+    public ResponseEntity<PageResponse<ProjectResponse>> search(
+            @Parameter(description = "Text contained in the code or the name, case-insensitive", example = "ep-") @RequestParam(required = false) String search,
+            @Parameter(description = "Active state filter", example = "true") @RequestParam(required = false) Boolean active,
+            @PageableDefault(size = 20) Pageable pageable) {
         LOGGER.debug("HTTP request to list projects");
-        return ResponseEntity.ok(projectService.findAll(pageable));
+        return ResponseEntity.ok(projectService.search(search, active, pageable));
     }
 
     /**

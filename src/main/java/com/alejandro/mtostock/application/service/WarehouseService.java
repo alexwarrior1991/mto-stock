@@ -24,7 +24,11 @@ public interface WarehouseService {
 
     WarehouseResponse findById(UUID id);
 
-    PageResponse<WarehouseResponse> findAll(Pageable pageable);
+    /**
+     * Pages the catalogue. {@code search} matches code or name (case-insensitive) and {@code active}
+     * the state; a null filter is not applied.
+     */
+    PageResponse<WarehouseResponse> search(String search, Boolean active, Pageable pageable);
 
     MaterialStockResponse calculateMaterialStock(UUID warehouseId, UUID materialId);
 

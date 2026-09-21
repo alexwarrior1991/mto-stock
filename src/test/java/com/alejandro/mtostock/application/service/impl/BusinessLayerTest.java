@@ -29,6 +29,7 @@ import com.alejandro.mtostock.application.exception.AssemblyException;
 import com.alejandro.mtostock.application.exception.DuplicateCodeException;
 import com.alejandro.mtostock.application.exception.InsufficientStockException;
 import com.alejandro.mtostock.application.exception.NotFoundException;
+import com.alejandro.mtostock.application.exception.ProjectException;
 import com.alejandro.mtostock.application.exception.ReservationException;
 import com.alejandro.mtostock.application.exception.ValidationException;
 import com.alejandro.mtostock.application.exception.WarehouseException;
@@ -1490,7 +1491,7 @@ class BusinessLayerTest {
         new ExecutionPackageMasterDataHandler(projectRepository, mock(CacheInvalidator.class)).onDeleted(executionPackage("42", Map.of()), CONTEXT);
 
         verify(projectRepository).deactivateFromMasterData("mto-configuration", "42", 7L);
-        verify(projectRepository, never()).delete(any());
+        verify(projectRepository, never()).delete(any(Project.class));
         verify(projectRepository, never()).upsertFromMasterData(any(), any(), any(), any(), anyBoolean(), any());
     }
 
@@ -1536,6 +1537,28 @@ class BusinessLayerTest {
         assertThrows(ValidationException.class, () -> handler.onCreated(withoutId, CONTEXT));
 
         verifyNoInteractions(projectRepository);
+    }
+
+    /**
+     * Un proyecto sincronizado lo pisa el siguiente evento de datos maestros: el PUT lo rechaza con
+     * su origen en vez de aceptar un cambio efimero.
+     */
+    @Test
+    void updatingASynchronizedProjectIsRefusedWithItsSource() {
+        ProjectRepository projectRepository = mock(ProjectRepository.class);
+        ProjectMapper projectMapper = mock(ProjectMapper.class);
+        UUID id = UUID.randomUUID();
+        Project project = Project.builder().code("EP-42").name("Tramo").active(true)
+                .sourceService("mto-configuration").sourceEntityId("42").build();
+        when(projectRepository.findById(id)).thenReturn(Optional.of(project));
+        ProjectServiceImpl service = new ProjectServiceImpl(projectRepository, projectMapper, mock(EntityAuditService.class), mock(InventoryValidationService.class), mock(CacheInvalidator.class));
+
+        ProjectException exception = assertThrows(ProjectException.class,
+                () -> service.update(id, new ProjectUpdateRequest("EP-42", "Otro nombre", false)));
+
+        assertTrue(exception.getMessage().contains("EP-42"));
+        assertTrue(exception.getMessage().contains("mto-configuration"));
+        verify(projectMapper, never()).updateEntity(any(), any());
     }
 
     /**
