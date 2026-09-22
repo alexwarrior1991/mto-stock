@@ -3,6 +3,7 @@ package com.alejandro.mtostock.infrastructure.web.exception;
 import com.alejandro.mtostock.application.dto.error.ApiErrorResponse;
 import com.alejandro.mtostock.application.exception.DuplicateCodeException;
 import com.alejandro.mtostock.application.exception.NotFoundException;
+import com.alejandro.mtostock.application.exception.ProjectException;
 import com.alejandro.mtostock.application.exception.ReservationException;
 import jakarta.validation.ConstraintViolationException;
 import jakarta.validation.Validation;
@@ -59,6 +60,8 @@ class GlobalExceptionHandlerTest {
 
         ResponseEntity<ApiErrorResponse> duplicateResponse = handler.handleDuplicateCode(new DuplicateCodeException("Material", "MAT-001"), request);
         ResponseEntity<ApiErrorResponse> reservationResponse = handler.handleReservation(new ReservationException("Reservation expired."), request);
+        ResponseEntity<ApiErrorResponse> projectResponse = handler.handleBusiness(
+                new ProjectException("Project 'EP-42' is synchronized from mto-configuration and is not edited through the API"), request);
 
         assertEquals(HttpStatus.CONFLICT, duplicateResponse.getStatusCode());
         assertNotNull(duplicateResponse.getBody());
@@ -66,6 +69,9 @@ class GlobalExceptionHandlerTest {
         assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, reservationResponse.getStatusCode());
         assertNotNull(reservationResponse.getBody());
         assertEquals("RES-001", reservationResponse.getBody().errorCode());
+        assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, projectResponse.getStatusCode());
+        assertNotNull(projectResponse.getBody());
+        assertEquals("PRJ-001", projectResponse.getBody().errorCode());
     }
 
     @Test

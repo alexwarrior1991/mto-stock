@@ -82,8 +82,9 @@ class AssemblyServiceImpl implements AssemblyService {
 
     @Override
     @Transactional(readOnly = true)
-    public PageResponse<AssemblyResponse> search(String code, String name, Boolean active, Pageable pageable) {
-        Specification<Assembly> specification = Specification.where(AssemblySpecification.codeContains(code))
+    public PageResponse<AssemblyResponse> search(String search, String code, String name, Boolean active, Pageable pageable) {
+        Specification<Assembly> specification = Specification.where(AssemblySpecification.codeOrNameContains(search))
+                .and(AssemblySpecification.codeContains(code))
                 .and(AssemblySpecification.nameContains(name))
                 .and(AssemblySpecification.activeEquals(active));
         return assemblyMapper.toPageResponse(assemblyRepository.findAll(specification, pageable));

@@ -112,7 +112,7 @@ public class MaterialController {
     /**
      * Searches materials using service-level specification filters and pagination.
      */
-    @Operation(summary = "Search materials", description = "Searches materials by code, name, active state, warehouse and minimum-stock condition.")
+    @Operation(summary = "Search materials", description = "Searches materials by free text (code or name), code, name, active state, warehouse and minimum-stock condition.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Material page returned"),
             @ApiResponse(responseCode = "400", description = "Invalid filter", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
@@ -120,6 +120,7 @@ public class MaterialController {
     })
     @GetMapping
     public ResponseEntity<PageResponse<MaterialResponse>> search(
+            @Parameter(description = "Text contained in the code or the name, case-insensitive", example = "copper") @RequestParam(required = false) String search,
             @Parameter(description = "Material code filter", example = "MAT-COPPER-50") @RequestParam(required = false) String code,
             @Parameter(description = "Material name filter", example = "Copper") @RequestParam(required = false) String name,
             @Parameter(description = "Active state filter", example = "true") @RequestParam(required = false) Boolean active,
@@ -127,7 +128,7 @@ public class MaterialController {
             @Parameter(description = "Return materials below minimum calculated stock", example = "false") @RequestParam(required = false) Boolean belowMinimum,
             @PageableDefault(size = 20) Pageable pageable) {
         LOGGER.debug("HTTP request to search materials");
-        return ResponseEntity.ok(materialService.search(code, name, active, warehouseId, belowMinimum, pageable));
+        return ResponseEntity.ok(materialService.search(search, code, name, active, warehouseId, belowMinimum, pageable));
     }
 
     /**
@@ -144,7 +145,7 @@ public class MaterialController {
             @Parameter(description = "Optional warehouse UUID. Omit for global stock.") @RequestParam(required = false) UUID warehouseId,
             @PageableDefault(size = 20) Pageable pageable) {
         LOGGER.debug("HTTP request to search low-stock materials warehouseId={}", warehouseId);
-        return ResponseEntity.ok(materialService.search(null, null, true, warehouseId, true, pageable));
+        return ResponseEntity.ok(materialService.search(null, null, null, true, warehouseId, true, pageable));
     }
 
     /**

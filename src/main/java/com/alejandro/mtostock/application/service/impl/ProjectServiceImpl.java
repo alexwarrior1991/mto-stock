@@ -6,6 +6,7 @@ import com.alejandro.mtostock.application.dto.project.ProjectRequest;
 import com.alejandro.mtostock.application.dto.project.ProjectResponse;
 import com.alejandro.mtostock.application.dto.project.ProjectUpdateRequest;
 import com.alejandro.mtostock.application.exception.NotFoundException;
+import com.alejandro.mtostock.application.exception.ProjectException;
 import com.alejandro.mtostock.application.mapper.ProjectMapper;
 import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
@@ -14,11 +15,13 @@ import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
 import com.alejandro.mtostock.configuration.cache.CacheNames;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepository;
+import com.alejandro.mtostock.infrastructure.persistence.specification.ProjectSpecification;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -52,6 +55,11 @@ class ProjectServiceImpl implements ProjectService {
     @Transactional
     public ProjectResponse update(UUID id, ProjectUpdateRequest request) {
         Project project = projectRepository.findById(id).orElseThrow(() -> new NotFoundException("Project", id));
+        if (project.isSynchronized()) {
+            // Lo que se cambie aqui lo pisa el siguiente evento de datos maestros: el dueno es el origen.
+            throw new ProjectException("Project '%s' is synchronized from %s and is not edited through the API"
+                    .formatted(project.getCode(), project.getSourceService()));
+        }
         inventoryValidationService.validateProjectCodeIsUnique(request.code(), id);
         projectMapper.updateEntity(request, project);
         log.info("Project {} updated", project.getCode());
@@ -68,8 +76,10 @@ class ProjectServiceImpl implements ProjectService {
 
     @Override
     @Transactional(readOnly = true)
-    public PageResponse<ProjectResponse> findAll(Pageable pageable) {
-        return projectMapper.toPageResponse(projectRepository.findAll(pageable));
+    public PageResponse<ProjectResponse> search(String search, Boolean active, Pageable pageable) {
+        Specification<Project> specification = Specification.where(ProjectSpecification.codeOrNameContains(search))
+                .and(ProjectSpecification.activeEquals(active));
+        return projectMapper.toPageResponse(projectRepository.findAll(specification, pageable));
     }
 
     @Override

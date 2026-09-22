@@ -3,6 +3,7 @@ package com.alejandro.mtostock.application.mapper;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyComponentRequest;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyRequest;
 import com.alejandro.mtostock.application.dto.material.MaterialUpdateRequest;
+import com.alejandro.mtostock.application.dto.project.ProjectResponse;
 import com.alejandro.mtostock.application.dto.reservation.ReservationStatusDto;
 import com.alejandro.mtostock.application.dto.reservation.ReservationStatusUpdateRequest;
 import com.alejandro.mtostock.application.dto.stock.StockAdjustmentDirection;
@@ -12,6 +13,7 @@ import com.alejandro.mtostock.infrastructure.persistence.entity.Assembly;
 import com.alejandro.mtostock.infrastructure.persistence.entity.AssemblyComponent;
 import com.alejandro.mtostock.infrastructure.persistence.entity.EntityReferenceFactory;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
+import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Reservation;
 import com.alejandro.mtostock.infrastructure.persistence.entity.ReservationStatus;
 import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementType;
@@ -27,6 +29,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -46,11 +49,32 @@ class MapperLayerTest {
     @Autowired
     private StockMovementMapper stockMovementMapper;
 
+    @Autowired
+    private ProjectMapper projectMapper;
+
     private final EntityReferenceFactory references = new EntityReferenceFactory();
 
     @Configuration
     @ComponentScan(basePackageClasses = {MaterialMapper.class, EntityReferenceFactory.class})
     static class MapperTestConfiguration {
+    }
+
+    /** El origen viaja en la respuesta: sin el, un cliente no puede saber que proyecto no es suyo. */
+    @Test
+    void mapsProjectEntityToResponseWithItsSourceAndTheSynchronizedFlag() {
+        Project synchronizedProject = Project.builder().code("EP-42").name("Tramo Sants-Sagrera").active(true)
+                .sourceService("mto-configuration").sourceEntityId("42").sourceSequenceNumber(7L).build();
+        Project localProject = Project.builder().code("PRJ-001").name("Catenary renewal").active(true).build();
+
+        ProjectResponse synchronizedResponse = projectMapper.toResponse(synchronizedProject);
+        ProjectResponse localResponse = projectMapper.toResponse(localProject);
+
+        assertEquals("EP-42", synchronizedResponse.code());
+        assertEquals("mto-configuration", synchronizedResponse.sourceService());
+        assertTrue(synchronizedResponse.synchronizedFromMasterData());
+        assertNull(localResponse.sourceService());
+        assertFalse(localResponse.synchronizedFromMasterData());
+        assertEquals("PRJ-001", projectMapper.toSummaryResponse(localProject).code());
     }
 
     @Test

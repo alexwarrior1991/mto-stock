@@ -14,11 +14,13 @@ import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
 import com.alejandro.mtostock.configuration.cache.CacheNames;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Supplier;
 import com.alejandro.mtostock.infrastructure.persistence.repository.SupplierRepository;
+import com.alejandro.mtostock.infrastructure.persistence.specification.SupplierSpecification;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.data.domain.Pageable;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -68,8 +70,10 @@ class SupplierServiceImpl implements SupplierService {
 
     @Override
     @Transactional(readOnly = true)
-    public PageResponse<SupplierResponse> findAll(Pageable pageable) {
-        return supplierMapper.toPageResponse(supplierRepository.findAll(pageable));
+    public PageResponse<SupplierResponse> search(String search, Boolean active, Pageable pageable) {
+        Specification<Supplier> specification = Specification.where(SupplierSpecification.codeOrNameContains(search))
+                .and(SupplierSpecification.activeEquals(active));
+        return supplierMapper.toPageResponse(supplierRepository.findAll(specification, pageable));
     }
 
     @Override

@@ -9,12 +9,15 @@ Swagger UI at `/swagger-ui.html`.
 
 - **Paging.** Every collection endpoint takes `page`, `size` (default 20) and `sort` (e.g.
   `sort=code,asc`) and answers with a `PageResponse`: `content` plus a `page` block.
+- **Text search.** The five catalogue lists (`/materials`, `/warehouses`, `/suppliers`,
+  `/projects`, `/assemblies`) take an optional `search`: a case-insensitive *contains* on the code
+  **or** the name, combined (AND) with the other filters of the list. A blank `search` is ignored.
 - **Time.** All timestamps are ISO-8601 instants in UTC (`2026-08-01T00:00:00Z`). The `dateFrom` and
   `dateTo` filters are inclusive.
 - **Errors.** Every failure is an `ApiErrorResponse` from `GlobalExceptionHandler`: `400` the request
   is malformed or fails Bean Validation, `401` no valid token, `403` the token lacks the role, `404`
   not found, `409` duplicate business code or insufficient stock, `415` wrong content type, `422` a
-  domain rule was violated (reservation, assembly, warehouse or movement), `500` anything else. `409`
+  domain rule was violated (reservation, assembly, warehouse, movement or project), `500` anything else. `409`
   and `422` are kept apart on purpose: `409` says the warehouse cannot give you what you asked for,
   `422` says the operation itself does not make sense.
 - **Security.** All of it needs a Keycloak token. `GET` and `HEAD` need `STOCK_READ`; `POST`, `PUT`
@@ -33,7 +36,7 @@ Swagger UI at `/swagger-ui.html`.
 | `POST` | `/materials` | `201` with `Location`. |
 | `PUT` | `/materials/{id}` | Full replacement, including `active`. |
 | `GET` | `/materials/{id}` | |
-| `GET` | `/materials` | `code`, `name`, `active`, `warehouseId`, `belowMinimum` — all optional. |
+| `GET` | `/materials` | `search`, `code`, `name`, `active`, `warehouseId`, `belowMinimum` — all optional. |
 | `GET` | `/materials/low-stock` | Optional `warehouseId`; omit it for stock across all warehouses. Shorthand for the search above with `active=true` and `belowMinimum=true`. |
 | `GET` | `/materials/{id}/stock` | Optional `warehouseId`; omit it for the global figure. Returns physical, reserved and available, plus whether it is below its minimum. |
 | `GET` | `/materials/{id}/movements` | The ledger for this material: `warehouseId`, `dateFrom`, `dateTo`, `user`. |
@@ -46,7 +49,7 @@ Swagger UI at `/swagger-ui.html`.
 | `POST` | `/warehouses` | |
 | `PUT` | `/warehouses/{id}` | |
 | `GET` | `/warehouses/{id}` | |
-| `GET` | `/warehouses` | |
+| `GET` | `/warehouses` | `search`, `active` — both optional. |
 | `GET` | `/warehouses/{id}/inventory` | Requires `materialId`. One material's stock in this warehouse. |
 | `POST` | `/warehouses/transfers` | The same operation as `POST /movements/transfers`, under the warehouse resource. |
 | `GET` | `/warehouses/{id}/revisions` | |
@@ -90,33 +93,36 @@ An assembly is a virtual product defined by its bill of materials. It never has 
 | `POST` | `/assemblies` | Must carry at least one BOM component. |
 | `PUT` | `/assemblies/{id}` | Replaces the BOM as well. |
 | `GET` | `/assemblies/{id}` | |
-| `GET` | `/assemblies` | `code`, `name`, `active`. |
+| `GET` | `/assemblies` | `search`, `code`, `name`, `active`. |
 | `GET` | `/assemblies/{id}/availability` | Requires `warehouseId`. How many could be built right now from component stock, and which component is the limiting one. |
 | `GET` | `/assemblies/{id}/production-capacity` | The same response, under the ERP term. |
 | `GET` | `/assemblies/{id}/revisions` | Changing the bill of materials revises the assembly too. |
 
 ## Suppliers
 
-| Method | Path |
-| --- | --- |
-| `POST` | `/suppliers` |
-| `PUT` | `/suppliers/{id}` |
-| `GET` | `/suppliers/{id}` |
-| `GET` | `/suppliers` |
-| `GET` | `/suppliers/{id}/revisions` |
+| Method | Path | Notes |
+| --- | --- | --- |
+| `POST` | `/suppliers` | |
+| `PUT` | `/suppliers/{id}` | |
+| `GET` | `/suppliers/{id}` | |
+| `GET` | `/suppliers` | `search`, `active` — both optional. |
+| `GET` | `/suppliers/{id}/revisions` | |
 
 ## Projects
 
 | Method | Path | Notes |
 | --- | --- | --- |
 | `POST` | `/projects` | |
-| `PUT` | `/projects/{id}` | |
+| `PUT` | `/projects/{id}` | Refused with `422` `PRJ-001` when the project is synchronized from master data: its source owns it and the next event would overwrite the change. |
 | `GET` | `/projects/{id}` | |
-| `GET` | `/projects` | |
+| `GET` | `/projects` | `search`, `active` — both optional. |
 | `GET` | `/projects/{id}/revisions` | Covers the REST path only — a project synchronized from an execution package leaves no revision. See the `Project` gap in `07-auditing.md`. |
 
 A project can also arrive from `mto-configuration` as an execution package, in which case nothing
-creates it through this API. See `06-messaging.md`.
+creates it through this API. See `06-messaging.md`. The response says so: `sourceService`
+(`mto-configuration`, or `null` for a project created here) and `synchronizedFromMasterData`, the
+same fact as a flag, so a client can show those projects read-only instead of discovering the
+`422` on save.
 
 ## Change history
 

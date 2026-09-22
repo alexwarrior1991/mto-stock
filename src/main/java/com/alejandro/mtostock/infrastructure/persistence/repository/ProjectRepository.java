@@ -2,6 +2,7 @@ package com.alejandro.mtostock.infrastructure.persistence.repository;
 
 import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -12,7 +13,7 @@ import java.util.UUID;
 /**
  * Thin Spring Data repository for project persistence.
  */
-public interface ProjectRepository extends JpaRepository<Project, UUID> {
+public interface ProjectRepository extends JpaRepository<Project, UUID>, JpaSpecificationExecutor<Project> {
 
     Optional<Project> findByCode(String code);
     

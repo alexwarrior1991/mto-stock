@@ -10,11 +10,15 @@ import com.alejandro.mtostock.infrastructure.persistence.entity.Reservation;
 import com.alejandro.mtostock.infrastructure.persistence.entity.ReservationStatus;
 import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovement;
 import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementType;
+import com.alejandro.mtostock.infrastructure.persistence.entity.Supplier;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
 import com.alejandro.mtostock.infrastructure.persistence.specification.AssemblySpecification;
 import com.alejandro.mtostock.infrastructure.persistence.specification.MaterialSpecification;
+import com.alejandro.mtostock.infrastructure.persistence.specification.ProjectSpecification;
 import com.alejandro.mtostock.infrastructure.persistence.specification.ReservationSpecification;
 import com.alejandro.mtostock.infrastructure.persistence.specification.StockMovementSpecification;
+import com.alejandro.mtostock.infrastructure.persistence.specification.SupplierSpecification;
+import com.alejandro.mtostock.infrastructure.persistence.specification.WarehouseSpecification;
 import com.alejandro.mtostock.support.PostgreSQLTestContainer;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceException;
@@ -60,6 +64,9 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
     private ProjectRepository projectRepository;
 
     @Autowired
+    private SupplierRepository supplierRepository;
+
+    @Autowired
     private AssemblyRepository assemblyRepository;
 
     @Autowired
@@ -92,6 +99,34 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
                 .and(StockMovementSpecification.typeEquals(StockMovementType.OUTPUT))).size());
         assertTrue(assemblyRepository.findWithComponentsById(assembly.getId()).orElseThrow().getComponents().stream()
                 .anyMatch(component -> component.getMaterial().getCode().equals("MAT-FILTER")));
+    }
+
+    /**
+     * La busqueda por texto de los catalogos: codigo o nombre, sin distinguir mayusculas, y en
+     * blanco no filtra nada. Un solo helper para los cinco, asi que se prueban los cinco.
+     */
+    @Test
+    void searchMatchesCodeOrNameCaseInsensitivelyOnEveryCatalogue() {
+        Material byCode = persist(material("MAT-ZIRC", "Contact wire"));
+        persist(material("MAT-STEEL", "Zirconium bracket"));
+        persist(material("MAT-PLAIN", "Insulator"));
+        persist(warehouse("WH-ZIRC"));
+        persist(warehouse("WH-PLAIN"));
+        persist(project("PRJ-ZIRC"));
+        persist(project("PRJ-PLAIN"));
+        persist(Supplier.builder().code("SUP-001").name("Zirconium Mills").build());
+        persist(Supplier.builder().code("SUP-002").name("Plain Steel").build());
+        persist(assembly("ASM-ZIRC", byCode));
+        flushAndClear();
+
+        assertEquals(2, materialRepository.findAll(MaterialSpecification.codeOrNameContains("zIrC")).size());
+        assertEquals(1, warehouseRepository.findAll(WarehouseSpecification.codeOrNameContains("zirc")).size());
+        assertEquals(1, projectRepository.findAll(ProjectSpecification.codeOrNameContains("ZIRC")).size());
+        assertEquals(1, supplierRepository.findAll(SupplierSpecification.codeOrNameContains("mills")).size());
+        assertEquals(1, assemblyRepository.findAll(AssemblySpecification.codeOrNameContains("zirc")).size());
+        assertEquals(warehouseRepository.count(), warehouseRepository.findAll(WarehouseSpecification.codeOrNameContains("  ")).size());
+        assertEquals(0, projectRepository.findAll(ProjectSpecification.codeOrNameContains("zirc")
+                .and(ProjectSpecification.activeEquals(false))).size());
     }
 
     @Test

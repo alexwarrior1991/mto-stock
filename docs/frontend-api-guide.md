@@ -68,6 +68,8 @@ Paginated response shape:
 - UUID filters must be valid UUID strings.
 - Date filters use ISO-8601 instant strings.
 - Empty or malformed parameters return `400 Bad Request`.
+- The catalogue lists (`materials`, `warehouses`, `suppliers`, `projects`, `assemblies`) take `search`:
+  a case-insensitive contains on the code or the name, ANDed with the other filters; blank is ignored.
 
 ## Standard error format
 
@@ -251,7 +253,7 @@ Accept: application/json
 
 ### Search materials
 
-- URL: `/api/v1/inventory/materials?code=&name=&active=&warehouseId=&belowMinimum=&page=&size=&sort=`
+- URL: `/api/v1/inventory/materials?search=&code=&name=&active=&warehouseId=&belowMinimum=&page=&size=&sort=`
 - Method: `GET`
 - Description: Searches materials by code, name, active state, warehouse and minimum-stock condition.
 - Request example: `GET /api/v1/inventory/materials?name=Copper&active=true&page=0&size=20&sort=code,asc`
@@ -348,7 +350,7 @@ Accept: application/json
 
 ### List warehouses
 
-- URL: `/api/v1/inventory/warehouses?page=&size=&sort=`
+- URL: `/api/v1/inventory/warehouses?search=&active=&page=&size=&sort=`
 - Method: `GET`
 - Description: Returns a pageable list of warehouses.
 - Request example: `GET /api/v1/inventory/warehouses?page=0&size=20&sort=code,asc`
@@ -527,7 +529,7 @@ Accept: application/json
 
 ### Search assemblies
 
-- URL: `/api/v1/inventory/assemblies?code=&name=&active=&page=&size=&sort=`
+- URL: `/api/v1/inventory/assemblies?search=&code=&name=&active=&page=&size=&sort=`
 - Method: `GET`
 - Description: Searches assemblies by code, name, and active state.
 - Request example: `GET /api/v1/inventory/assemblies?name=Bracket&active=true&page=0&size=20&sort=code,asc`
@@ -698,7 +700,7 @@ Accept: application/json
 
 ### List suppliers
 
-- URL: `/api/v1/inventory/suppliers?page=&size=&sort=`
+- URL: `/api/v1/inventory/suppliers?search=&active=&page=&size=&sort=`
 - Method: `GET`
 - Description: Returns a pageable supplier list.
 - Request example: `GET /api/v1/inventory/suppliers?page=0&size=20&sort=code,asc`
@@ -731,17 +733,17 @@ Accept: application/json
 }
 ```
 
-- Response example: project response with `id`, `code`, `name`, `active`, and `audit`.
+- Response example: project response with `id`, `code`, `name`, `active`, `sourceService` (`null` unless synchronized from master data), `synchronizedFromMasterData`, and `audit`.
 - Possible errors: `400`, `409`, `500`.
 
 ### Update project
 
 - URL: `/api/v1/inventory/projects/{id}`
 - Method: `PUT`
-- Description: Updates a project catalogue record.
+- Description: Updates a project catalogue record. A project synchronized from master data (`synchronizedFromMasterData: true`) is owned by `mto-configuration` and is refused here.
 - Request example: project create body.
 - Response example: project response.
-- Possible errors: `400`, `404`, `500`.
+- Possible errors: `400`, `404`, `422` (`PRJ-001`, synchronized project), `500`.
 
 ### Get project
 
@@ -754,7 +756,7 @@ Accept: application/json
 
 ### List projects
 
-- URL: `/api/v1/inventory/projects?page=&size=&sort=`
+- URL: `/api/v1/inventory/projects?search=&active=&page=&size=&sort=`
 - Method: `GET`
 - Description: Returns a pageable project list.
 - Request example: `GET /api/v1/inventory/projects?page=0&size=20&sort=code,asc`

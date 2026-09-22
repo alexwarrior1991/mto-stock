@@ -21,7 +21,7 @@ public interface MaterialService {
 
     MaterialResponse findById(UUID id);
 
-    PageResponse<MaterialResponse> search(String code, String name, Boolean active, UUID warehouseId, Boolean belowMinimum, Pageable pageable);
+    PageResponse<MaterialResponse> search(String search, String code, String name, Boolean active, UUID warehouseId, Boolean belowMinimum, Pageable pageable);
 
     MaterialStockResponse calculateStock(UUID materialId, UUID warehouseId);
 

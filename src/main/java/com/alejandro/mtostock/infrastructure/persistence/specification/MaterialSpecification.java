@@ -20,6 +20,11 @@ public final class MaterialSpecification {
     private MaterialSpecification() {
     }
 
+    /** The free-text search of the catalogue: code or name, case-insensitive; blank matches everything. */
+    public static Specification<Material> codeOrNameContains(String search) {
+        return SpecificationUtils.containsIgnoreCaseAny(search, "code", "name");
+    }
+
     public static Specification<Material> codeContains(String code) {
         return SpecificationUtils.containsIgnoreCase("code", code);
     }

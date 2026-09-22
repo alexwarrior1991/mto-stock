@@ -20,7 +20,11 @@ public interface SupplierService {
 
     SupplierResponse findById(UUID id);
 
-    PageResponse<SupplierResponse> findAll(Pageable pageable);
+    /**
+     * Pages the catalogue. {@code search} matches code or name (case-insensitive) and {@code active}
+     * the state; a null filter is not applied.
+     */
+    PageResponse<SupplierResponse> search(String search, Boolean active, Pageable pageable);
 
     /**
      * Historial de cambios del proveedor.

@@ -106,7 +106,7 @@ public class AssemblyController {
     /**
      * Searches assemblies using service-level filters and pagination.
      */
-    @Operation(summary = "Search assemblies", description = "Searches assemblies by code, name and active state.")
+    @Operation(summary = "Search assemblies", description = "Searches assemblies by free text (code or name), code, name and active state.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Assembly page returned"),
             @ApiResponse(responseCode = "400", description = "Invalid filter", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
@@ -114,12 +114,13 @@ public class AssemblyController {
     })
     @GetMapping
     public ResponseEntity<PageResponse<AssemblyResponse>> search(
+            @Parameter(description = "Text contained in the code or the name, case-insensitive", example = "bracket") @RequestParam(required = false) String search,
             @Parameter(description = "Assembly code filter", example = "ASM-CAT-001") @RequestParam(required = false) String code,
             @Parameter(description = "Assembly name filter", example = "Bracket") @RequestParam(required = false) String name,
             @Parameter(description = "Active state filter", example = "true") @RequestParam(required = false) Boolean active,
             @PageableDefault(size = 20) Pageable pageable) {
         LOGGER.debug("HTTP request to search assemblies");
-        return ResponseEntity.ok(assemblyService.search(code, name, active, pageable));
+        return ResponseEntity.ok(assemblyService.search(search, code, name, active, pageable));
     }
 
     /**

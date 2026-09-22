@@ -7,7 +7,7 @@
 | `Material` | A component in the catalogue. Owns no stock columns. |
 | `Supplier` | Who a stock entry came from. |
 | `Warehouse` | A physical or logical storage location. |
-| `Project` | What material is reserved and consumed for. Can be created through the API or synchronized from an execution package in `mto-configuration`. |
+| `Project` | What material is reserved and consumed for. Can be created through the API or synchronized from an execution package in `mto-configuration`; a synchronized project is owned by its source, so the API exposes `sourceService` and refuses to edit it. |
 | `Assembly` | A **virtual** product: a catenary set that is never assembled in the warehouse. Has no stock of its own. |
 | `AssemblyComponent` | One BOM line: this assembly needs this quantity of this material. |
 | `StockMovement` | One signed row of the append-only ledger. Every inventory change is one of these. |
