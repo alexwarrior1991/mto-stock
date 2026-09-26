@@ -5,6 +5,7 @@ import com.alejandro.mtostock.application.dto.error.ValidationError;
 import com.alejandro.mtostock.application.exception.AssemblyException;
 import com.alejandro.mtostock.application.exception.BusinessException;
 import com.alejandro.mtostock.application.exception.DuplicateCodeException;
+import com.alejandro.mtostock.application.exception.IdempotencyKeyConflictException;
 import com.alejandro.mtostock.application.exception.InsufficientStockException;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.exception.ReservationException;
@@ -64,6 +65,15 @@ public class GlobalExceptionHandler {
      */
     @ExceptionHandler(InsufficientStockException.class)
     public ResponseEntity<ApiErrorResponse> handleInsufficientStock(InsufficientStockException exception, HttpServletRequest request) {
+        return businessResponse(exception, HttpStatus.CONFLICT, request);
+    }
+
+    /**
+     * Returns 409 because the {@code Idempotency-Key} was already used with a different request body:
+     * the key names the first request, so this one conflicts with what it created.
+     */
+    @ExceptionHandler(IdempotencyKeyConflictException.class)
+    public ResponseEntity<ApiErrorResponse> handleIdempotencyKeyConflict(IdempotencyKeyConflictException exception, HttpServletRequest request) {
         return businessResponse(exception, HttpStatus.CONFLICT, request);
     }
 

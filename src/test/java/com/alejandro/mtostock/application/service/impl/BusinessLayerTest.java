@@ -17,16 +17,22 @@ import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
 import com.alejandro.mtostock.application.dto.project.ProjectUpdateRequest;
+import com.alejandro.mtostock.application.dto.reservation.ReservationRequest;
+import com.alejandro.mtostock.application.dto.reservation.ReservationResponse;
+import com.alejandro.mtostock.application.dto.reservation.ReservationStatusDto;
 import com.alejandro.mtostock.application.dto.stock.StockAdjustmentDirection;
 import com.alejandro.mtostock.application.dto.stock.StockMovementAdjustmentRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementEntryRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementOutputRequest;
+import com.alejandro.mtostock.application.dto.stock.StockMovementResponse;
 import com.alejandro.mtostock.application.dto.stock.StockMovementTransferRequest;
+import com.alejandro.mtostock.application.dto.stock.StockMovementTypeDto;
 import com.alejandro.mtostock.application.dto.supplier.SupplierUpdateRequest;
 import com.alejandro.mtostock.application.dto.warehouse.WarehouseSummaryResponse;
 import com.alejandro.mtostock.application.dto.warehouse.WarehouseUpdateRequest;
 import com.alejandro.mtostock.application.exception.AssemblyException;
 import com.alejandro.mtostock.application.exception.DuplicateCodeException;
+import com.alejandro.mtostock.application.exception.IdempotencyKeyConflictException;
 import com.alejandro.mtostock.application.exception.InsufficientStockException;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.exception.ProjectException;
@@ -36,10 +42,12 @@ import com.alejandro.mtostock.application.exception.WarehouseException;
 import com.alejandro.mtostock.application.mapper.AssemblyMapper;
 import com.alejandro.mtostock.application.mapper.MaterialMapper;
 import com.alejandro.mtostock.application.mapper.ProjectMapper;
+import com.alejandro.mtostock.application.mapper.ReservationMapper;
 import com.alejandro.mtostock.application.mapper.StockMovementMapper;
 import com.alejandro.mtostock.application.mapper.SupplierMapper;
 import com.alejandro.mtostock.application.mapper.WarehouseMapper;
 import com.alejandro.mtostock.application.service.BOMCalculationService;
+import com.alejandro.mtostock.application.service.IdempotentRequestService;
 import com.alejandro.mtostock.application.service.InboxMessageService;
 import com.alejandro.mtostock.application.service.InventoryBalanceService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
@@ -52,6 +60,9 @@ import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
 import com.alejandro.mtostock.configuration.cache.CacheNames;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Assembly;
 import com.alejandro.mtostock.infrastructure.persistence.entity.AssemblyComponent;
+import com.alejandro.mtostock.infrastructure.persistence.entity.EntityReferenceFactory;
+import com.alejandro.mtostock.infrastructure.persistence.entity.IdempotentOperation;
+import com.alejandro.mtostock.infrastructure.persistence.entity.IdempotentRequest;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Reservation;
@@ -61,6 +72,7 @@ import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementTyp
 import com.alejandro.mtostock.infrastructure.persistence.entity.Supplier;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
 import com.alejandro.mtostock.infrastructure.persistence.repository.AssemblyRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.IdempotentRequestRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.InboxMessageRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.InventoryBalanceRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.MaterialRepository;
@@ -96,6 +108,7 @@ import java.util.regex.Pattern;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -357,7 +370,8 @@ class BusinessLayerTest {
                 stockMovementMapper,
                 inventoryBalanceService,
                 validationService,
-                mock(ReservationEngine.class)
+                mock(ReservationEngine.class),
+                mock(IdempotentRequestService.class)
         );
 
         service.registerEntry(request);
@@ -401,10 +415,11 @@ class BusinessLayerTest {
                 stockMovementMapper,
                 inventoryBalanceService,
                 validationService,
-                mock(ReservationEngine.class)
+                mock(ReservationEngine.class),
+                mock(IdempotentRequestService.class)
         );
 
-        service.registerOutput(request);
+        service.registerOutput(request, null);
 
         verify(inventoryBalanceService).decreasePhysicalAndAvailable(material.getId(), warehouse.getId(), request.quantity());
         verify(stockMovementRepository).save(movement);
@@ -599,7 +614,8 @@ class BusinessLayerTest {
                 stockMovementMapper,
                 inventoryBalanceService,
                 validationService,
-                mock(ReservationEngine.class)
+                mock(ReservationEngine.class),
+                mock(IdempotentRequestService.class)
         );
 
         service.registerAdjustment(request);
@@ -644,7 +660,8 @@ class BusinessLayerTest {
                 stockMovementMapper,
                 inventoryBalanceService,
                 validationService,
-                mock(ReservationEngine.class)
+                mock(ReservationEngine.class),
+                mock(IdempotentRequestService.class)
         );
 
         service.registerAdjustment(request);
@@ -693,10 +710,11 @@ class BusinessLayerTest {
                 stockMovementMapper,
                 inventoryBalanceService,
                 validationService,
-                reservationEngine
+                reservationEngine,
+                mock(IdempotentRequestService.class)
         );
 
-        service.registerOutput(request);
+        service.registerOutput(request, null);
 
         assertSame(reservation, movement.getReservation());
         verify(validationService).validateReservationCanChange(reservation);
@@ -738,10 +756,11 @@ class BusinessLayerTest {
                 stockMovementMapper,
                 mock(InventoryBalanceService.class),
                 mock(InventoryValidationService.class),
-                mock(ReservationEngine.class)
+                mock(ReservationEngine.class),
+                mock(IdempotentRequestService.class)
         );
 
-        assertThrows(ReservationException.class, () -> service.registerOutput(request));
+        assertThrows(ReservationException.class, () -> service.registerOutput(request, null));
         verify(stockMovementRepository, never()).save(any(StockMovement.class));
     }
 
@@ -779,10 +798,11 @@ class BusinessLayerTest {
                 stockMovementMapper,
                 mock(InventoryBalanceService.class),
                 mock(InventoryValidationService.class),
-                mock(ReservationEngine.class)
+                mock(ReservationEngine.class),
+                mock(IdempotentRequestService.class)
         );
 
-        assertThrows(ReservationException.class, () -> service.registerOutput(request));
+        assertThrows(ReservationException.class, () -> service.registerOutput(request, null));
         verify(stockMovementRepository, never()).save(any(StockMovement.class));
     }
 
@@ -801,11 +821,269 @@ class BusinessLayerTest {
                 mock(StockMovementMapper.class),
                 mock(InventoryBalanceService.class),
                 mock(InventoryValidationService.class),
-                mock(ReservationEngine.class)
+                mock(ReservationEngine.class),
+                mock(IdempotentRequestService.class)
         );
 
         NotFoundException exception = assertThrows(NotFoundException.class, () -> service.findById(missingId));
         assertEquals("Stock movement", exception.getAggregate());
+    }
+
+    /**
+     * Un reintento con la misma clave y el mismo cuerpo no vuelve a reservar: la reclamación dice
+     * que la petición ya se aplicó, y se devuelve la reserva que creó la primera, tal como está.
+     */
+    @Test
+    void reservationRepeatedWithTheSameIdempotencyKeyReturnsTheFirstOneWithoutReservingAgain() {
+        ReservationRepository reservationRepository = mock(ReservationRepository.class);
+        ReservationMapper reservationMapper = mock(ReservationMapper.class);
+        ReservationEngine reservationEngine = mock(ReservationEngine.class);
+        IdempotentRequestService idempotentRequestService = mock(IdempotentRequestService.class);
+        Reservation existing = reservation();
+        ReservationRequest request = new ReservationRequest(
+                existing.getMaterial().getId(), existing.getWarehouse().getId(), UUID.randomUUID(), existing.getQuantity(), null);
+        ReservationResponse firstAnswer = reservationResponse(existing);
+        when(idempotentRequestService.claim(IdempotentOperation.RESERVATION, "retry-1", request)).thenReturn(Optional.of(existing.getId()));
+        when(reservationRepository.findById(existing.getId())).thenReturn(Optional.of(existing));
+        when(reservationMapper.toResponse(existing)).thenReturn(firstAnswer);
+        ReservationServiceImpl service = new ReservationServiceImpl(reservationRepository, reservationMapper,
+                mock(EntityAuditService.class), reservationEngine, new EntityReferenceFactory(), idempotentRequestService);
+
+        assertSame(firstAnswer, service.create(request, "retry-1"));
+
+        verifyNoInteractions(reservationEngine);
+        verify(idempotentRequestService, never()).complete(any(), any(), any());
+    }
+
+    @Test
+    void reservationWithANewIdempotencyKeyRecordsTheReservationItCreated() {
+        ReservationMapper reservationMapper = mock(ReservationMapper.class);
+        ReservationEngine reservationEngine = mock(ReservationEngine.class);
+        IdempotentRequestService idempotentRequestService = mock(IdempotentRequestService.class);
+        Reservation created = reservation();
+        ReservationRequest request = new ReservationRequest(
+                created.getMaterial().getId(), created.getWarehouse().getId(), UUID.randomUUID(), created.getQuantity(), null);
+        when(idempotentRequestService.claim(IdempotentOperation.RESERVATION, "first-1", request)).thenReturn(Optional.empty());
+        when(reservationMapper.toEntity(request)).thenReturn(created);
+        when(reservationEngine.create(created)).thenReturn(created);
+        when(reservationMapper.toResponse(created)).thenReturn(reservationResponse(created));
+        ReservationServiceImpl service = new ReservationServiceImpl(mock(ReservationRepository.class), reservationMapper,
+                mock(EntityAuditService.class), reservationEngine, new EntityReferenceFactory(), idempotentRequestService);
+
+        service.create(request, "first-1");
+
+        InOrder order = inOrder(idempotentRequestService, reservationEngine);
+        order.verify(idempotentRequestService).claim(IdempotentOperation.RESERVATION, "first-1", request);
+        order.verify(reservationEngine).create(created);
+        order.verify(idempotentRequestService).complete(IdempotentOperation.RESERVATION, "first-1", created.getId());
+    }
+
+    /**
+     * La salida es la que más duele duplicar: descuenta el físico. Repetida con la misma clave, ni
+     * toca el saldo ni consume reservas ni escribe un apunte; devuelve el que ya hay.
+     */
+    @Test
+    void stockOutputRepeatedWithTheSameIdempotencyKeyDoesNotTakeTheMaterialOutAgain() {
+        StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
+        StockMovementMapper stockMovementMapper = mock(StockMovementMapper.class);
+        InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
+        ReservationEngine reservationEngine = mock(ReservationEngine.class);
+        IdempotentRequestService idempotentRequestService = mock(IdempotentRequestService.class);
+        StockMovement existing = movement(StockMovementType.OUTPUT, new BigDecimal("2.000000"));
+        setId(existing, UUID.randomUUID());
+        StockMovementResponse firstAnswer = movementResponse(existing);
+        StockMovementOutputRequest request = new StockMovementOutputRequest(
+                UUID.randomUUID(), UUID.randomUUID(), null, null, new BigDecimal("2.000000"), null, "MO-000001", null);
+        when(idempotentRequestService.claim(IdempotentOperation.OUTPUT, "retry-2", request)).thenReturn(Optional.of(existing.getId()));
+        when(stockMovementRepository.findById(existing.getId())).thenReturn(Optional.of(existing));
+        when(stockMovementMapper.toResponse(existing)).thenReturn(firstAnswer);
+        StockMovementServiceImpl service = new StockMovementServiceImpl(
+                stockMovementRepository,
+                mock(MaterialRepository.class),
+                mock(WarehouseRepository.class),
+                mock(SupplierRepository.class),
+                mock(ProjectRepository.class),
+                mock(ReservationRepository.class),
+                stockMovementMapper,
+                inventoryBalanceService,
+                mock(InventoryValidationService.class),
+                reservationEngine,
+                idempotentRequestService
+        );
+
+        assertSame(firstAnswer, service.registerOutput(request, "retry-2"));
+
+        verifyNoInteractions(inventoryBalanceService, reservationEngine);
+        verify(stockMovementRepository, never()).save(any());
+        verify(idempotentRequestService, never()).complete(any(), any(), any());
+    }
+
+    @Test
+    void stockOutputWithANewIdempotencyKeyRecordsTheMovementItCreated() {
+        StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        WarehouseRepository warehouseRepository = mock(WarehouseRepository.class);
+        StockMovementMapper stockMovementMapper = mock(StockMovementMapper.class);
+        InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
+        IdempotentRequestService idempotentRequestService = mock(IdempotentRequestService.class);
+        Material material = material("MAT-IDEM");
+        Warehouse warehouse = warehouse("WH-IDEM");
+        StockMovementOutputRequest request = new StockMovementOutputRequest(
+                material.getId(), warehouse.getId(), null, null, new BigDecimal("2.000000"), null, "MO-000001", null);
+        StockMovement movement = movement(StockMovementType.OUTPUT, request.quantity());
+        setId(movement, UUID.randomUUID());
+        when(idempotentRequestService.claim(IdempotentOperation.OUTPUT, "first-2", request)).thenReturn(Optional.empty());
+        when(stockMovementMapper.toOutputEntity(request)).thenReturn(movement);
+        when(materialRepository.findById(material.getId())).thenReturn(Optional.of(material));
+        when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
+        when(stockMovementRepository.save(movement)).thenReturn(movement);
+        StockMovementServiceImpl service = new StockMovementServiceImpl(
+                stockMovementRepository,
+                materialRepository,
+                warehouseRepository,
+                mock(SupplierRepository.class),
+                mock(ProjectRepository.class),
+                mock(ReservationRepository.class),
+                stockMovementMapper,
+                inventoryBalanceService,
+                mock(InventoryValidationService.class),
+                mock(ReservationEngine.class),
+                idempotentRequestService
+        );
+
+        service.registerOutput(request, "first-2");
+
+        InOrder order = inOrder(idempotentRequestService, inventoryBalanceService, stockMovementRepository);
+        order.verify(idempotentRequestService).claim(IdempotentOperation.OUTPUT, "first-2", request);
+        order.verify(inventoryBalanceService).decreasePhysicalAndAvailable(material.getId(), warehouse.getId(), request.quantity());
+        order.verify(stockMovementRepository).save(movement);
+        order.verify(idempotentRequestService).complete(IdempotentOperation.OUTPUT, "first-2", movement.getId());
+    }
+
+    /**
+     * La reclamación de verdad la hace el índice único (InventoryRepositoryDataJpaTest); aquí, lo que
+     * el servicio hace con la respuesta: 1 es ejecutar, y 0 con el mismo cuerpo es devolver lo creado.
+     */
+    @Test
+    void idempotencyKeyIsClaimedOnceAndARetryWithTheSameBodyGetsWhatTheFirstCreated() {
+        IdempotentRequestRepository repository = mock(IdempotentRequestRepository.class);
+        IdempotentRequestServiceImpl service = new IdempotentRequestServiceImpl(repository, () -> Optional.of("mto-maintenance-svc"));
+        ReservationRequest request = idempotentReservation("2.000000");
+        String fingerprint = IdempotentRequestServiceImpl.fingerprint(request);
+        UUID created = UUID.randomUUID();
+        when(repository.claim("RESERVATION", "key-1", fingerprint, "mto-maintenance-svc")).thenReturn(1, 0);
+        when(repository.recordResource("RESERVATION", "key-1", "mto-maintenance-svc", created)).thenReturn(1);
+        when(repository.findByOperationAndCreatedByAndIdempotencyKey(IdempotentOperation.RESERVATION, "mto-maintenance-svc", "key-1"))
+                .thenReturn(Optional.of(storedRequest(IdempotentOperation.RESERVATION, "key-1", fingerprint, created)));
+
+        assertEquals(Optional.empty(), service.claim(IdempotentOperation.RESERVATION, "key-1", request));
+        service.complete(IdempotentOperation.RESERVATION, "key-1", created);
+        assertEquals(Optional.of(created), service.claim(IdempotentOperation.RESERVATION, "key-1", request));
+    }
+
+    /**
+     * Un reintento manda el mismo cuerpo. La misma clave con otro cuerpo es un error del cliente:
+     * aplicarla crearía algo que el cliente cree que ya existe, y devolver lo de la primera le diría
+     * que se hizo lo que no pidió.
+     */
+    @Test
+    void idempotencyKeyReusedWithAnotherBodyIsAConflictAndRecordsNothing() {
+        IdempotentRequestRepository repository = mock(IdempotentRequestRepository.class);
+        IdempotentRequestServiceImpl service = new IdempotentRequestServiceImpl(repository, () -> Optional.of("mto-maintenance-svc"));
+        ReservationRequest first = idempotentReservation("2.000000");
+        ReservationRequest other = new ReservationRequest(first.materialId(), first.warehouseId(), first.projectId(), new BigDecimal("3.000000"), null);
+        when(repository.claim("RESERVATION", "key-1", IdempotentRequestServiceImpl.fingerprint(other), "mto-maintenance-svc")).thenReturn(0);
+        when(repository.findByOperationAndCreatedByAndIdempotencyKey(IdempotentOperation.RESERVATION, "mto-maintenance-svc", "key-1"))
+                .thenReturn(Optional.of(storedRequest(IdempotentOperation.RESERVATION, "key-1",
+                        IdempotentRequestServiceImpl.fingerprint(first), UUID.randomUUID())));
+
+        IdempotencyKeyConflictException conflict = assertThrows(IdempotencyKeyConflictException.class,
+                () -> service.claim(IdempotentOperation.RESERVATION, "key-1", other));
+
+        assertTrue(conflict.getMessage().contains("key-1"));
+        verify(repository, never()).recordResource(any(), any(), any(), any());
+    }
+
+    @Test
+    void withoutIdempotencyKeyNothingIsClaimedNorRecorded() {
+        IdempotentRequestRepository repository = mock(IdempotentRequestRepository.class);
+        IdempotentRequestServiceImpl service = new IdempotentRequestServiceImpl(repository, () -> Optional.of("mto-maintenance-svc"));
+
+        assertEquals(Optional.empty(), service.claim(IdempotentOperation.OUTPUT, null, idempotentReservation("1")));
+        service.complete(IdempotentOperation.OUTPUT, null, UUID.randomUUID());
+
+        verifyNoInteractions(repository);
+    }
+
+    @Test
+    void malformedIdempotencyKeysAreRejectedBeforeTouchingTheTable() {
+        IdempotentRequestRepository repository = mock(IdempotentRequestRepository.class);
+        IdempotentRequestServiceImpl service = new IdempotentRequestServiceImpl(repository, Optional::empty);
+        ReservationRequest request = idempotentReservation("1");
+
+        for (String key : List.of("", " ", "two words", "clave-ñ", "k".repeat(256))) {
+            assertThrows(ValidationException.class, () -> service.claim(IdempotentOperation.RESERVATION, key, request), key);
+        }
+        verifyNoInteractions(repository);
+
+        // 255 caracteres ASCII visibles todavía es una clave; sin usuario, el que la manda es 'system'.
+        when(repository.claim(eq("RESERVATION"), eq("k".repeat(255)), any(), eq("system"))).thenReturn(1);
+        assertEquals(Optional.empty(), service.claim(IdempotentOperation.RESERVATION, "k".repeat(255), request));
+    }
+
+    /** La clave es de quien la manda: el mismo usuario que escriben las columnas de auditoría. */
+    @Test
+    void idempotencyKeyBelongsToTheAuthenticatedCaller() {
+        IdempotentRequestRepository repository = mock(IdempotentRequestRepository.class);
+        ReservationRequest request = idempotentReservation("1");
+        String fingerprint = IdempotentRequestServiceImpl.fingerprint(request);
+        when(repository.claim("RESERVATION", "key-1", fingerprint, "warehouse.operator")).thenReturn(1);
+        when(repository.claim("RESERVATION", "key-1", fingerprint, "system")).thenReturn(1);
+
+        new IdempotentRequestServiceImpl(repository, () -> Optional.of("  warehouse.operator  "))
+                .claim(IdempotentOperation.RESERVATION, "key-1", request);
+        new IdempotentRequestServiceImpl(repository, () -> Optional.of("   "))
+                .claim(IdempotentOperation.RESERVATION, "key-1", request);
+
+        verify(repository).claim("RESERVATION", "key-1", fingerprint, "warehouse.operator");
+        verify(repository).claim("RESERVATION", "key-1", fingerprint, "system");
+    }
+
+    /**
+     * La huella es cada componente con valor del cuerpo, con su nombre. Un decimal cuenta por su
+     * valor: {@code 2} y {@code 2.000000} son la misma cantidad, y un cliente que la escribe de otra
+     * forma al reintentar sigue siendo el mismo reintento.
+     */
+    @Test
+    void theRequestFingerprintCountsDecimalsByValueAndEveryFieldThatIsSet() {
+        ReservationRequest two = idempotentReservation("2");
+        String fingerprint = IdempotentRequestServiceImpl.fingerprint(two);
+
+        assertEquals(64, fingerprint.length());
+        assertEquals(fingerprint, IdempotentRequestServiceImpl.fingerprint(
+                new ReservationRequest(two.materialId(), two.warehouseId(), two.projectId(), new BigDecimal("2.000000"), null)));
+        assertNotEquals(fingerprint, IdempotentRequestServiceImpl.fingerprint(
+                new ReservationRequest(two.materialId(), two.warehouseId(), two.projectId(), new BigDecimal("3"), null)));
+        assertNotEquals(fingerprint, IdempotentRequestServiceImpl.fingerprint(
+                new ReservationRequest(two.warehouseId(), two.materialId(), two.projectId(), new BigDecimal("2"), null)));
+        assertNotEquals(fingerprint, IdempotentRequestServiceImpl.fingerprint(
+                new ReservationRequest(two.materialId(), two.warehouseId(), two.projectId(), new BigDecimal("2"), Instant.EPOCH)));
+        assertNotEquals(
+                IdempotentRequestServiceImpl.fingerprint(new StockMovementOutputRequest(
+                        two.materialId(), two.warehouseId(), null, null, BigDecimal.ONE, null, "MO-1", "a|b")),
+                IdempotentRequestServiceImpl.fingerprint(new StockMovementOutputRequest(
+                        two.materialId(), two.warehouseId(), null, null, BigDecimal.ONE, null, "MO-1a", "|b")));
+    }
+
+    /** Apuntar lo creado en una clave que esta escritura no reclamó dejaría el reintento sin respuesta. */
+    @Test
+    void recordingWhatWasCreatedFailsWhenThisWriteDidNotClaimTheKey() {
+        IdempotentRequestRepository repository = mock(IdempotentRequestRepository.class);
+        IdempotentRequestServiceImpl service = new IdempotentRequestServiceImpl(repository, () -> Optional.of("mto-maintenance-svc"));
+        UUID created = UUID.randomUUID();
+        when(repository.recordResource("OUTPUT", "key-1", "mto-maintenance-svc", created)).thenReturn(0);
+
+        assertThrows(IllegalStateException.class, () -> service.complete(IdempotentOperation.OUTPUT, "key-1", created));
     }
 
     @Test
@@ -1865,6 +2143,29 @@ class BusinessLayerTest {
         } catch (IOException exception) {
             throw new IllegalStateException(exception);
         }
+    }
+
+    private static ReservationRequest idempotentReservation(String quantity) {
+        return new ReservationRequest(UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), new BigDecimal(quantity), null);
+    }
+
+    private static IdempotentRequest storedRequest(IdempotentOperation operation, String key, String fingerprint, UUID resourceId) {
+        return IdempotentRequest.builder()
+                .operation(operation)
+                .idempotencyKey(key)
+                .requestHash(fingerprint)
+                .resourceId(resourceId)
+                .build();
+    }
+
+    private static ReservationResponse reservationResponse(Reservation reservation) {
+        return new ReservationResponse(reservation.getId(), null, null, null, reservation.getQuantity(),
+                ReservationStatusDto.ACTIVE, Instant.EPOCH, null, true, null);
+    }
+
+    private static StockMovementResponse movementResponse(StockMovement movement) {
+        return new StockMovementResponse(movement.getId(), null, null, StockMovementTypeDto.OUTPUT, movement.getQuantity(),
+                movement.getQuantity().negate(), Instant.EPOCH, null, null, null, null, "MO-000001", null, null);
     }
 
     private static AssemblyComponent component(Material material, String quantity) {

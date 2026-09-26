@@ -33,6 +33,7 @@ never changes anything:
 | `V5__add_project_master_data_source.sql` | `project.source_service` / `source_entity_id`. |
 | `V6__add_project_master_data_sequence.sql` | `project.source_sequence_number`. |
 | `V7__add_envers_audit_tables.sql` | `audit_revision` and the seven `<table>_aud` twins. |
+| `V8__create_idempotent_request_table.sql` | `idempotent_request` and `idempotent_operation`: the reservations and outputs written with an `Idempotency-Key`. |
 
 A migration that changes a column on one of the seven audited tables has to change its `_aud` twin in
 the same migration, or the application stops booting under `validate`.
@@ -65,6 +66,7 @@ The documented proposal intentionally lists only the core tables. The Phase 2 sc
 - `stock_movement.related_movement_id` links transfer pairs or correction movements without changing the stock calculation model.
 - `inventory_balance` is the current-stock projection: one row per material/warehouse pair, holding what `stock_movement` and the `ACTIVE` reservations add up to. It is derived data with a unique key, not a relationship, so it hangs off `material` and `warehouse` and nothing points at it.
 - `inbox_message` is not part of the inventory model at all. It records the master data messages this service has received from `mto-configuration` and what it did with each one, so a redelivery is applied at most once. It has no foreign key to anything: it describes traffic, not stock.
+- `idempotent_request` is its REST counterpart: one row per reservation or output written with an `Idempotency-Key`, so a client that retries after losing the answer gets what the first request created instead of a second one. `resource_id` points at the reservation or at the movement depending on `operation`, which is why it has no foreign key.
 
 ### Mermaid ER diagram
 
@@ -195,10 +197,21 @@ erDiagram
         timestamptz failed_at
         integer processing_attempts
     }
+
+    IDEMPOTENT_REQUEST {
+        uuid id PK
+        idempotent_operation operation UK
+        varchar created_by UK
+        varchar idempotency_key UK
+        varchar request_hash
+        uuid resource_id
+    }
 ```
 
 `INBOX_MESSAGE` is drawn without a single relationship line on purpose: it has no foreign key to any
-inventory table, because it records the messages that arrived and not the stock they moved.
+inventory table, because it records the messages that arrived and not the stock they moved. The same
+goes for `IDEMPOTENT_REQUEST`, which records requests: its `resource_id` is a reservation or a
+movement depending on the operation.
 
 ### Table definitions and column descriptions
 
@@ -369,6 +382,30 @@ The guarantee is `uq_inbox_message_message_id_source`, not any check in code: `I
 claims and marks with conditional native `UPDATE`s and an `on conflict` insert — the same idiom as
 `inventory_balance` — because a read-then-write lets two concurrent deliveries through.
 
+#### `idempotent_request`
+
+Added in `V8__create_idempotent_request_table.sql`. The writes made with an `Idempotency-Key`
+(`POST /reservations` and `POST /movements/outputs`, see `04-rest-api.md`): a client that retries after
+losing the answer gets what the first request created instead of reserving or taking the material out
+a second time.
+
+| Column | Type | Description |
+| --- | --- | --- |
+| `id` | `uuid` | Primary key. |
+| `operation` | `idempotent_operation` | Which write. Each one has its own key space. |
+| `idempotency_key` | `varchar(255)` | The header as it arrived: 1 to 255 visible ASCII characters. |
+| `request_hash` | `varchar(64)` | SHA-256 of the request body (every field that is set, decimals by value). The same key with another body is rejected with `409 IDEM-001`. |
+| `resource_id` | `uuid` | The reservation or the movement the request created. Null only inside the transaction that claims the key, which never commits without it. |
+| `created_at`, `updated_at` | `timestamptz` | Row timestamps. |
+| `created_by`, `updated_by` | `varchar(100)` | Who sent the request — the authenticated user, as in every other table. `created_by` is part of the key, so one client's key never collides with another's. |
+
+The guarantee is `uq_idempotent_request_key`, not any check in code. The write claims its key with an
+`on conflict do nothing` insert at the start of its own transaction and records what it created at
+the end. A second request with the same key does not see the first one's uncommitted row but waits on
+the unique index until that transaction ends: if it committed, the insert does nothing and the stored
+row answers; if it rolled back (stock said no), the claim went with it and the retry runs as if it were
+the first. Rows do not expire: there is one per keyed write, the same order of magnitude as the ledger.
+
 ### Enums
 
 #### `stock_movement_type`
@@ -401,6 +438,13 @@ This type is reused by `reservation_aud.status`, so any future `ALTER TYPE` affe
 | `PROCESSING` | Claimed by one delivery. The claim is conditional, so a second concurrent delivery finds nothing to claim and skips the handler. |
 | `PROCESSED` | Applied. An event whose entity has no handler ends up here too: what to do with it was decided — nothing — and redelivering it would not change that. |
 | `FAILED` | The handler threw. Written by `recordFailure` in its own `REQUIRES_NEW` transaction, because the attempt's transaction has to roll back and would take the mark with it. |
+
+#### `idempotent_operation`
+
+| Value | Meaning |
+| --- | --- |
+| `RESERVATION` | `POST /reservations`; `resource_id` is the reservation. |
+| `OUTPUT` | `POST /movements/outputs`; `resource_id` is the output movement. |
 
 ### Audit tables (Hibernate Envers)
 
@@ -455,6 +499,7 @@ the entity maps it with `@JdbcTypeCode(SqlTypes.NAMED_ENUM)`, so a `varchar` her
 - `stock_movement.related_movement_id` cannot point to itself.
 - `inventory_balance` has a unique `(material_id, warehouse_id)` constraint — it is what makes the `on conflict do nothing` insert safe — and three non-negative checks plus `chk_inventory_balance_available_matches_quantities`, which pins `available_quantity = physical_quantity - reserved_quantity`. A projection that could drift from its own definition would be worse than no projection.
 - `inbox_message` has a unique `(message_id, source_service)` constraint. It is the whole idempotency guarantee, so it belongs in the schema and not in Java.
+- `idempotent_request` has a unique `(operation, created_by, idempotency_key)` constraint, for the same reason: it is the idempotency guarantee of the REST writes. `chk_idempotent_request_key_not_blank` keeps an empty key out.
 - `inbox_message` status timestamps are one-way implications, not equivalences: `PROCESSED` requires `processed_at` and `FAILED` requires `failed_at`, but a message that failed and was later reprocessed stays `PROCESSED` and keeps its `failed_at` as history.
 - `project` requires `source_service` and `source_entity_id` either both set or both null (`chk_project_source_columns_together`), and `uq_project_source` makes the pair unique. A half-filled row would be inserted again on the next delivery instead of updated. `source_sequence_number` cannot be set without a `source_service`.
 - No table stores assembly availability; it is always computed from the BOM against component stock.
@@ -474,5 +519,6 @@ the entity maps it with `@JdbcTypeCode(SqlTypes.NAMED_ENUM)`, so a `varchar` her
 - `idx_assembly_component_material_id` supports impact analysis when a material changes.
 - `idx_inventory_balance_material_id`, `idx_inventory_balance_warehouse_id` and `idx_inventory_balance_material_warehouse` support the three shapes of stock read: one material everywhere, one warehouse's inventory, and the exact pair every conditional balance update goes through.
 - `idx_inbox_message_status_received_at` and `idx_inbox_message_received_at` support the operational queries — "what failed", "what arrived in this window". There is deliberately **no** standalone index on `message_id`: `uq_inbox_message_message_id_source` already indexes it as the leading column, and an extra one would only make every insert dearer on a table that takes one insert per incoming message.
+- `idempotent_request` has no index of its own: the only lookup is by the full key, which `uq_idempotent_request_key` already indexes.
 - `idx_<table>_aud_id_rev` on each audit twin supports the query that is actually made — "history of this entity" — which filters on `id`, while the primary key `(rev, id)` leads with `rev`.
 - `idx_audit_revision_timestamp`, `idx_audit_revision_username` and the partial `idx_audit_revision_correlation_id` support auditing queries by time, author and correlation.

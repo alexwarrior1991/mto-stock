@@ -8,9 +8,11 @@ import com.alejandro.mtostock.application.dto.reservation.ReservationUpdateReque
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.mapper.ReservationMapper;
 import com.alejandro.mtostock.application.service.EntityAuditService;
+import com.alejandro.mtostock.application.service.IdempotentRequestService;
 import com.alejandro.mtostock.application.service.ReservationEngine;
 import com.alejandro.mtostock.application.service.ReservationService;
 import com.alejandro.mtostock.infrastructure.persistence.entity.EntityReferenceFactory;
+import com.alejandro.mtostock.infrastructure.persistence.entity.IdempotentOperation;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Reservation;
 import com.alejandro.mtostock.infrastructure.persistence.entity.ReservationStatus;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ReservationRepository;
@@ -22,6 +24,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -36,13 +39,20 @@ class ReservationServiceImpl implements ReservationService {
     private final EntityAuditService entityAuditService;
     private final ReservationEngine reservationEngine;
     private final EntityReferenceFactory entityReferenceFactory;
+    private final IdempotentRequestService idempotentRequestService;
 
     @Override
     @Transactional
-    public ReservationResponse create(ReservationRequest request) {
+    public ReservationResponse create(ReservationRequest request, String idempotencyKey) {
+        Optional<UUID> applied = idempotentRequestService.claim(IdempotentOperation.RESERVATION, idempotencyKey, request);
+        if (applied.isPresent()) {
+            return findById(applied.get());
+        }
         Reservation reservation = reservationMapper.toEntity(request);
         reservation.setReservedAt(request.reservedAt() == null ? Instant.now() : request.reservedAt());
-        return reservationMapper.toResponse(reservationEngine.create(reservation));
+        Reservation created = reservationEngine.create(reservation);
+        idempotentRequestService.complete(IdempotentOperation.RESERVATION, idempotencyKey, created.getId());
+        return reservationMapper.toResponse(created);
     }
 
     @Override

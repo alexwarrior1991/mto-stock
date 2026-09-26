@@ -2,6 +2,7 @@ package com.alejandro.mtostock.infrastructure.web.exception;
 
 import com.alejandro.mtostock.application.dto.error.ApiErrorResponse;
 import com.alejandro.mtostock.application.exception.DuplicateCodeException;
+import com.alejandro.mtostock.application.exception.IdempotencyKeyConflictException;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.exception.ProjectException;
 import com.alejandro.mtostock.application.exception.ReservationException;
@@ -62,6 +63,8 @@ class GlobalExceptionHandlerTest {
         ResponseEntity<ApiErrorResponse> reservationResponse = handler.handleReservation(new ReservationException("Reservation expired."), request);
         ResponseEntity<ApiErrorResponse> projectResponse = handler.handleBusiness(
                 new ProjectException("Project 'EP-42' is synchronized from mto-configuration and is not edited through the API"), request);
+        ResponseEntity<ApiErrorResponse> idempotencyResponse = handler.handleIdempotencyKeyConflict(
+                new IdempotencyKeyConflictException("mto-maintenance:line-1:reserve"), request);
 
         assertEquals(HttpStatus.CONFLICT, duplicateResponse.getStatusCode());
         assertNotNull(duplicateResponse.getBody());
@@ -72,6 +75,9 @@ class GlobalExceptionHandlerTest {
         assertEquals(HttpStatus.UNPROCESSABLE_CONTENT, projectResponse.getStatusCode());
         assertNotNull(projectResponse.getBody());
         assertEquals("PRJ-001", projectResponse.getBody().errorCode());
+        assertEquals(HttpStatus.CONFLICT, idempotencyResponse.getStatusCode());
+        assertNotNull(idempotencyResponse.getBody());
+        assertEquals("IDEM-001", idempotencyResponse.getBody().errorCode());
     }
 
     @Test

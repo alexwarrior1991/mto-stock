@@ -18,6 +18,7 @@ import com.alejandro.mtostock.application.dto.reservation.ReservationStatusDto;
 import com.alejandro.mtostock.application.dto.stock.StockAdjustmentDirection;
 import com.alejandro.mtostock.application.dto.stock.StockMovementAdjustmentRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementEntryRequest;
+import com.alejandro.mtostock.application.dto.stock.StockMovementOutputRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementResponse;
 import com.alejandro.mtostock.application.dto.stock.StockMovementTransferRequest;
 import com.alejandro.mtostock.application.dto.supplier.SupplierRequest;
@@ -42,6 +43,7 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.math.BigDecimal;
+import java.net.URI;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -151,6 +153,23 @@ class RestControllerLayerTest {
     }
 
     @Test
+    void stockOutputHandsTheIdempotencyKeyToTheService() {
+        StockMovementService stockMovementService = mock(StockMovementService.class);
+        StockMovementController stockMovementController = new StockMovementController(stockMovementService, mock(WarehouseService.class));
+        UUID movementId = UUID.randomUUID();
+        StockMovementOutputRequest output = new StockMovementOutputRequest(UUID.randomUUID(), UUID.randomUUID(), null, null,
+                BigDecimal.ONE, null, "MO-000001", "Maintenance order MO-000001");
+        StockMovementResponse movement = stockMovementResponse(movementId);
+        when(stockMovementService.registerOutput(output, "mto-maintenance:line-1:output")).thenReturn(movement);
+
+        var response = stockMovementController.output(output, "mto-maintenance:line-1:output");
+
+        assertEquals(HttpStatus.CREATED, response.getStatusCode());
+        assertEquals(URI.create("/api/v1/inventory/movements/" + movementId), response.getHeaders().getLocation());
+        assertSame(movement, response.getBody());
+    }
+
+    @Test
     void assemblyAndReservationControllersDelegateBusinessOperations() {
         AssemblyService assemblyService = mock(AssemblyService.class);
         ReservationService reservationService = mock(ReservationService.class);
@@ -170,7 +189,7 @@ class RestControllerLayerTest {
         PageResponse<AssemblyResponse> assemblies = page();
         when(assemblyService.calculateAvailability(assemblyId, warehouseId)).thenReturn(availability);
         when(assemblyService.search("bra", "ASM", "Bracket", true, pageable)).thenReturn(assemblies);
-        when(reservationService.create(request)).thenReturn(reservation);
+        when(reservationService.create(request, null)).thenReturn(reservation);
         when(reservationService.release(reservationId)).thenReturn(reservation);
         when(reservationService.consume(reservationId)).thenReturn(reservation);
         when(reservationService.search(warehouseId, ReservationStatus.ACTIVE, projectId, materialId, pageable)).thenReturn(reservations);
@@ -178,7 +197,7 @@ class RestControllerLayerTest {
         var availabilityResponse = assemblyController.availability(assemblyId, warehouseId);
         var productionCapacityResponse = assemblyController.productionCapacity(assemblyId, warehouseId);
         var assembliesResponse = assemblyController.search("bra", "ASM", "Bracket", true, pageable);
-        var createResponse = reservationController.create(request);
+        var createResponse = reservationController.create(request, null);
         var releaseResponse = reservationController.release(reservationId);
         var consumeResponse = reservationController.consume(reservationId);
         var searchResponse = reservationController.search(warehouseId, ReservationStatus.ACTIVE, projectId, materialId, pageable);
@@ -192,7 +211,7 @@ class RestControllerLayerTest {
         assertSame(reservations, searchResponse.getBody());
         verify(assemblyService, times(2)).calculateAvailability(assemblyId, warehouseId);
         verify(assemblyService).search("bra", "ASM", "Bracket", true, pageable);
-        verify(reservationService).create(request);
+        verify(reservationService).create(request, null);
         verify(reservationService).release(reservationId);
         verify(reservationService).consume(reservationId);
         verify(reservationService).search(warehouseId, ReservationStatus.ACTIVE, projectId, materialId, pageable);

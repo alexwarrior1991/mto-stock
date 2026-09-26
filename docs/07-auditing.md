@@ -26,20 +26,21 @@ which only the final state survived.
 
 ## What is deliberately not audited, and why
 
-Three entities carry no `@Audited`, and this is not an oversight:
+Four entities carry no `@Audited`, and this is not an oversight:
 
 - **`StockMovement`** is already an append-only immutable ledger — it is only ever
   `save(new StockMovement(...))`, with no update or delete endpoints. A `stock_movement_aud` twin
   would double the storage of the largest table in the system without recording a single new fact.
-- **`InventoryBalance`** and **`InboxMessage`** are written **exclusively with native SQL**
-  (`@Modifying(nativeQuery = true)` conditional updates in `InventoryBalanceRepository` and
-  `InboxMessageRepository` — the row-count idiom that makes them correct under concurrency). Envers
+- **`InventoryBalance`**, **`InboxMessage`** and **`IdempotentRequest`** are written **exclusively
+  with native SQL** (`@Modifying(nativeQuery = true)` conditional statements in
+  `InventoryBalanceRepository`, `InboxMessageRepository` and `IdempotentRequestRepository` — the
+  row-count idiom that makes them correct under concurrency). Envers
   hooks the persistence context, so it would never see those writes. Their twins would sit
   permanently empty, and an empty history table does not read as "no auditing here", it reads as
   "this never changed". That is worse than not having it.
 
-`AuditableEntity` therefore carries **no** `@Audited`: it is the mapped superclass of all ten
-entities, so annotating it would sweep in all three. `JpaEntityModelTest` pins the split so it cannot
+`AuditableEntity` therefore carries **no** `@Audited`: it is the mapped superclass of all eleven
+entities, so annotating it would sweep in all four. `JpaEntityModelTest` pins the split so it cannot
 drift silently.
 
 Its four audit fields carry `@NotAudited`, so the `_aud` twins do not repeat

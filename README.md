@@ -364,7 +364,15 @@ On Windows PowerShell:
 .\mvnw.cmd test
 ```
 
-Some persistence tests use Testcontainers, so Docker must be available when executing the full suite.
+The persistence tests need a real PostgreSQL. With Docker they start `postgres:17-alpine` through
+Testcontainers; without it, point `TEST_DATABASE_URL`, `TEST_DATABASE_USERNAME` and
+`TEST_DATABASE_PASSWORD` at an empty database and they use it instead. With neither, they are
+skipped.
+
+```bash
+TEST_DATABASE_URL=jdbc:postgresql://localhost:5432/mto_stock_test \
+TEST_DATABASE_USERNAME=postgres TEST_DATABASE_PASSWORD=postgres ./mvnw test
+```
 
 `KeycloakAuthorizationIT` runs the authorization rules against a real Keycloak and is executed by
 Failsafe during `./mvnw verify`. Without Docker it is skipped rather than failed:

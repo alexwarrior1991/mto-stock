@@ -14,7 +14,7 @@ Build / test (use `mvnw.cmd` instead of `./mvnw` on Windows PowerShell):
 
 ```bash
 ./mvnw compile                                    # compile only
-./mvnw test                                       # full test suite (needs Docker: many tests use Testcontainers)
+./mvnw test                                       # full test suite (Docker for Testcontainers, or TEST_DATABASE_* pointing at a PostgreSQL)
 ./mvnw test -Dtest=BusinessLayerTest               # single test class
 ./mvnw test -Dtest=BusinessLayerTest#stockMovementEntryIncreasesPhysicalAndAvailableBalance   # single test method
 ./mvnw spring-boot:run                            # run the app (needs SPRING_PROFILES_ACTIVE + DATABASE_* env vars, see README)
@@ -60,6 +60,27 @@ Stock is never stored directly on `material`/`warehouse`. It is derived from an 
 - `reservation.status` (`ACTIVE`/`RELEASED`/`CANCELLED`/`CONSUMED`) drives `reserved_quantity`; only `ACTIVE` reservations reduce availability.
 - Assemblies never have stock — availability is computed on demand from the BOM (`assembly_component`) against current component stock (`BOMCalculationService`).
 
+### Idempotent writes
+
+`POST /reservations` and `POST /movements/outputs` take an optional `Idempotency-Key` header (1 to 255
+visible ASCII characters). `mto-maintenance` sends it so that a retry after a lost answer never
+reserves or takes the material out twice. Full contract in `docs/04-rest-api.md`, table in
+`docs/03-database.md`.
+
+- `IdempotentRequestService.claim` runs **first**, inside the write's own transaction: an `on conflict
+  do nothing` insert into `idempotent_request`, unique on `(operation, created_by, idempotency_key)` —
+  the inbox's row-count idiom. `1`: the write runs, and `complete` records what it created in the same
+  transaction. `0`: the stored row answers. With the same body fingerprint the service returns what
+  was created, as it is now, **without validating stock again** (the first request may have taken all
+  of it); with another body it is 409 `IDEM-001` and nothing is written.
+- A write that fails rolls its claim back, so a retry after a rejection runs as a first request. A
+  concurrent request with the same key waits on the unique index until the first one ends.
+- The key belongs to the authenticated caller (`created_by`) and to the operation. Without a key,
+  nothing changes. The fingerprint is SHA-256 over the request record's components that are set,
+  name and value, decimals by value — so an optional field added later does not change it. Dates
+  count too: a client that retries leaves `reservedAt`/`occurredAt` out, as `mto-maintenance` does.
+- The table is written only with native SQL, is not audited, and its rows do not expire.
+
 ### Auditing
 
 Two layers, answering different questions. The `created_at`/`updated_at`/`created_by`/`updated_by`
@@ -71,11 +92,11 @@ Full detail in `docs/07-auditing.md`.
 - **Audited (7)**: `Material`, `Supplier`, `Warehouse`, `Project`, `Assembly`, `AssemblyComponent`,
   `Reservation` — one `<table>_aud` twin each, plus `audit_revision` (a custom `@RevisionEntity`
   replacing `REVINFO`) in `infrastructure/persistence/audit`.
-- **Not audited (3), on purpose**: `StockMovement` is already an immutable append-only ledger, so a
-  twin would double the biggest table for no new information; `InventoryBalance` and `InboxMessage`
-  are written **only** with native SQL, which Envers cannot see, so their twins would sit empty and
-  read as "never changed". `@Audited` therefore goes on each entity and **never** on
-  `AuditableEntity`, which would sweep in all three and stop the application from booting under
+- **Not audited (4), on purpose**: `StockMovement` is already an immutable append-only ledger, so a
+  twin would double the biggest table for no new information; `InventoryBalance`, `InboxMessage` and
+  `IdempotentRequest` are written **only** with native SQL, which Envers cannot see, so their twins
+  would sit empty and read as "never changed". `@Audited` therefore goes on each entity and **never**
+  on `AuditableEntity`, which would sweep in all four and stop the application from booting under
   `ddl-auto: validate`. `JpaEntityModelTest` guards the split.
 - **Known gap**: a `project` changed by a master data event leaves no revision —
   `ProjectRepository.upsertFromMasterData`/`deactivateFromMasterData` are native SQL because the
@@ -145,6 +166,6 @@ repository's `README_MESSAGING.md`) before changing anything under `application/
 
 ### Testing
 
-- `PostgreSQLTestContainer` (in `support/`) is the shared base for integration tests needing a real Postgres (`postgres:17-alpine` via Testcontainers — the same version `mto-platform` runs, so CI and local do not test against different engines) with Flyway migrations applied — extend it rather than mocking the datasource for repository/persistence tests.
-- `MtoStockApplicationTests` is the only `@SpringBootTest`: it boots the whole context against a real Postgres (`PostgreSQLTestContainer`), with no service replaced by a mock, and asserts every business service bean is present. It needs Docker for that reason. It used to mock the ten services and exclude `DataSourceAutoConfiguration`, which is why nothing caught that the 16 `@Service` impls carried `@ConditionalOnBean(XRepository.class)` — an annotation Spring only supports on auto-configurations, always false on a scanned `@Service`, so no service bean was ever created and the packaged application could not start. Do not reintroduce it.
-- Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` + `InboxMessageRepositoryDataJpaTest` (repositories), `InboxIdempotencyDataJpaTest` (inbox end to end on real Postgres), `EnversAuditDataJpaTest` (change history end to end — **it disables the test transaction on purpose: Envers writes at transaction completion, not on flush, so a rolled-back slice test would record nothing and look like Envers is broken**), `MapperLayerTest` (mappers), `MessagingLayerTest` (RabbitMQ contract, consumer and topology), `CacheLayerTest` (cache wiring and invalidation, no Redis needed), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class.
+- `PostgreSQLTestContainer` (in `support/`) is the shared base for integration tests needing a real Postgres (`postgres:17-alpine` via Testcontainers — the same version `mto-platform` runs, so CI and local do not test against different engines) with Flyway migrations applied — extend it rather than mocking the datasource for repository/persistence tests. Without Docker, `TEST_DATABASE_URL`/`TEST_DATABASE_USERNAME`/`TEST_DATABASE_PASSWORD` point it at a PostgreSQL instead, as in `mto-maintenance`; the classes that extend it do not carry `@Testcontainers(disabledWithoutDocker = true)`, which would switch them off even then.
+- `MtoStockApplicationTests` is the only `@SpringBootTest`: it boots the whole context against a real Postgres (`PostgreSQLTestContainer`), with no service replaced by a mock, and asserts every business service bean is present. It needs a real PostgreSQL for that reason. It used to mock the ten services and exclude `DataSourceAutoConfiguration`, which is why nothing caught that the 16 `@Service` impls carried `@ConditionalOnBean(XRepository.class)` — an annotation Spring only supports on auto-configurations, always false on a scanned `@Service`, so no service bean was ever created and the packaged application could not start. Do not reintroduce it.
+- Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` + `InboxMessageRepositoryDataJpaTest` (repositories), `InboxIdempotencyDataJpaTest` (idempotency end to end on real Postgres: the inbox, and the reservations and outputs written with an `Idempotency-Key`), `EnversAuditDataJpaTest` (change history end to end — **it disables the test transaction on purpose: Envers writes at transaction completion, not on flush, so a rolled-back slice test would record nothing and look like Envers is broken**), `MapperLayerTest` (mappers), `MessagingLayerTest` (RabbitMQ contract, consumer and topology), `CacheLayerTest` (cache wiring and invalidation, no Redis needed), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class.

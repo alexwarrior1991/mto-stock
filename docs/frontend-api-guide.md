@@ -102,7 +102,7 @@ All API errors use this shape:
 - `401 Unauthorized`: missing, expired or otherwise invalid bearer token. Error code `AUTH-401`; the `WWW-Authenticate` header says whether the token has to be refreshed or the user re-authenticated.
 - `403 Forbidden`: the token is valid but the user lacks the role the operation requires. Error code `AUTH-403`.
 - `404 Not Found`: referenced resource was not found.
-- `409 Conflict`: duplicate business key or insufficient stock.
+- `409 Conflict`: duplicate business key, insufficient stock, or an `Idempotency-Key` reused with a different body (`IDEM-001`).
 - `422 Unprocessable Entity`: domain rule violation, such as invalid BOM or reservation lifecycle rule.
 - `500 Internal Server Error`: unexpected server-side failure.
 
@@ -112,6 +112,7 @@ All API errors use this shape:
 - Request with body: `Content-Type: application/json`
 - Optional tracing: `X-Correlation-Id: <client-generated-id>` if supported by the deployment.
 - Auth: `Authorization: Bearer <jwt>` on every request to `/api/v1/inventory`.
+- Optional on `POST /reservations` and `POST /movements/outputs`: `Idempotency-Key: <client-generated-key>` (1 to 255 visible ASCII characters). Retrying with the same key and body answers `201` with what the first request created instead of writing again; see `04-rest-api.md`.
 
 ## Content-Type
 
