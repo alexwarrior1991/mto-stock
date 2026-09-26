@@ -250,3 +250,17 @@ app:
     # construye con null y se sirve asi, sin error, hasta que expire el TTL. Subir la version deja
     # huerfanas las entradas viejas -caducan solas- en vez de tener que vaciar Redis a mano.
     key-prefix: ${APP_CACHE_KEY_PREFIX:mto-stock:v1:}
+
+  # Claves de idempotencia: la cabecera Idempotency-Key de POST /reservations y POST /movements/outputs.
+  idempotency:
+    # Cuanto se recuerda una clave desde que se uso por primera vez. Pasado el plazo, un reintento con
+    # ella es una peticion nueva, asi que tiene que sobrar frente a lo que tarda un cliente en
+    # reintentar: mto-maintenance reintenta solo lo que se quedo sin respuesta cada pocos minutos
+    # mientras stock le responde.
+    retention: ${APP_IDEMPOTENCY_RETENTION:30d}
+    purge:
+      # Con esto en false las claves no caducan y idempotent_request crece con cada escritura con clave.
+      enabled: ${APP_IDEMPOTENCY_PURGE_ENABLED:true}
+      # Una vez al dia, de madrugada; en el minuto 17 para no coincidir con lo que se programa en punto.
+      cron: "${APP_IDEMPOTENCY_PURGE_CRON:0 17 3 * * *}"
+

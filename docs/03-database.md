@@ -34,6 +34,7 @@ never changes anything:
 | `V6__add_project_master_data_sequence.sql` | `project.source_sequence_number`. |
 | `V7__add_envers_audit_tables.sql` | `audit_revision` and the seven `<table>_aud` twins. |
 | `V8__create_idempotent_request_table.sql` | `idempotent_request` and `idempotent_operation`: the reservations and outputs written with an `Idempotency-Key`. |
+| `V9__index_idempotent_request_created_at.sql` | `idx_idempotent_request_created_at`, for the purge of expired keys. |
 
 A migration that changes a column on one of the seven audited tables has to change its `_aud` twin in
 the same migration, or the application stops booting under `validate`.
@@ -394,7 +395,7 @@ a second time.
 | `id` | `uuid` | Primary key. |
 | `operation` | `idempotent_operation` | Which write. Each one has its own key space. |
 | `idempotency_key` | `varchar(255)` | The header as it arrived: 1 to 255 visible ASCII characters. |
-| `request_hash` | `varchar(64)` | SHA-256 of the request body (every field that is set, decimals by value). The same key with another body is rejected with `409 IDEM-001`. |
+| `request_hash` | `varchar(64)` | SHA-256 of the request body (every field that is set, decimals by value, the date left out). The same key with another body is rejected with `409 IDEM-001`. |
 | `resource_id` | `uuid` | The reservation or the movement the request created. Null only inside the transaction that claims the key, which never commits without it. |
 | `created_at`, `updated_at` | `timestamptz` | Row timestamps. |
 | `created_by`, `updated_by` | `varchar(100)` | Who sent the request — the authenticated user, as in every other table. `created_by` is part of the key, so one client's key never collides with another's. |
@@ -404,7 +405,15 @@ The guarantee is `uq_idempotent_request_key`, not any check in code. The write c
 the end. A second request with the same key does not see the first one's uncommitted row but waits on
 the unique index until that transaction ends: if it committed, the insert does nothing and the stored
 row answers; if it rolled back (stock said no), the claim went with it and the retry runs as if it were
-the first. Rows do not expire: there is one per keyed write, the same order of magnitude as the ledger.
+the first.
+
+Rows expire. A daily job (`IdempotencyPurgeConfiguration`, `app.idempotency.purge.cron`) deletes, in
+batches of a thousand and each batch in its own transaction, the keys first used more than
+`app.idempotency.retention` ago (30 days by default), oldest first; `idx_idempotent_request_created_at`
+is its index. What a key created stays where it is: a retry with a forgotten key is a new request, so
+the retention has to outlast how long a client may take to retry (`mto-maintenance` retries what was
+left without an answer every few minutes while stock answers). A retry arriving just as its expired
+row is deleted claims the key again instead of failing.
 
 ### Enums
 
@@ -519,6 +528,6 @@ the entity maps it with `@JdbcTypeCode(SqlTypes.NAMED_ENUM)`, so a `varchar` her
 - `idx_assembly_component_material_id` supports impact analysis when a material changes.
 - `idx_inventory_balance_material_id`, `idx_inventory_balance_warehouse_id` and `idx_inventory_balance_material_warehouse` support the three shapes of stock read: one material everywhere, one warehouse's inventory, and the exact pair every conditional balance update goes through.
 - `idx_inbox_message_status_received_at` and `idx_inbox_message_received_at` support the operational queries — "what failed", "what arrived in this window". There is deliberately **no** standalone index on `message_id`: `uq_inbox_message_message_id_source` already indexes it as the leading column, and an extra one would only make every insert dearer on a table that takes one insert per incoming message.
-- `idempotent_request` has no index of its own: the only lookup is by the full key, which `uq_idempotent_request_key` already indexes.
+- `idx_idempotent_request_created_at` supports the purge of expired keys, which filters and orders by `created_at`. The lookup of a previous request goes by the full key, which `uq_idempotent_request_key` already indexes.
 - `idx_<table>_aud_id_rev` on each audit twin supports the query that is actually made — "history of this entity" — which filters on `id`, while the primary key `(rev, id)` leads with `rev`.
 - `idx_audit_revision_timestamp`, `idx_audit_revision_username` and the partial `idx_audit_revision_correlation_id` support auditing queries by time, author and correlation.

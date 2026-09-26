@@ -58,6 +58,8 @@ import com.alejandro.mtostock.application.service.StockCalculationService;
 import com.alejandro.mtostock.application.service.TransferService;
 import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
 import com.alejandro.mtostock.configuration.cache.CacheNames;
+import com.alejandro.mtostock.configuration.idempotency.IdempotencyProperties;
+import com.alejandro.mtostock.configuration.idempotency.IdempotencyPurgeConfiguration;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Assembly;
 import com.alejandro.mtostock.infrastructure.persistence.entity.AssemblyComponent;
 import com.alejandro.mtostock.infrastructure.persistence.entity.EntityReferenceFactory;
@@ -86,8 +88,11 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.data.domain.AuditorAware;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.scheduling.config.CronTask;
+import org.springframework.scheduling.config.ScheduledTaskHolder;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -95,8 +100,10 @@ import java.io.IOException;
 import java.math.BigDecimal;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -110,6 +117,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -121,6 +129,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -1066,13 +1075,126 @@ class BusinessLayerTest {
                 new ReservationRequest(two.materialId(), two.warehouseId(), two.projectId(), new BigDecimal("3"), null)));
         assertNotEquals(fingerprint, IdempotentRequestServiceImpl.fingerprint(
                 new ReservationRequest(two.warehouseId(), two.materialId(), two.projectId(), new BigDecimal("2"), null)));
-        assertNotEquals(fingerprint, IdempotentRequestServiceImpl.fingerprint(
-                new ReservationRequest(two.materialId(), two.warehouseId(), two.projectId(), new BigDecimal("2"), Instant.EPOCH)));
         assertNotEquals(
                 IdempotentRequestServiceImpl.fingerprint(new StockMovementOutputRequest(
                         two.materialId(), two.warehouseId(), null, null, BigDecimal.ONE, null, "MO-1", "a|b")),
                 IdempotentRequestServiceImpl.fingerprint(new StockMovementOutputRequest(
                         two.materialId(), two.warehouseId(), null, null, BigDecimal.ONE, null, "MO-1a", "|b")));
+    }
+
+    /**
+     * La fecha no cuenta: un cliente que reintenta con la hora de cada intento manda la misma
+     * petición, y sin esto recibía un 409. Lo demás sigue contando, también en la salida.
+     */
+    @Test
+    void theRequestFingerprintLeavesTheDateOut() {
+        ReservationRequest reservation = idempotentReservation("2");
+        StockMovementOutputRequest output = new StockMovementOutputRequest(reservation.materialId(), reservation.warehouseId(),
+                reservation.projectId(), null, BigDecimal.ONE, null, "MO-000001", "Maintenance order MO-000001");
+
+        assertEquals(IdempotentRequestServiceImpl.fingerprint(reservation), IdempotentRequestServiceImpl.fingerprint(
+                new ReservationRequest(reservation.materialId(), reservation.warehouseId(), reservation.projectId(),
+                        reservation.quantity(), Instant.parse("2026-09-01T08:00:00Z"))));
+        assertEquals(IdempotentRequestServiceImpl.fingerprint(output), IdempotentRequestServiceImpl.fingerprint(
+                new StockMovementOutputRequest(output.materialId(), output.warehouseId(), output.projectId(), null,
+                        output.quantity(), Instant.parse("2026-09-01T08:00:00Z"), output.externalReference(), output.notes())));
+        assertNotEquals(IdempotentRequestServiceImpl.fingerprint(output), IdempotentRequestServiceImpl.fingerprint(
+                new StockMovementOutputRequest(output.materialId(), output.warehouseId(), output.projectId(), null,
+                        output.quantity(), null, output.externalReference(), "Maintenance order MO-000002")));
+    }
+
+    /**
+     * La purga borra la fila de una clave caducada justo entre la reclamación que choca con ella y la
+     * lectura: la clave vuelve a estar libre, se reclama otra vez y la petición se escribe como la
+     * primera, en vez de fallar con un 500.
+     */
+    @Test
+    void aKeyPurgedBetweenTheClaimAndTheReadIsClaimedAgain() {
+        IdempotentRequestRepository repository = mock(IdempotentRequestRepository.class);
+        IdempotentRequestServiceImpl service = new IdempotentRequestServiceImpl(repository, () -> Optional.of("mto-maintenance-svc"));
+        ReservationRequest request = idempotentReservation("1");
+        String fingerprint = IdempotentRequestServiceImpl.fingerprint(request);
+        when(repository.claim("RESERVATION", "key-1", fingerprint, "mto-maintenance-svc")).thenReturn(0, 1);
+        when(repository.findByOperationAndCreatedByAndIdempotencyKey(IdempotentOperation.RESERVATION, "mto-maintenance-svc", "key-1"))
+                .thenReturn(Optional.empty());
+
+        assertEquals(Optional.empty(), service.claim(IdempotentOperation.RESERVATION, "key-1", request));
+
+        verify(repository, times(2)).claim("RESERVATION", "key-1", fingerprint, "mto-maintenance-svc");
+    }
+
+    /** Si ni reclamándola otra vez se puede leer, algo no cuadra: se dice, no se escribe a ciegas. */
+    @Test
+    void aKeyThatCannotBeClaimedNorReadIsAnError() {
+        IdempotentRequestRepository repository = mock(IdempotentRequestRepository.class);
+        IdempotentRequestServiceImpl service = new IdempotentRequestServiceImpl(repository, () -> Optional.of("mto-maintenance-svc"));
+        when(repository.claim(eq("OUTPUT"), eq("key-1"), any(), eq("mto-maintenance-svc"))).thenReturn(0);
+        when(repository.findByOperationAndCreatedByAndIdempotencyKey(IdempotentOperation.OUTPUT, "mto-maintenance-svc", "key-1"))
+                .thenReturn(Optional.empty());
+
+        assertThrows(IllegalStateException.class, () -> service.claim(IdempotentOperation.OUTPUT, "key-1", idempotentReservation("1")));
+    }
+
+    /** Lote a lote, cada uno en su transacción, hasta que uno sale incompleto: no queda nada más viejo. */
+    @Test
+    void thePurgeForgetsOldKeysBatchByBatchUntilABatchComesOutShort() {
+        IdempotentRequestRepository repository = mock(IdempotentRequestRepository.class);
+        IdempotentRequestServiceImpl service = new IdempotentRequestServiceImpl(repository, Optional::empty);
+        Instant cutoff = Instant.parse("2026-08-27T03:17:00Z");
+        int batch = IdempotentRequestServiceImpl.PURGE_BATCH_SIZE;
+        when(repository.deleteClaimedBefore(cutoff, batch)).thenReturn(batch, batch, 7);
+
+        assertEquals(2 * batch + 7, service.purgeClaimedBefore(cutoff));
+        verify(repository, times(3)).deleteClaimedBefore(cutoff, batch);
+
+        when(repository.deleteClaimedBefore(cutoff, batch)).thenReturn(0);
+        assertEquals(0, service.purgeClaimedBefore(cutoff));
+    }
+
+    /**
+     * La tarea programada olvida lo usado antes de hace {@code retention}; un plazo vacío, cero o
+     * negativo es el de por defecto, 30 días, porque olvidar una clave en el acto quitaría a los
+     * clientes la protección que la clave promete.
+     */
+    @Test
+    void theScheduledPurgeForgetsWhatIsOlderThanTheRetention() {
+        IdempotentRequestService idempotentRequestService = mock(IdempotentRequestService.class);
+        IdempotencyPurgeConfiguration purge = new IdempotencyPurgeConfiguration(idempotentRequestService,
+                new IdempotencyProperties(Duration.ofDays(7)));
+
+        Instant before = Instant.now();
+        purge.purgeExpiredKeys();
+        Instant after = Instant.now();
+
+        ArgumentCaptor<Instant> cutoff = ArgumentCaptor.forClass(Instant.class);
+        verify(idempotentRequestService).purgeClaimedBefore(cutoff.capture());
+        assertFalse(cutoff.getValue().isBefore(before.minus(Duration.ofDays(7))));
+        assertFalse(cutoff.getValue().isAfter(after.minus(Duration.ofDays(7))));
+        for (Duration retention : Arrays.asList(null, Duration.ZERO, Duration.ofDays(-1))) {
+            assertEquals(Duration.ofDays(30), new IdempotencyProperties(retention).retention(), String.valueOf(retention));
+        }
+    }
+
+    /**
+     * Encendida por defecto, una vez al día; con {@code app.idempotency.purge.enabled=false} no hay
+     * ni configuración ni tarea, que es como corren los tests.
+     */
+    @Test
+    void thePurgeIsScheduledOnceADayByDefaultAndNotAtAllWhenSwitchedOff() {
+        ApplicationContextRunner runner = new ApplicationContextRunner()
+                .withUserConfiguration(IdempotencyPurgeConfiguration.class)
+                .withBean(IdempotentRequestService.class, () -> mock(IdempotentRequestService.class));
+
+        runner.run(context -> {
+            assertNull(context.getStartupFailure());
+            List<String> crons = context.getBean(ScheduledTaskHolder.class).getScheduledTasks().stream()
+                    .map(task -> ((CronTask) task.getTask()).getExpression())
+                    .toList();
+            assertEquals(List.of("0 17 3 * * *"), crons);
+            assertEquals(Duration.ofDays(30), context.getBean(IdempotencyProperties.class).retention());
+        });
+        runner.withPropertyValues("app.idempotency.purge.enabled=false")
+                .run(context -> assertTrue(context.getBeansOfType(IdempotencyPurgeConfiguration.class).isEmpty()));
     }
 
     /** Apuntar lo creado en una clave que esta escritura no reclamó dejaría el reintento sin respuesta. */

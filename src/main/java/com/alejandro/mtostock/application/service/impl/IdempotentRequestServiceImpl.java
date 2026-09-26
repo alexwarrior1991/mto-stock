@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.application.service.impl;
 
+import com.alejandro.mtostock.application.dto.common.IdempotencyIgnored;
 import com.alejandro.mtostock.application.exception.IdempotencyKeyConflictException;
 import com.alejandro.mtostock.application.exception.ValidationException;
 import com.alejandro.mtostock.application.service.IdempotentRequestService;
@@ -21,6 +22,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.time.Instant;
 import java.util.HexFormat;
 import java.util.Optional;
 import java.util.UUID;
@@ -39,6 +41,7 @@ class IdempotentRequestServiceImpl implements IdempotentRequestService {
     private static final Pattern KEY_FORMAT = Pattern.compile("[\\x21-\\x7E]{1,255}");
     private static final String SYSTEM_ACTOR = "system";
     private static final int MAX_ACTOR_LENGTH = 100;
+    static final int PURGE_BATCH_SIZE = 1_000;
 
     private final IdempotentRequestRepository idempotentRequestRepository;
     private final AuditorAware<String> auditorAware;
@@ -54,15 +57,11 @@ class IdempotentRequestServiceImpl implements IdempotentRequestService {
         }
         String caller = caller();
         String fingerprint = fingerprint(request);
-        if (idempotentRequestRepository.claim(operation.name(), idempotencyKey, fingerprint, caller) == 1) {
+        Optional<IdempotentRequest> stored = claimOrRead(operation, idempotencyKey, fingerprint, caller);
+        if (stored.isEmpty()) {
             return Optional.empty();
         }
-        // La reclamación esperó a que terminara la transacción que insertó la fila, así que la fila
-        // está confirmada, y con lo que creó: esa transacción no confirma sin apuntarlo.
-        IdempotentRequest previous = idempotentRequestRepository
-                .findByOperationAndCreatedByAndIdempotencyKey(operation, caller, idempotencyKey)
-                .orElseThrow(() -> new IllegalStateException("Idempotency key %s of %s for %s was claimed but cannot be read"
-                        .formatted(idempotencyKey, caller, operation)));
+        IdempotentRequest previous = stored.get();
         if (!previous.getRequestHash().equals(fingerprint)) {
             throw new IdempotencyKeyConflictException(idempotencyKey);
         }
@@ -88,16 +87,67 @@ class IdempotentRequestServiceImpl implements IdempotentRequestService {
     }
 
     /**
+     * Sin transacción a propósito: cada lote se borra en la suya ({@link IdempotentRequestRepository#deleteClaimedBefore}),
+     * para que una purga grande no retenga miles de filas bloqueadas hasta el final.
+     */
+    @Override
+    public int purgeClaimedBefore(Instant cutoff) {
+        int purged = 0;
+        int batch;
+        do {
+            batch = idempotentRequestRepository.deleteClaimedBefore(cutoff, PURGE_BATCH_SIZE);
+            purged += batch;
+        } while (batch == PURGE_BATCH_SIZE);
+        if (purged > 0) {
+            LOGGER.info("Forgot {} idempotency keys first used before {}: a retry with one of them is a new request", purged, cutoff);
+        }
+        return purged;
+    }
+
+    /**
+     * Reclama la clave, o lee la fila de quien la reclamó antes.
+     *
+     * <p>Una reclamación que no inserta nada ha esperado a que terminara la transacción que insertó la
+     * fila, así que la fila está confirmada, y con lo que creó: esa transacción no confirma sin
+     * apuntarlo. Solo puede faltar al leerla si la purga la ha borrado justo entre las dos sentencias,
+     * porque había caducado; entonces la clave vuelve a estar libre y se reclama otra vez, y esta
+     * petición es la primera.</p>
+     *
+     * @return vacío si esta petición ha reclamado la clave; la fila guardada si no
+     */
+    private Optional<IdempotentRequest> claimOrRead(IdempotentOperation operation, String idempotencyKey, String fingerprint,
+                                                    String caller) {
+        for (int attempt = 1; ; attempt++) {
+            if (idempotentRequestRepository.claim(operation.name(), idempotencyKey, fingerprint, caller) == 1) {
+                return Optional.empty();
+            }
+            Optional<IdempotentRequest> stored = idempotentRequestRepository
+                    .findByOperationAndCreatedByAndIdempotencyKey(operation, caller, idempotencyKey);
+            if (stored.isPresent()) {
+                return stored;
+            }
+            if (attempt == 2) {
+                throw new IllegalStateException("Idempotency key %s of %s for %s was claimed but cannot be read"
+                        .formatted(idempotencyKey, caller, operation));
+            }
+        }
+    }
+
+    /**
      * SHA-256 de los componentes con valor del cuerpo, cada uno con su nombre y en su orden.
      *
      * <p>Un componente vacío no cuenta, así que un campo opcional que se añada al contrato no cambia
-     * la huella de quien no lo manda. Un decimal cuenta por su valor: {@code 2} y {@code 2.000000}
-     * son la misma cantidad. Cada trozo va precedido de su longitud, para que dos cuerpos distintos no
-     * den nunca la misma secuencia de bytes.</p>
+     * la huella de quien no lo manda. Tampoco cuenta uno marcado con {@link IdempotencyIgnored}, la
+     * fecha: un reintento con la hora de cada intento es la misma petición. Un decimal cuenta por su
+     * valor: {@code 2} y {@code 2.000000} son la misma cantidad. Cada trozo va precedido de su
+     * longitud, para que dos cuerpos distintos no den nunca la misma secuencia de bytes.</p>
      */
     static String fingerprint(Record request) {
         MessageDigest digest = sha256();
         for (RecordComponent component : request.getClass().getRecordComponents()) {
+            if (component.isAnnotationPresent(IdempotencyIgnored.class)) {
+                continue;
+            }
             Object value = valueOf(request, component);
             if (value != null) {
                 update(digest, component.getName());

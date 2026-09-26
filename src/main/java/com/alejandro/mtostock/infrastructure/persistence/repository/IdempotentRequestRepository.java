@@ -6,7 +6,9 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -85,5 +87,31 @@ public interface IdempotentRequestRepository extends JpaRepository<IdempotentReq
             @Param("idempotencyKey") String idempotencyKey,
             @Param("caller") String caller,
             @Param("resourceId") UUID resourceId
+    );
+
+    /**
+     * Borra hasta {@code limit} claves reclamadas antes de {@code cutoff}, las más viejas primero, en
+     * una transacción propia: la purga llama lote a lote hasta que uno sale incompleto.
+     *
+     * <p>No mira qué creó cada una: una reserva o una salida siguen donde estaban, lo único que se
+     * pierde es reconocer su reintento. Una petición con la misma clave que llegue mientras tanto no
+     * choca con esto: o encuentra la fila y responde con ella, o ya no está y reclama la clave como la
+     * primera.</p>
+     */
+    @Transactional
+    @Modifying
+    @Query(value = """
+            delete from idempotent_request
+             where id in (
+                   select id
+                     from idempotent_request
+                    where created_at < :cutoff
+                    order by created_at
+                    limit :limit
+                   )
+            """, nativeQuery = true)
+    int deleteClaimedBefore(
+            @Param("cutoff") Instant cutoff,
+            @Param("limit") int limit
     );
 }
