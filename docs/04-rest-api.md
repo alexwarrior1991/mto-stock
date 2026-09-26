@@ -16,10 +16,21 @@ Swagger UI at `/swagger-ui.html`.
   `dateTo` filters are inclusive.
 - **Errors.** Every failure is an `ApiErrorResponse` from `GlobalExceptionHandler`: `400` the request
   is malformed or fails Bean Validation, `401` no valid token, `403` the token lacks the role, `404`
-  not found, `409` duplicate business code or insufficient stock, `415` wrong content type, `422` a
+  not found, `409` duplicate business code, insufficient stock or an `Idempotency-Key` reused with
+  another body, `415` wrong content type, `422` a
   domain rule was violated (reservation, assembly, warehouse, movement or project), `500` anything else. `409`
   and `422` are kept apart on purpose: `409` says the warehouse cannot give you what you asked for,
   `422` says the operation itself does not make sense.
+- **Idempotent writes.** `POST /reservations` and `POST /movements/outputs` take an optional
+  `Idempotency-Key` header: 1 to 255 visible ASCII characters, chosen by the client (a UUID, or a key
+  built from the client's own ids). A request that comes back with the same key and the same body
+  writes nothing and answers `201` with what the first one created, as it is now — even when the
+  stock it took is no longer there, so a retry after a timeout never reserves or takes the material
+  out twice. The same key with a different body is `409 IDEM-001` and writes nothing; a malformed key
+  is `400 VAL-001`. Keys belong to the authenticated caller and to the operation: another client, or
+  the same key on the other endpoint, is a different request. A write that fails (`409 STK-001`,
+  `422`...) does not consume its key, so the retry runs as a first request. Without the header, both
+  endpoints behave as always.
 - **Security.** All of it needs a Keycloak token. `GET` and `HEAD` need `STOCK_READ`; `POST`, `PUT`
   and `PATCH` need `STOCK_WRITE`; `DELETE` needs `STOCK_DELETE`. Posting an adjustment needs
   `STOCK_ADJUST` **on top of** `STOCK_WRITE`, because it is the one write that moves the balance with
@@ -62,7 +73,7 @@ adjustment, which leaves both rows visible.
 | Method | Path | Notes |
 | --- | --- | --- |
 | `POST` | `/movements/entries` | Material into a warehouse. Optional `supplierId`. |
-| `POST` | `/movements/outputs` | Material out. Optional `projectId`; with a `reservationId` the movement consumes that reservation, and the quantity has to match it exactly. |
+| `POST` | `/movements/outputs` | Material out. Optional `projectId`; with a `reservationId` the movement consumes that reservation, and the quantity has to match it exactly. Optional `Idempotency-Key` (see Conventions). |
 | `POST` | `/movements/adjustments` | `direction` is `POSITIVE` or `NEGATIVE`. Needs `STOCK_ADJUST`. |
 | `POST` | `/movements/transfers` | Between two warehouses. Answers `201` with **two** movements, the outgoing and the incoming one, linked by `related_movement_id`. |
 | `GET` | `/movements/{id}` | |
@@ -72,7 +83,7 @@ adjustment, which leaves both rows visible.
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/reservations` | Only reduces availability while `ACTIVE`. |
+| `POST` | `/reservations` | Only reduces availability while `ACTIVE`. Optional `Idempotency-Key` (see Conventions). |
 | `PUT` | `/reservations/{id}` | Warehouse, project and quantity. Only on an `ACTIVE` reservation. |
 | `DELETE` | `/reservations/{id}` | Cancels it — `CANCELLED`. Returns the reservation, not `204`. Needs `STOCK_DELETE`. |
 | `POST` | `/reservations/{id}/release` | Gives the stock back without it leaving — `RELEASED`. |

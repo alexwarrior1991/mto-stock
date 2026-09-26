@@ -28,6 +28,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -54,18 +55,22 @@ public class ReservationController {
     /**
      * Creates a reservation after service-level stock validation.
      */
-    @Operation(summary = "Create reservation", description = "Reserves available stock without creating stock movements.")
+    @Operation(summary = "Create reservation", description = "Reserves available stock without creating stock movements. "
+            + "With an Idempotency-Key, repeating the request returns the reservation it created instead of reserving again.")
     @ApiResponses({
-            @ApiResponse(responseCode = "201", description = "Reservation created"),
-            @ApiResponse(responseCode = "400", description = "Invalid request", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
-            @ApiResponse(responseCode = "409", description = "Insufficient available stock", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "201", description = "Reservation created, or the one created earlier with the same Idempotency-Key"),
+            @ApiResponse(responseCode = "400", description = "Invalid request or Idempotency-Key", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "409", description = "Insufficient available stock, or the Idempotency-Key was already used with a different request", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
             @ApiResponse(responseCode = "422", description = "Reservation rule violation", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
             @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
     })
     @PostMapping
-    public ResponseEntity<ReservationResponse> create(@Valid @RequestBody ReservationRequest request) {
+    public ResponseEntity<ReservationResponse> create(
+            @Valid @RequestBody ReservationRequest request,
+            @Parameter(description = IdempotencyKeyHeader.DESCRIPTION)
+            @RequestHeader(name = IdempotencyKeyHeader.NAME, required = false) String idempotencyKey) {
         LOGGER.debug("HTTP request to create reservation materialId={} warehouseId={}", request.materialId(), request.warehouseId());
-        ReservationResponse response = reservationService.create(request);
+        ReservationResponse response = reservationService.create(request, idempotencyKey);
         return ResponseEntity.created(URI.create("/api/v1/inventory/reservations/" + response.id())).body(response);
     }
 

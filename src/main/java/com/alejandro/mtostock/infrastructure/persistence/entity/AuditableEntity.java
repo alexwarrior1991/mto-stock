@@ -27,12 +27,12 @@ import java.util.UUID;
  *
  * <h2>Por qué esta clase NO lleva {@code @Audited}</h2>
  *
- * <p>La heredan las diez entidades, y solo siete deben tener historial. Anotarla aquí incluiría
+ * <p>La heredan las once entidades, y solo siete deben tener historial. Anotarla aquí incluiría
  * {@code StockMovement} —que ya es un libro mayor inmutable, así que duplicarlo no añade ni un
- * dato—, {@code InventoryBalance} e {@code InboxMessage}, que se escriben con SQL nativo y por tanto
- * dejarían una tabla de historial permanentemente vacía: eso no es «no hay auditoría», es una
- * auditoría que dice que nunca cambió nada. Además Envers exigiría tres tablas {@code _aud} que la
- * migración no crea, y con {@code ddl-auto: validate} la aplicación no arrancaría. El
+ * dato—, {@code InventoryBalance}, {@code InboxMessage} e {@code IdempotentRequest}, que se escriben
+ * con SQL nativo y por tanto dejarían una tabla de historial permanentemente vacía: eso no es «no hay
+ * auditoría», es una auditoría que dice que nunca cambió nada. Además Envers exigiría cuatro tablas
+ * {@code _aud} que las migraciones no crean, y con {@code ddl-auto: validate} la aplicación no arrancaría. El
  * {@code @Audited} va entidad por entidad; {@code JpaEntityModelTest} vigila que el reparto no se
  * mueva.</p>
  *

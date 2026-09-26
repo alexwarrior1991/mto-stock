@@ -31,6 +31,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -79,18 +80,22 @@ public class StockMovementController {
     /**
      * Registers a negative stock output.
      */
-    @Operation(summary = "Register stock output", description = "Creates a negative stock output movement, optionally linked to a project or reservation.")
+    @Operation(summary = "Register stock output", description = "Creates a negative stock output movement, optionally linked to a project or reservation. "
+            + "With an Idempotency-Key, repeating the request returns the movement it created instead of taking the material out again.")
     @ApiResponses({
-            @ApiResponse(responseCode = "201", description = "Stock output created"),
-            @ApiResponse(responseCode = "400", description = "Invalid request", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
-            @ApiResponse(responseCode = "409", description = "Insufficient stock", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "201", description = "Stock output created, or the one created earlier with the same Idempotency-Key"),
+            @ApiResponse(responseCode = "400", description = "Invalid request or Idempotency-Key", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "409", description = "Insufficient stock, or the Idempotency-Key was already used with a different request", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
             @ApiResponse(responseCode = "422", description = "Domain rule violation", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
             @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
     })
     @PostMapping("/outputs")
-    public ResponseEntity<StockMovementResponse> output(@Valid @RequestBody StockMovementOutputRequest request) {
+    public ResponseEntity<StockMovementResponse> output(
+            @Valid @RequestBody StockMovementOutputRequest request,
+            @Parameter(description = IdempotencyKeyHeader.DESCRIPTION)
+            @RequestHeader(name = IdempotencyKeyHeader.NAME, required = false) String idempotencyKey) {
         LOGGER.debug("HTTP request to register stock output materialId={} warehouseId={}", request.materialId(), request.warehouseId());
-        StockMovementResponse response = stockMovementService.registerOutput(request);
+        StockMovementResponse response = stockMovementService.registerOutput(request, idempotencyKey);
         return ResponseEntity.created(URI.create("/api/v1/inventory/movements/" + response.id())).body(response);
     }
 

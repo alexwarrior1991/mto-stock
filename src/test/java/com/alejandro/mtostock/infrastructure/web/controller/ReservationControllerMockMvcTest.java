@@ -6,6 +6,7 @@ import com.alejandro.mtostock.application.dto.reservation.ReservationRequest;
 import com.alejandro.mtostock.application.dto.reservation.ReservationResponse;
 import com.alejandro.mtostock.application.dto.reservation.ReservationStatusDto;
 import com.alejandro.mtostock.application.dto.reservation.ReservationUpdateRequest;
+import com.alejandro.mtostock.application.exception.IdempotencyKeyConflictException;
 import com.alejandro.mtostock.application.exception.InsufficientStockException;
 import com.alejandro.mtostock.application.service.ReservationService;
 import com.alejandro.mtostock.infrastructure.persistence.entity.ReservationStatus;
@@ -57,7 +58,7 @@ class ReservationControllerMockMvcTest {
         UUID warehouseId = UUID.randomUUID();
         UUID projectId = UUID.randomUUID();
         ReservationRequest request = new ReservationRequest(materialId, warehouseId, projectId, new BigDecimal("2.000000"), null);
-        when(reservationService.create(request)).thenReturn(response(reservationId, materialId, warehouseId, projectId, ReservationStatus.ACTIVE));
+        when(reservationService.create(request, null)).thenReturn(response(reservationId, materialId, warehouseId, projectId, ReservationStatus.ACTIVE));
 
         mockMvc.perform(post("/api/v1/inventory/reservations")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -66,6 +67,41 @@ class ReservationControllerMockMvcTest {
                 .andExpect(header().string("Location", "/api/v1/inventory/reservations/" + reservationId))
                 .andExpect(jsonPath("$.id").value(reservationId.toString()))
                 .andExpect(jsonPath("$.status").value("ACTIVE"));
+    }
+
+    @Test
+    void createPassesTheIdempotencyKeyHeaderToTheService() throws Exception {
+        UUID reservationId = UUID.randomUUID();
+        UUID materialId = UUID.randomUUID();
+        UUID warehouseId = UUID.randomUUID();
+        UUID projectId = UUID.randomUUID();
+        ReservationRequest request = new ReservationRequest(materialId, warehouseId, projectId, new BigDecimal("2.000000"), null);
+        when(reservationService.create(request, "mto-maintenance:line-1:reserve"))
+                .thenReturn(response(reservationId, materialId, warehouseId, projectId, ReservationStatus.ACTIVE));
+
+        mockMvc.perform(post("/api/v1/inventory/reservations")
+                        .header("Idempotency-Key", "mto-maintenance:line-1:reserve")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reservationRequestJson(materialId, warehouseId, projectId, "2.000000")))
+                .andExpect(status().isCreated())
+                .andExpect(header().string("Location", "/api/v1/inventory/reservations/" + reservationId))
+                .andExpect(jsonPath("$.id").value(reservationId.toString()));
+    }
+
+    @Test
+    void anIdempotencyKeyReusedWithAnotherBodyIsAConflict() throws Exception {
+        UUID materialId = UUID.randomUUID();
+        UUID warehouseId = UUID.randomUUID();
+        UUID projectId = UUID.randomUUID();
+        when(reservationService.create(any(), eq("key-1"))).thenThrow(new IdempotencyKeyConflictException("key-1"));
+
+        mockMvc.perform(post("/api/v1/inventory/reservations")
+                        .header("Idempotency-Key", "key-1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(reservationRequestJson(materialId, warehouseId, projectId, "3.000000")))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.errorCode").value("IDEM-001"))
+                .andExpect(jsonPath("$.message").value("Idempotency key 'key-1' was already used with a different request"));
     }
 
     @Test

@@ -131,8 +131,9 @@ class JpaEntityModelTest {
      *
      * <p>La forma cómoda de anotar esto sería poner {@code @Audited} en {@code AuditableEntity}, y
      * entonces {@code stock_movement} —un libro mayor que ya es inmutable— duplicaría la tabla más
-     * grande del sistema, e {@code inventory_balance} e {@code inbox_message} tendrían gemelas
-     * permanentemente vacías, porque se escriben con SQL nativo y Envers no ve esas escrituras. Una
+     * grande del sistema, e {@code inventory_balance}, {@code inbox_message} e
+     * {@code idempotent_request} tendrían gemelas permanentemente vacías, porque se escriben con SQL
+     * nativo y Envers no ve esas escrituras. Una
      * gemela vacía no se lee como «aquí no hay auditoría», se lee como «esto no ha cambiado nunca».
      * Además Envers pediría tres tablas que {@code V7} no crea y, con {@code ddl-auto: validate}, la
      * aplicación no arrancaría — en el entorno que ejecute la migración primero, no aquí.</p>
@@ -142,7 +143,7 @@ class JpaEntityModelTest {
         List<Class<?>> entities = List.of(
                 Material.class, Supplier.class, Warehouse.class, Project.class, Assembly.class,
                 AssemblyComponent.class, Reservation.class,
-                StockMovement.class, InventoryBalance.class, InboxMessage.class);
+                StockMovement.class, InventoryBalance.class, InboxMessage.class, IdempotentRequest.class);
 
         entities.forEach(entity -> assertTrue(entity.isAnnotationPresent(Entity.class),
                 entity.getSimpleName() + " should be a JPA entity"));
@@ -154,7 +155,7 @@ class JpaEntityModelTest {
         assertEquals(Set.of(Material.class, Supplier.class, Warehouse.class, Project.class,
                 Assembly.class, AssemblyComponent.class, Reservation.class), audited);
 
-        Stream.of(StockMovement.class, InventoryBalance.class, InboxMessage.class)
+        Stream.of(StockMovement.class, InventoryBalance.class, InboxMessage.class, IdempotentRequest.class)
                 .forEach(entity -> assertFalse(entity.isAnnotationPresent(Audited.class),
                         entity.getSimpleName() + " must not be audited: see AuditableEntity"));
     }

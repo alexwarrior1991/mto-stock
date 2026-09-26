@@ -3,6 +3,8 @@ package com.alejandro.mtostock.infrastructure.persistence.repository;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Assembly;
 import com.alejandro.mtostock.infrastructure.persistence.entity.AssemblyComponent;
 import com.alejandro.mtostock.infrastructure.persistence.entity.AuditableEntity;
+import com.alejandro.mtostock.infrastructure.persistence.entity.IdempotentOperation;
+import com.alejandro.mtostock.infrastructure.persistence.entity.IdempotentRequest;
 import com.alejandro.mtostock.infrastructure.persistence.entity.InventoryBalance;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
@@ -30,20 +32,31 @@ import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.DefaultTransactionDefinition;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @ImportAutoConfiguration(FlywayAutoConfiguration.class)
-@Testcontainers(disabledWithoutDocker = true)
 class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
 
     @DynamicPropertySource
@@ -74,6 +87,12 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
 
     @Autowired
     private ReservationRepository reservationRepository;
+
+    @Autowired
+    private IdempotentRequestRepository idempotentRequestRepository;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @Test
     void specificationsFilterMaterialsAssembliesReservationsAndMovements() {
@@ -331,6 +350,117 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
         assertEquals(10L, project.getSourceSequenceNumber());
     }
 
+    /**
+     * Una clave se reclama una sola vez por operación y por quien la manda: la de otro cliente o la de
+     * otra operación son otras claves. Lo creado se apunta una vez y no se sobrescribe.
+     */
+    @Test
+    void anIdempotencyKeyIsClaimedOncePerOperationAndCaller() {
+        UUID reservationId = UUID.randomUUID();
+
+        assertEquals(1, idempotentRequestRepository.claim("RESERVATION", "key-1", "hash-1", "mto-maintenance-svc"));
+        assertEquals(0, idempotentRequestRepository.claim("RESERVATION", "key-1", "hash-1", "mto-maintenance-svc"));
+        assertEquals(1, idempotentRequestRepository.claim("RESERVATION", "key-1", "hash-1", "warehouse.operator"));
+        assertEquals(1, idempotentRequestRepository.claim("OUTPUT", "key-1", "hash-1", "mto-maintenance-svc"));
+        assertEquals(1, idempotentRequestRepository.recordResource("RESERVATION", "key-1", "mto-maintenance-svc", reservationId));
+        assertEquals(0, idempotentRequestRepository.recordResource("RESERVATION", "key-1", "mto-maintenance-svc", UUID.randomUUID()));
+        entityManager.clear();
+
+        IdempotentRequest stored = idempotentRequestRepository
+                .findByOperationAndCreatedByAndIdempotencyKey(IdempotentOperation.RESERVATION, "mto-maintenance-svc", "key-1")
+                .orElseThrow();
+        assertEquals("hash-1", stored.getRequestHash());
+        assertEquals(reservationId, stored.getResourceId());
+        assertNull(idempotentRequestRepository
+                .findByOperationAndCreatedByAndIdempotencyKey(IdempotentOperation.OUTPUT, "mto-maintenance-svc", "key-1")
+                .orElseThrow()
+                .getResourceId());
+    }
+
+    /** La garantía es la restricción, no el {@code on conflict}: una inserción a pelo con la misma clave falla. */
+    @Test
+    void theIdempotentRequestTableKeepsASingleRowPerKey() {
+        idempotentRequestRepository.claim("OUTPUT", "key-1", "hash-1", "mto-maintenance-svc");
+
+        assertThrows(PersistenceException.class, () -> {
+            entityManager.createNativeQuery("""
+                    insert into idempotent_request (operation, idempotency_key, request_hash, created_by, updated_by)
+                    values ('OUTPUT', 'key-1', 'hash-2', 'mto-maintenance-svc', 'mto-maintenance-svc')
+                    """).executeUpdate();
+            entityManager.flush();
+        });
+    }
+
+    /**
+     * Dos peticiones con la misma clave a la vez, con dos transacciones de verdad. La segunda no ve
+     * la fila sin confirmar de la primera, pero espera en el índice único hasta que la primera
+     * termina, y entonces no inserta nada y lee lo que la primera creó. Es lo que hace que un
+     * reintento que llega mientras la petición original sigue en curso no escriba dos veces.
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void aSecondClaimOfTheSameKeyWaitsForTheFirstAndThenSeesWhatItCreated() throws Exception {
+        String key = "concurrent-" + UUID.randomUUID();
+        UUID created = UUID.randomUUID();
+        TransactionStatus first = transactionManager.getTransaction(new DefaultTransactionDefinition());
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            assertEquals(1, idempotentRequestRepository.claim("OUTPUT", key, "hash-1", "mto-maintenance-svc"));
+
+            Future<Optional<UUID>> second = executor.submit(() -> new TransactionTemplate(transactionManager).execute(status -> {
+                if (idempotentRequestRepository.claim("OUTPUT", key, "hash-1", "mto-maintenance-svc") == 1) {
+                    return Optional.<UUID>empty();
+                }
+                return idempotentRequestRepository
+                        .findByOperationAndCreatedByAndIdempotencyKey(IdempotentOperation.OUTPUT, "mto-maintenance-svc", key)
+                        .map(IdempotentRequest::getResourceId);
+            }));
+            Thread.sleep(300);
+            assertFalse(second.isDone(), "the second claim must wait while the first transaction is open");
+
+            idempotentRequestRepository.recordResource("OUTPUT", key, "mto-maintenance-svc", created);
+            transactionManager.commit(first);
+
+            assertEquals(Optional.of(created), second.get(10, TimeUnit.SECONDS));
+        } finally {
+            if (!first.isCompleted()) {
+                transactionManager.rollback(first);
+            }
+            executor.shutdownNow();
+            deleteIdempotentRequests(key);
+        }
+    }
+
+    /**
+     * Si la escritura falla (stock dijo que no), su transacción revierte y la reclamación se va con
+     * ella: el reintento con la misma clave se ejecuta como si fuera el primero.
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void aClaimRolledBackWithItsWriteLeavesTheKeyFreeForTheRetry() {
+        String key = "rolled-back-" + UUID.randomUUID();
+        UUID created = UUID.randomUUID();
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        try {
+            transaction.executeWithoutResult(status -> {
+                assertEquals(1, idempotentRequestRepository.claim("RESERVATION", key, "hash-1", "mto-maintenance-svc"));
+                status.setRollbackOnly();
+            });
+
+            transaction.executeWithoutResult(status -> {
+                assertEquals(1, idempotentRequestRepository.claim("RESERVATION", key, "hash-1", "mto-maintenance-svc"));
+                assertEquals(1, idempotentRequestRepository.recordResource("RESERVATION", key, "mto-maintenance-svc", created));
+            });
+
+            assertEquals(created, transaction.execute(status -> idempotentRequestRepository
+                    .findByOperationAndCreatedByAndIdempotencyKey(IdempotentOperation.RESERVATION, "mto-maintenance-svc", key)
+                    .orElseThrow()
+                    .getResourceId()));
+        } finally {
+            deleteIdempotentRequests(key);
+        }
+    }
+
     private java.util.List<String> lowStockCodes(org.springframework.data.jpa.domain.Specification<Material> specification) {
         return materialRepository.findAll(specification).stream()
                 .map(Material::getCode)
@@ -344,6 +474,14 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
         }
         entityManager.persist(entity);
         return entity;
+    }
+
+    /** Lo que confirmaron los tests con transacciones de verdad no se queda en la base que comparten todas las clases. */
+    private void deleteIdempotentRequests(String key) {
+        new TransactionTemplate(transactionManager).executeWithoutResult(status -> entityManager
+                .createNativeQuery("delete from idempotent_request where idempotency_key = :key")
+                .setParameter("key", key)
+                .executeUpdate());
     }
 
     private void flushAndClear() {

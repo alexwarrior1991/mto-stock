@@ -3,6 +3,7 @@ package com.alejandro.mtostock.infrastructure.web.exception;
 import com.alejandro.mtostock.application.exception.AssemblyException;
 import com.alejandro.mtostock.application.exception.BusinessException;
 import com.alejandro.mtostock.application.exception.DuplicateCodeException;
+import com.alejandro.mtostock.application.exception.IdempotencyKeyConflictException;
 import com.alejandro.mtostock.application.exception.InsufficientStockException;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.exception.ProjectException;
@@ -39,6 +40,7 @@ final class BusinessErrorCodeResolver {
             case NotFoundException notFoundException -> aggregateCode(notFoundException.getAggregate(), "404", "APP-404");
             case DuplicateCodeException duplicateCodeException -> aggregateCode(duplicateCodeException.getAggregate(), "409", "APP-409");
             case InsufficientStockException ignored -> "STK-001";
+            case IdempotencyKeyConflictException ignored -> "IDEM-001";
             case StockMovementException ignored -> "STK-002";
             case ReservationException ignored -> "RES-001";
             case AssemblyException ignored -> "ASM-001";

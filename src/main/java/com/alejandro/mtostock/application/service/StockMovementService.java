@@ -18,7 +18,14 @@ public interface StockMovementService {
 
     StockMovementResponse registerEntry(StockMovementEntryRequest request);
 
-    StockMovementResponse registerOutput(StockMovementOutputRequest request);
+    /**
+     * Registra la salida. Con {@code idempotencyKey}, repetir la petición con el mismo cuerpo no
+     * saca el material otra vez: devuelve el movimiento que creó la primera.
+     *
+     * @param idempotencyKey la cabecera {@code Idempotency-Key}, o {@code null}
+     * @see IdempotentRequestService
+     */
+    StockMovementResponse registerOutput(StockMovementOutputRequest request, String idempotencyKey);
 
     StockMovementResponse registerAdjustment(StockMovementAdjustmentRequest request);
 

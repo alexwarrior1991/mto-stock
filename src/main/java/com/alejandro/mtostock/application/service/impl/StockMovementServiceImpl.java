@@ -9,10 +9,12 @@ import com.alejandro.mtostock.application.dto.stock.StockMovementResponse;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.exception.ReservationException;
 import com.alejandro.mtostock.application.mapper.StockMovementMapper;
+import com.alejandro.mtostock.application.service.IdempotentRequestService;
 import com.alejandro.mtostock.application.service.InventoryBalanceService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.ReservationEngine;
 import com.alejandro.mtostock.application.service.StockMovementService;
+import com.alejandro.mtostock.infrastructure.persistence.entity.IdempotentOperation;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Reservation;
@@ -36,6 +38,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -57,6 +60,7 @@ class StockMovementServiceImpl implements StockMovementService {
     private final InventoryBalanceService inventoryBalanceService;
     private final InventoryValidationService inventoryValidationService;
     private final ReservationEngine reservationEngine;
+    private final IdempotentRequestService idempotentRequestService;
 
     @Override
     @Transactional
@@ -77,7 +81,11 @@ class StockMovementServiceImpl implements StockMovementService {
 
     @Override
     @Transactional
-    public StockMovementResponse registerOutput(StockMovementOutputRequest request) {
+    public StockMovementResponse registerOutput(StockMovementOutputRequest request, String idempotencyKey) {
+        Optional<UUID> applied = idempotentRequestService.claim(IdempotentOperation.OUTPUT, idempotencyKey, request);
+        if (applied.isPresent()) {
+            return findById(applied.get());
+        }
         StockMovement movement = stockMovementMapper.toOutputEntity(request);
         attachMaterialAndWarehouse(movement, request.materialId(), request.warehouseId());
         if (request.projectId() != null) {
@@ -97,6 +105,7 @@ class StockMovementServiceImpl implements StockMovementService {
         if (reservation != null) {
             reservationEngine.consume(reservation.getId());
         }
+        idempotentRequestService.complete(IdempotentOperation.OUTPUT, idempotencyKey, savedMovement.getId());
         log.info("Stock output registered for material {} in warehouse {}", movement.getMaterial().getCode(), movement.getWarehouse().getCode());
         return stockMovementMapper.toResponse(savedMovement);
     }

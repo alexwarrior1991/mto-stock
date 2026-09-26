@@ -15,7 +15,14 @@ import java.util.UUID;
  */
 public interface ReservationService {
 
-    ReservationResponse create(ReservationRequest request);
+    /**
+     * Reserva el material. Con {@code idempotencyKey}, repetir la petición con el mismo cuerpo no
+     * reserva otra vez: devuelve la reserva que creó la primera.
+     *
+     * @param idempotencyKey la cabecera {@code Idempotency-Key}, o {@code null}
+     * @see IdempotentRequestService
+     */
+    ReservationResponse create(ReservationRequest request, String idempotencyKey);
 
     ReservationResponse update(UUID id, ReservationUpdateRequest request);
 

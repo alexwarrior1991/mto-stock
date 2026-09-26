@@ -4,6 +4,7 @@ import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
 import com.alejandro.mtostock.application.service.AssemblyService;
 import com.alejandro.mtostock.application.service.BOMCalculationService;
 import com.alejandro.mtostock.application.service.EntityAuditService;
+import com.alejandro.mtostock.application.service.IdempotentRequestService;
 import com.alejandro.mtostock.application.service.InboxMessageService;
 import com.alejandro.mtostock.application.service.InventoryBalanceService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
@@ -27,7 +28,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.ApplicationContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.util.List;
 
@@ -46,10 +46,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * de que Spring Data registre los repositorios, así que siempre era falsa— y ningún servicio se
  * creaba. Lo destapó el smoke test de la imagen en CI, no la suite.</p>
  *
- * <p>De ahí que este test necesite Docker: sin datasource no hay repositorios, y sin repositorios
- * no se puede comprobar que los servicios que dependen de ellos existan.</p>
+ * <p>De ahí que este test necesite un PostgreSQL de verdad (Docker, o {@code TEST_DATABASE_URL}; ver
+ * {@link PostgreSQLTestContainer}): sin datasource no hay repositorios, y sin repositorios no se
+ * puede comprobar que los servicios que dependen de ellos existan.</p>
  */
-@Testcontainers(disabledWithoutDocker = true)
 @SpringBootTest(properties = {
         // No hay broker ni Redis en este test. El cableado del canal se comprueba en
         // MessagingLayerTest y el de la caché en CacheLayerTest, ninguno de los dos los necesita.
@@ -113,6 +113,7 @@ class MtoStockApplicationTests extends PostgreSQLTestContainer {
                 // lista desde que llegó con Envers, que es justo cuando un guardián de arranque
                 // deja de servir: el hueco lo abre siempre el servicio recién añadido.
                 EntityAuditService.class,
+                IdempotentRequestService.class,
                 InboxMessageService.class,
                 InventoryBalanceService.class,
                 InventoryValidationService.class,

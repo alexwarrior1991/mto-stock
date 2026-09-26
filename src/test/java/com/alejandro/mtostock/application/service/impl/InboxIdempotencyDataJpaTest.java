@@ -7,14 +7,47 @@ import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
+import com.alejandro.mtostock.application.dto.reservation.ReservationRequest;
+import com.alejandro.mtostock.application.dto.reservation.ReservationResponse;
+import com.alejandro.mtostock.application.dto.stock.StockMovementOutputRequest;
+import com.alejandro.mtostock.application.dto.stock.StockMovementResponse;
+import com.alejandro.mtostock.application.exception.IdempotencyKeyConflictException;
+import com.alejandro.mtostock.application.mapper.AuditableMapper;
+import com.alejandro.mtostock.application.mapper.AuditableMapperImpl;
+import com.alejandro.mtostock.application.mapper.MaterialMapperImpl;
+import com.alejandro.mtostock.application.mapper.ProjectMapperImpl;
+import com.alejandro.mtostock.application.mapper.ReservationMapper;
+import com.alejandro.mtostock.application.mapper.ReservationMapperImpl;
+import com.alejandro.mtostock.application.mapper.ReservationStatusMapperImpl;
+import com.alejandro.mtostock.application.mapper.StockMovementMapper;
+import com.alejandro.mtostock.application.mapper.StockMovementMapperImpl;
+import com.alejandro.mtostock.application.mapper.StockMovementTypeMapperImpl;
+import com.alejandro.mtostock.application.mapper.SupplierMapperImpl;
+import com.alejandro.mtostock.application.mapper.WarehouseMapperImpl;
+import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.service.InboxMessageService;
 import com.alejandro.mtostock.application.service.MasterDataEventHandler;
+import com.alejandro.mtostock.configuration.JpaAuditingConfiguration;
 import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
+import com.alejandro.mtostock.infrastructure.persistence.entity.EntityReferenceFactory;
 import com.alejandro.mtostock.infrastructure.persistence.entity.InboxMessage;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
 import com.alejandro.mtostock.infrastructure.persistence.entity.InboxMessageStatus;
+import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
+import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementType;
+import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
+import com.alejandro.mtostock.infrastructure.persistence.repository.AssemblyRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.IdempotentRequestRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.InboxMessageRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.InventoryBalanceRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.MaterialRepository;
 import com.alejandro.mtostock.infrastructure.persistence.repository.ProjectRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.ReservationRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.StockMovementRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.SupplierRepository;
+import com.alejandro.mtostock.infrastructure.persistence.repository.WarehouseRepository;
+import com.alejandro.mtostock.infrastructure.persistence.specification.ReservationSpecification;
+import com.alejandro.mtostock.infrastructure.persistence.specification.StockMovementSpecification;
 import com.alejandro.mtostock.support.PostgreSQLTestContainer;
 import jakarta.persistence.EntityManager;
 import org.junit.jupiter.api.Test;
@@ -23,13 +56,15 @@ import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
+import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -39,27 +74,34 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * La garantía que da nombre al patrón, comprobada de punta a punta contra PostgreSQL.
+ * La idempotencia de punta a punta contra PostgreSQL, en sus dos formas: el inbox, que aplica una
+ * sola vez cada evento de datos maestros, y las escrituras con {@code Idempotency-Key}, que dejan
+ * una sola reserva o una sola salida por clave.
  *
  * <p>Está aquí, en el paquete del servicio, y no entre los tests de repositorio, porque lo que se
  * prueba es el servicio completo sobre SQL real. Con un doble de repositorio no probaría nada: la
  * idempotencia no la decide el código, la decide la restricción única de la tabla, y un doble
- * devuelve lo que se le diga.</p>
+ * devuelve lo que se le diga. Los servicios se montan a mano, con los repositorios de verdad y, para
+ * las escrituras, los mappers generados; {@link JpaAuditingConfiguration} rellena las columnas de
+ * auditoría de lo que guardan.</p>
  *
- * <p>Lo que no cabe aquí es la carrera entre dos entregas <b>simultáneas</b>: haría falta mantener
+ * <p>Lo que no cabe aquí es la carrera entre dos peticiones <b>simultáneas</b>: haría falta mantener
  * dos transacciones abiertas a la vez sobre dos conexiones, y un test transaccional tiene una. Esa
- * espera la aporta PostgreSQL —bloqueando a la segunda entrega en el índice único mientras la
- * primera no ha confirmado, o en la fila si ya estaba confirmada—; lo que se comprueba aquí es lo
- * que ve la segunda entrega cuando la primera ya terminó, que es el resultado de esa espera.</p>
+ * espera la aporta PostgreSQL —bloqueando a la segunda en el índice único mientras la primera no ha
+ * confirmado, o en la fila si ya estaba confirmada—; lo que se comprueba aquí es lo que ve la segunda
+ * cuando la primera ya terminó, que es el resultado de esa espera. La espera misma, con dos
+ * transacciones de verdad, está para las claves de las escrituras en
+ * {@code InventoryRepositoryDataJpaTest}.</p>
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
 @ImportAutoConfiguration(FlywayAutoConfiguration.class)
-@Testcontainers(disabledWithoutDocker = true)
+@Import(JpaAuditingConfiguration.class)
 class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
 
     private static final String MESSAGE_ID = "0f8b1f4c-3f6a-4a6d-9a2a-1c9f5f6f2b10";
     private static final String SOURCE_SERVICE = "mto-configuration";
+    private static final String CALLER = "mto-maintenance-svc";
     private static final String PAYLOAD = """
             {"operationId":"0f8b1f4c-3f6a-4a6d-9a2a-1c9f5f6f2b10","eventType":"MASTER_DATA_STATION_UPDATED"}""";
 
@@ -76,6 +118,30 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
 
     @Autowired
     private ProjectRepository projectRepository;
+
+    @Autowired
+    private MaterialRepository materialRepository;
+
+    @Autowired
+    private WarehouseRepository warehouseRepository;
+
+    @Autowired
+    private SupplierRepository supplierRepository;
+
+    @Autowired
+    private AssemblyRepository assemblyRepository;
+
+    @Autowired
+    private ReservationRepository reservationRepository;
+
+    @Autowired
+    private StockMovementRepository stockMovementRepository;
+
+    @Autowired
+    private InventoryBalanceRepository inventoryBalanceRepository;
+
+    @Autowired
+    private IdempotentRequestRepository idempotentRequestRepository;
 
     @Test
     void theWorkRunsOnceAcrossTwoDeliveriesOfTheSameMessage() {
@@ -173,6 +239,134 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
         assertEquals(InboxProcessingResult.PROCESSED, result);
         assertEquals(0, projectRepository.count());
         assertEquals(InboxMessageStatus.PROCESSED, reload().getStatus());
+    }
+
+    /**
+     * La reserva de punta a punta: servicio, motor, saldo y tabla de claves sobre PostgreSQL. La
+     * primera reserva se lleva todo el disponible, así que un reintento que volviera a validar
+     * existencias respondería 409 aunque la reserva ya estuviera hecha: con la clave no valida nada,
+     * no reserva otra vez y devuelve la misma reserva.
+     */
+    @Test
+    void aReservationRepeatedWithTheSameKeyIsMadeOnceEvenWithNothingLeftToReserve() {
+        Stock stock = stock("4.000000");
+        ReservationServiceImpl reservations = reservationService();
+        ReservationRequest request = new ReservationRequest(stock.material().getId(), stock.warehouse().getId(),
+                stock.project().getId(), new BigDecimal("4.000000"), null);
+
+        ReservationResponse first = reservations.create(request, "mto-maintenance:line-1:reserve");
+        entityManager.flush();
+        entityManager.clear();
+        ReservationResponse retry = reservations.create(request, "mto-maintenance:line-1:reserve");
+
+        assertEquals(first.id(), retry.id());
+        assertEquals(reservations.findById(first.id()), retry);
+        assertEquals(1, reservationRepository.findAll(ReservationSpecification.materialIdEquals(stock.material().getId())).size());
+        assertEquals(0, new BigDecimal("4").compareTo(inventoryBalanceRepository.calculateReservedQuantity(
+                stock.material().getId(), stock.warehouse().getId(), BigDecimal.ZERO)));
+    }
+
+    /** Lo mismo con la salida, que es la que descuenta el físico: dos peticiones, un apunte y un descuento. */
+    @Test
+    void anOutputRepeatedWithTheSameKeyTakesTheMaterialOutOnce() {
+        Stock stock = stock("3.000000");
+        StockMovementServiceImpl movements = stockMovementService();
+        StockMovementOutputRequest request = new StockMovementOutputRequest(stock.material().getId(), stock.warehouse().getId(),
+                stock.project().getId(), null, new BigDecimal("3.000000"), null, "MO-000001", "Maintenance order MO-000001");
+
+        StockMovementResponse first = movements.registerOutput(request, "mto-maintenance:line-1:output");
+        entityManager.flush();
+        entityManager.clear();
+        StockMovementResponse retry = movements.registerOutput(request, "mto-maintenance:line-1:output");
+
+        assertEquals(first.id(), retry.id());
+        assertEquals(movements.findById(first.id()), retry);
+        assertEquals(1, stockMovementRepository.findAll(StockMovementSpecification.materialIdEquals(stock.material().getId())
+                .and(StockMovementSpecification.typeEquals(StockMovementType.OUTPUT))).size());
+        assertEquals(0, BigDecimal.ZERO.compareTo(inventoryBalanceRepository.calculatePhysicalQuantity(
+                stock.material().getId(), stock.warehouse().getId(), BigDecimal.ZERO)));
+    }
+
+    /** La misma clave con otro cuerpo no escribe nada: ni otra reserva ni otro descuento del disponible. */
+    @Test
+    void aKeyReusedWithAnotherBodyIsRejectedAndWritesNothing() {
+        Stock stock = stock("10.000000");
+        ReservationServiceImpl reservations = reservationService();
+        UUID materialId = stock.material().getId();
+        UUID warehouseId = stock.warehouse().getId();
+        reservations.create(new ReservationRequest(materialId, warehouseId, stock.project().getId(), new BigDecimal("4.000000"), null), "key-1");
+        entityManager.flush();
+        entityManager.clear();
+
+        ReservationRequest other = new ReservationRequest(materialId, warehouseId, stock.project().getId(), new BigDecimal("5.000000"), null);
+        assertThrows(IdempotencyKeyConflictException.class, () -> reservations.create(other, "key-1"));
+
+        assertEquals(1, reservationRepository.findAll(ReservationSpecification.materialIdEquals(materialId)).size());
+        assertEquals(0, new BigDecimal("4").compareTo(inventoryBalanceRepository.calculateReservedQuantity(materialId, warehouseId, BigDecimal.ZERO)));
+    }
+
+    /** Material, almacén y proyecto dados de alta, con {@code physical} en el almacén y nada reservado. */
+    private Stock stock(String physical) {
+        Material material = persist(Material.builder().code("MAT-IDEM").name("Contact wire")
+                .unitOfMeasure("m").minimumStockLevel(BigDecimal.ZERO).build());
+        Warehouse warehouse = persist(Warehouse.builder().code("WH-IDEM").name("Warehouse IDEM").build());
+        Project project = persist(Project.builder().code("PRJ-IDEM").name("Project IDEM").build());
+        entityManager.flush();
+        inventoryBalanceRepository.insertZeroBalanceIfMissing(material.getId(), warehouse.getId(), CALLER);
+        inventoryBalanceRepository.increasePhysical(material.getId(), warehouse.getId(), new BigDecimal(physical), CALLER);
+        entityManager.clear();
+        return new Stock(material, warehouse, project);
+    }
+
+    private <T> T persist(T entity) {
+        entityManager.persist(entity);
+        return entity;
+    }
+
+    /** Los servicios de verdad, montados a mano como el resto de la clase, con los mappers generados. */
+    private ReservationServiceImpl reservationService() {
+        return new ReservationServiceImpl(reservationRepository, reservationMapper(), mock(EntityAuditService.class),
+                reservationEngine(), new EntityReferenceFactory(), idempotentRequestService());
+    }
+
+    private StockMovementServiceImpl stockMovementService() {
+        AuditableMapper auditable = new AuditableMapperImpl();
+        EntityReferenceFactory references = new EntityReferenceFactory();
+        StockMovementMapper mapper = new StockMovementMapperImpl(auditable, new MaterialMapperImpl(auditable, references),
+                new WarehouseMapperImpl(auditable, references), new SupplierMapperImpl(auditable, references),
+                new ProjectMapperImpl(auditable, references), reservationMapper(), new StockMovementTypeMapperImpl(), references);
+        return new StockMovementServiceImpl(stockMovementRepository, materialRepository, warehouseRepository, supplierRepository,
+                projectRepository, reservationRepository, mapper, balanceService(), validationService(), reservationEngine(),
+                idempotentRequestService());
+    }
+
+    private ReservationEngineImpl reservationEngine() {
+        return new ReservationEngineImpl(reservationRepository, materialRepository, warehouseRepository, projectRepository,
+                balanceService(), validationService());
+    }
+
+    private InventoryBalanceServiceImpl balanceService() {
+        return new InventoryBalanceServiceImpl(inventoryBalanceRepository, () -> Optional.of(CALLER));
+    }
+
+    private InventoryValidationServiceImpl validationService() {
+        return new InventoryValidationServiceImpl(materialRepository, assemblyRepository, warehouseRepository,
+                supplierRepository, projectRepository);
+    }
+
+    private IdempotentRequestServiceImpl idempotentRequestService() {
+        return new IdempotentRequestServiceImpl(idempotentRequestRepository, () -> Optional.of(CALLER));
+    }
+
+    private static ReservationMapper reservationMapper() {
+        AuditableMapper auditable = new AuditableMapperImpl();
+        EntityReferenceFactory references = new EntityReferenceFactory();
+        return new ReservationMapperImpl(auditable, new MaterialMapperImpl(auditable, references),
+                new WarehouseMapperImpl(auditable, references), new ProjectMapperImpl(auditable, references),
+                new ReservationStatusMapperImpl(), references);
+    }
+
+    private record Stock(Material material, Warehouse warehouse, Project project) {
     }
 
     private static MasterDataChangedMessage executionPackageCreated() {
