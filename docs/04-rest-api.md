@@ -26,8 +26,9 @@ Swagger UI at `/swagger-ui.html`.
   built from the client's own ids). A request that comes back with the same key and the same body
   writes nothing and answers `201` with what the first one created, as it is now — even when the
   stock it took is no longer there, so a retry after a timeout never reserves or takes the material
-  out twice. The same key with a different body is `409 IDEM-001` and writes nothing; a malformed key
-  is `400 VAL-001`. Keys belong to the authenticated caller and to the operation: another client, or
+  out twice. The body is compared whole, dates included, so a retry has to send exactly the same one:
+  leave `reservedAt` and `occurredAt` out and the service stamps them on arrival. The same key with a
+  different body is `409 IDEM-001` and writes nothing; a malformed key is `400 VAL-001`. Keys belong to the authenticated caller and to the operation: another client, or
   the same key on the other endpoint, is a different request. A write that fails (`409 STK-001`,
   `422`...) does not consume its key, so the retry runs as a first request. Without the header, both
   endpoints behave as always.

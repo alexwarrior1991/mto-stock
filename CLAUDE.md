@@ -77,7 +77,8 @@ reserves or takes the material out twice. Full contract in `docs/04-rest-api.md`
   concurrent request with the same key waits on the unique index until the first one ends.
 - The key belongs to the authenticated caller (`created_by`) and to the operation. Without a key,
   nothing changes. The fingerprint is SHA-256 over the request record's components that are set,
-  name and value, decimals by value — so an optional field added later does not change it.
+  name and value, decimals by value — so an optional field added later does not change it. Dates
+  count too: a client that retries leaves `reservedAt`/`occurredAt` out, as `mto-maintenance` does.
 - The table is written only with native SQL, is not audited, and its rows do not expire.
 
 ### Auditing
