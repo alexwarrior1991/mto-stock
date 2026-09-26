@@ -61,6 +61,7 @@ import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -70,6 +71,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.mockito.Mockito.mock;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -303,6 +305,56 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
 
         assertEquals(1, reservationRepository.findAll(ReservationSpecification.materialIdEquals(materialId)).size());
         assertEquals(0, new BigDecimal("4").compareTo(inventoryBalanceRepository.calculateReservedQuantity(materialId, warehouseId, BigDecimal.ZERO)));
+    }
+
+    /**
+     * La fecha no cuenta: un reintento que trae la hora de su intento es la misma reserva, y la que
+     * queda es la del primero. Sin esto el cliente tenía que dejar la fecha fuera para poder reintentar.
+     */
+    @Test
+    void aRetryWithAnotherDateIsTheSameReservationAndKeepsTheFirstDate() {
+        Stock stock = stock("4.000000");
+        ReservationServiceImpl reservations = reservationService();
+        Instant firstAttempt = Instant.parse("2026-09-01T08:00:00Z");
+
+        ReservationResponse first = reservations.create(new ReservationRequest(stock.material().getId(), stock.warehouse().getId(),
+                stock.project().getId(), new BigDecimal("4.000000"), firstAttempt), "mto-maintenance:line-1:reserve");
+        entityManager.flush();
+        entityManager.clear();
+        ReservationResponse retry = reservations.create(new ReservationRequest(stock.material().getId(), stock.warehouse().getId(),
+                stock.project().getId(), new BigDecimal("4.000000"), firstAttempt.plusSeconds(90)), "mto-maintenance:line-1:reserve");
+
+        assertEquals(first.id(), retry.id());
+        assertEquals(firstAttempt, retry.reservedAt());
+        assertEquals(1, reservationRepository.findAll(ReservationSpecification.materialIdEquals(stock.material().getId())).size());
+    }
+
+    /**
+     * La purga olvida las claves usadas antes del corte, y solo esas. Lo que crearon sigue donde
+     * estaba; lo único que se pierde es reconocer el reintento, que pasa a ser una petición nueva: es
+     * el contrato, y por eso el plazo tiene que sobrar frente a lo que tarda un cliente en reintentar.
+     */
+    @Test
+    void thePurgeForgetsTheExpiredKeysAndARetryWithOneIsANewRequest() {
+        Stock stock = stock("12.000000");
+        ReservationServiceImpl reservations = reservationService();
+        ReservationRequest request = new ReservationRequest(stock.material().getId(), stock.warehouse().getId(),
+                stock.project().getId(), new BigDecimal("4.000000"), null);
+        ReservationResponse expired = reservations.create(request, "expired-key");
+        ReservationResponse recent = reservations.create(request, "recent-key");
+        entityManager.flush();
+        // PostgreSQL pone la misma hora a todo lo escrito en una transacción: la clave vieja se envejece a mano.
+        entityManager.createNativeQuery("update idempotent_request set created_at = now() - interval '31 days' "
+                + "where idempotency_key = 'expired-key'").executeUpdate();
+        entityManager.clear();
+
+        assertEquals(1, idempotentRequestService().purgeClaimedBefore(Instant.now().minus(Duration.ofDays(30))));
+
+        assertEquals(recent.id(), reservations.create(request, "recent-key").id());
+        ReservationResponse afterExpiry = reservations.create(request, "expired-key");
+        assertNotEquals(expired.id(), afterExpiry.id());
+        assertTrue(reservationRepository.findById(expired.id()).isPresent());
+        assertEquals(3, reservationRepository.findAll(ReservationSpecification.materialIdEquals(stock.material().getId())).size());
     }
 
     /** Material, almacén y proyecto dados de alta, con {@code physical} en el almacén y nada reservado. */

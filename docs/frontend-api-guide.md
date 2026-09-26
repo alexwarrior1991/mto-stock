@@ -112,7 +112,7 @@ All API errors use this shape:
 - Request with body: `Content-Type: application/json`
 - Optional tracing: `X-Correlation-Id: <client-generated-id>` if supported by the deployment.
 - Auth: `Authorization: Bearer <jwt>` on every request to `/api/v1/inventory`.
-- Optional on `POST /reservations` and `POST /movements/outputs`: `Idempotency-Key: <client-generated-key>` (1 to 255 visible ASCII characters). Retrying with the same key and body answers `201` with what the first request created instead of writing again; see `04-rest-api.md`.
+- Optional on `POST /reservations` and `POST /movements/outputs`: `Idempotency-Key: <client-generated-key>` (1 to 255 visible ASCII characters). Retrying with the same key and body answers `201` with what the first request created instead of writing again; the date does not count, and a key is remembered for 30 days. See `04-rest-api.md`.
 
 ## Content-Type
 

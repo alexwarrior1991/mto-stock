@@ -45,6 +45,12 @@ app:
   cache:
     enabled: ${APP_CACHE_ENABLED:false}
 
+  # Ningun hilo borra claves por su cuenta mientras corre la suite: la purga se prueba llamandola, en
+  # InboxIdempotencyDataJpaTest contra PostgreSQL.
+  idempotency:
+    purge:
+      enabled: ${APP_IDEMPOTENCY_PURGE_ENABLED:false}
+
 management:
   endpoint:
     health:

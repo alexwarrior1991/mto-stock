@@ -36,6 +36,8 @@ Main variables:
 - `APP_CACHE_ENABLED`: cache master data reads in Redis; `false` starts the application without Redis and serves everything from the database
 - `APP_CACHE_DEFAULT_TTL`: how long a cached entry lives (default `30m`)
 - `APP_CACHE_KEY_PREFIX`: namespace of the cache keys (default `mto-stock:v1:`); **bump the version segment when the shape of a cached response DTO changes**
+- `APP_IDEMPOTENCY_RETENTION`: how long an `Idempotency-Key` is remembered after its first use (default `30d`); a retry after that is a new request, so it has to outlast how long a client may take to retry
+- `APP_IDEMPOTENCY_PURGE_ENABLED`, `APP_IDEMPOTENCY_PURGE_CRON`: the daily purge of expired keys (default on, `0 17 3 * * *`); off, keys never expire
 - `MANAGEMENT_HEALTH_REDIS_ENABLED`: include Redis in `/actuator/health`; off by default, like RabbitMQ, because an unreachable cache does not stop the API from serving
 - `REDIS_PASSWORD`, `REDIS_PORT`, `REDIS_MAXMEMORY`: the Redis container of the local Compose stack
 
