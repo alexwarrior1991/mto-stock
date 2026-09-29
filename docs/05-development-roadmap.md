@@ -38,6 +38,12 @@ Each of these arrived because something was wrong, not because a phase called fo
   included.
 - **Hibernate Envers (`V7`).** The `updated_by` columns say who touched a row last; they do not say
   what it said before. Seven `<table>_aud` twins and `audit_revision` do. See `07-auditing.md`.
+- **Idempotent writes (`V8`–`V9`).** `mto-maintenance` retries what was left without an answer, so a
+  reservation or an output with an `Idempotency-Key` runs once however many times it arrives.
+- **Own events through an outbox (`V10`).** `mto-notification` needs to hear a material falling
+  below its minimum, a reservation cancelled or released and an inventory adjustment, with who did
+  it and under which request. The outbox copied from `mto-configuration` (and `mto-maintenance`)
+  writes the event with the change and a relay publishes it afterwards. See `06-messaging.md`.
 
 ## Knowingly open
 
@@ -55,5 +61,10 @@ them as bugs:
 - **Historical stock is not exposed.** `StockMovementRepository.calculateSignedQuantity` answers "how
   much was there on day X" and is tested against a real Postgres, but no service or endpoint wraps it.
   The current-stock reads go to the projection, which only stores the now.
-- **This service consumes and never publishes.** There is no outbox here and no `RabbitTemplate`. If
-  something outside ever has to react to a stock movement, that half has to be built.
+- **Only four facts are published.** Entries, outputs, transfers and consumed reservations publish
+  nothing: `mto-maintenance` already tells what it consumes, and the ledger is the record of the
+  rest. The next fact that deserves a notice is one more builder in `StockEvents`, one hook and one
+  example (`06-messaging.md`).
+- **The below-minimum check compares the material's total, not one warehouse.** It is the view of
+  `GET /materials/{id}/stock` without a warehouse; a warehouse running dry while another is full
+  publishes nothing, on purpose.

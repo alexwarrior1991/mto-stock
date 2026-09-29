@@ -34,6 +34,8 @@ import com.alejandro.mtostock.application.exception.AssemblyException;
 import com.alejandro.mtostock.application.exception.DuplicateCodeException;
 import com.alejandro.mtostock.application.exception.IdempotencyKeyConflictException;
 import com.alejandro.mtostock.application.exception.InsufficientStockException;
+import com.alejandro.mtostock.application.dto.messaging.DomainEvent;
+import com.alejandro.mtostock.application.service.DomainEventPublisher;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.exception.ProjectException;
 import com.alejandro.mtostock.application.exception.ReservationException;
@@ -225,7 +227,8 @@ class BusinessLayerTest {
                 mock(WarehouseRepository.class),
                 mock(ProjectRepository.class),
                 inventoryBalanceService,
-                validationService
+                validationService,
+                new RecordingEventPublisher()
         );
 
         Reservation consumedReservation = service.consume(reservation.getId());
@@ -249,7 +252,8 @@ class BusinessLayerTest {
                 mock(WarehouseRepository.class),
                 mock(ProjectRepository.class),
                 inventoryBalanceService,
-                validationService
+                validationService,
+                new RecordingEventPublisher()
         );
 
         Reservation releasedReservation = service.release(reservation.getId());
@@ -287,7 +291,8 @@ class BusinessLayerTest {
                 warehouseRepository,
                 projectRepository,
                 inventoryBalanceService,
-                validationService
+                validationService,
+                new RecordingEventPublisher()
         );
 
         Reservation updatedReservation = service.update(existingReservation.getId(), requestedReservation);
@@ -341,8 +346,8 @@ class BusinessLayerTest {
         assertSame(incomingMovement, outgoingMovement.getRelatedMovement());
         assertSame(outgoingMovement, incomingMovement.getRelatedMovement());
         assertNotNull(TransferServiceImpl.class.getDeclaredMethod("transfer", StockMovementTransferRequest.class).getAnnotation(Transactional.class));
-        verify(inventoryBalanceService).decreasePhysicalAndAvailable(material.getId(), sourceWarehouse.getId(), request.quantity());
-        verify(inventoryBalanceService).increasePhysical(material.getId(), targetWarehouse.getId(), request.quantity());
+        verify(inventoryBalanceService).transfer(material.getId(), sourceWarehouse.getId(), targetWarehouse.getId(), request.quantity());
+        verify(inventoryBalanceService, never()).decreasePhysicalAndAvailable(any(), any(), any());
     }
 
     @Test
@@ -380,7 +385,8 @@ class BusinessLayerTest {
                 inventoryBalanceService,
                 validationService,
                 mock(ReservationEngine.class),
-                mock(IdempotentRequestService.class)
+                mock(IdempotentRequestService.class),
+                new RecordingEventPublisher()
         );
 
         service.registerEntry(request);
@@ -425,7 +431,8 @@ class BusinessLayerTest {
                 inventoryBalanceService,
                 validationService,
                 mock(ReservationEngine.class),
-                mock(IdempotentRequestService.class)
+                mock(IdempotentRequestService.class),
+                new RecordingEventPublisher()
         );
 
         service.registerOutput(request, null);
@@ -491,7 +498,8 @@ class BusinessLayerTest {
                 mock(WarehouseRepository.class),
                 mock(ProjectRepository.class),
                 mock(InventoryBalanceService.class),
-                validationService
+                validationService,
+                new RecordingEventPublisher()
         );
 
         assertThrows(ReservationException.class, () -> service.release(reservation.getId()));
@@ -536,7 +544,7 @@ class BusinessLayerTest {
         UUID warehouseId = UUID.randomUUID();
         BigDecimal quantity = new BigDecimal("7.000000");
         when(inventoryBalanceRepository.increasePhysical(materialId, warehouseId, quantity, "test-user")).thenReturn(1);
-        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, auditorAware);
+        InventoryBalanceServiceImpl service = balanceService(inventoryBalanceRepository, auditorAware);
 
         service.increasePhysical(materialId, warehouseId, quantity);
 
@@ -548,12 +556,13 @@ class BusinessLayerTest {
     void inventoryBalanceServiceOutputRejectsInsufficientProjectedAvailableStock() {
         InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
         AuditorAware<String> auditorAware = () -> Optional.of("test-user");
-        UUID materialId = UUID.randomUUID();
+        Material material = material("MAT-OUT-LOW");
+        UUID materialId = material.getId();
         UUID warehouseId = UUID.randomUUID();
         BigDecimal quantity = new BigDecimal("3.000000");
         when(inventoryBalanceRepository.decreasePhysicalAndAvailable(materialId, warehouseId, quantity, "test-user")).thenReturn(0);
         when(inventoryBalanceRepository.calculateAvailableQuantity(materialId, warehouseId, BigDecimal.ZERO)).thenReturn(BigDecimal.ONE);
-        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, auditorAware);
+        InventoryBalanceServiceImpl service = balanceService(inventoryBalanceRepository, auditorAware, material);
 
         assertThrows(InsufficientStockException.class,
                 () -> service.decreasePhysicalAndAvailable(materialId, warehouseId, quantity));
@@ -563,11 +572,12 @@ class BusinessLayerTest {
     void inventoryBalanceServiceFallsBackToSystemWhenAuditorIsEmpty() {
         InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
         AuditorAware<String> auditorAware = Optional::empty;
-        UUID materialId = UUID.randomUUID();
+        Material material = material("MAT-RES-SYS");
+        UUID materialId = material.getId();
         UUID warehouseId = UUID.randomUUID();
         BigDecimal quantity = new BigDecimal("2.000000");
         when(inventoryBalanceRepository.reserve(materialId, warehouseId, quantity, "system")).thenReturn(1);
-        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, auditorAware);
+        InventoryBalanceServiceImpl service = balanceService(inventoryBalanceRepository, auditorAware, material);
 
         service.reserve(materialId, warehouseId, quantity);
 
@@ -582,7 +592,7 @@ class BusinessLayerTest {
         UUID warehouseId = UUID.randomUUID();
         BigDecimal quantity = new BigDecimal("2.000000");
         when(inventoryBalanceRepository.releaseReserved(materialId, warehouseId, quantity, "system")).thenReturn(1);
-        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, auditorAware);
+        InventoryBalanceServiceImpl service = balanceService(inventoryBalanceRepository, auditorAware);
 
         service.releaseReserved(materialId, warehouseId, quantity);
 
@@ -609,6 +619,7 @@ class BusinessLayerTest {
                 null
         );
         StockMovement movement = movement(StockMovementType.POSITIVE_ADJUSTMENT, request.quantity());
+        setId(movement, UUID.randomUUID());
         when(stockMovementMapper.toAdjustmentEntity(request)).thenReturn(movement);
         when(materialRepository.findById(material.getId())).thenReturn(Optional.of(material));
         when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
@@ -624,7 +635,8 @@ class BusinessLayerTest {
                 inventoryBalanceService,
                 validationService,
                 mock(ReservationEngine.class),
-                mock(IdempotentRequestService.class)
+                mock(IdempotentRequestService.class),
+                new RecordingEventPublisher()
         );
 
         service.registerAdjustment(request);
@@ -655,6 +667,7 @@ class BusinessLayerTest {
                 null
         );
         StockMovement movement = movement(StockMovementType.NEGATIVE_ADJUSTMENT, request.quantity());
+        setId(movement, UUID.randomUUID());
         when(stockMovementMapper.toAdjustmentEntity(request)).thenReturn(movement);
         when(materialRepository.findById(material.getId())).thenReturn(Optional.of(material));
         when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
@@ -670,7 +683,8 @@ class BusinessLayerTest {
                 inventoryBalanceService,
                 validationService,
                 mock(ReservationEngine.class),
-                mock(IdempotentRequestService.class)
+                mock(IdempotentRequestService.class),
+                new RecordingEventPublisher()
         );
 
         service.registerAdjustment(request);
@@ -720,7 +734,8 @@ class BusinessLayerTest {
                 inventoryBalanceService,
                 validationService,
                 reservationEngine,
-                mock(IdempotentRequestService.class)
+                mock(IdempotentRequestService.class),
+                new RecordingEventPublisher()
         );
 
         service.registerOutput(request, null);
@@ -766,7 +781,8 @@ class BusinessLayerTest {
                 mock(InventoryBalanceService.class),
                 mock(InventoryValidationService.class),
                 mock(ReservationEngine.class),
-                mock(IdempotentRequestService.class)
+                mock(IdempotentRequestService.class),
+                new RecordingEventPublisher()
         );
 
         assertThrows(ReservationException.class, () -> service.registerOutput(request, null));
@@ -808,7 +824,8 @@ class BusinessLayerTest {
                 mock(InventoryBalanceService.class),
                 mock(InventoryValidationService.class),
                 mock(ReservationEngine.class),
-                mock(IdempotentRequestService.class)
+                mock(IdempotentRequestService.class),
+                new RecordingEventPublisher()
         );
 
         assertThrows(ReservationException.class, () -> service.registerOutput(request, null));
@@ -831,7 +848,8 @@ class BusinessLayerTest {
                 mock(InventoryBalanceService.class),
                 mock(InventoryValidationService.class),
                 mock(ReservationEngine.class),
-                mock(IdempotentRequestService.class)
+                mock(IdempotentRequestService.class),
+                new RecordingEventPublisher()
         );
 
         NotFoundException exception = assertThrows(NotFoundException.class, () -> service.findById(missingId));
@@ -917,7 +935,8 @@ class BusinessLayerTest {
                 inventoryBalanceService,
                 mock(InventoryValidationService.class),
                 reservationEngine,
-                idempotentRequestService
+                idempotentRequestService,
+                new RecordingEventPublisher()
         );
 
         assertSame(firstAnswer, service.registerOutput(request, "retry-2"));
@@ -957,7 +976,8 @@ class BusinessLayerTest {
                 inventoryBalanceService,
                 mock(InventoryValidationService.class),
                 mock(ReservationEngine.class),
-                idempotentRequestService
+                idempotentRequestService,
+                new RecordingEventPublisher()
         );
 
         service.registerOutput(request, "first-2");
@@ -1235,7 +1255,8 @@ class BusinessLayerTest {
                 warehouseRepository,
                 projectRepository,
                 inventoryBalanceService,
-                validationService
+                validationService,
+                new RecordingEventPublisher()
         );
 
         Reservation createdReservation = service.create(requestedReservation);
@@ -1257,7 +1278,8 @@ class BusinessLayerTest {
                 mock(WarehouseRepository.class),
                 mock(ProjectRepository.class),
                 inventoryBalanceService,
-                mock(InventoryValidationService.class)
+                mock(InventoryValidationService.class),
+                new RecordingEventPublisher()
         );
 
         Reservation cancelledReservation = service.cancel(reservation.getId());
@@ -1295,7 +1317,8 @@ class BusinessLayerTest {
                 warehouseRepository,
                 projectRepository,
                 inventoryBalanceService,
-                mock(InventoryValidationService.class)
+                mock(InventoryValidationService.class),
+                new RecordingEventPublisher()
         );
 
         Reservation updatedReservation = service.update(existingReservation.getId(), requestedReservation);
@@ -1437,7 +1460,7 @@ class BusinessLayerTest {
         UUID warehouseId = UUID.randomUUID();
         BigDecimal quantity = new BigDecimal("1.000000");
         when(inventoryBalanceRepository.increasePhysical(materialId, warehouseId, quantity, truncatedActor)).thenReturn(1);
-        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, auditorAware);
+        InventoryBalanceServiceImpl service = balanceService(inventoryBalanceRepository, auditorAware);
 
         service.increasePhysical(materialId, warehouseId, quantity);
 
@@ -1450,7 +1473,7 @@ class BusinessLayerTest {
         InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
         UUID materialId = UUID.randomUUID();
         UUID warehouseId = UUID.randomUUID();
-        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, () -> Optional.of("test-user"));
+        InventoryBalanceServiceImpl service = balanceService(inventoryBalanceRepository, () -> Optional.of("test-user"));
 
         assertThrows(ValidationException.class, () -> service.increasePhysical(materialId, warehouseId, BigDecimal.ZERO));
         assertThrows(ValidationException.class, () -> service.decreasePhysicalAndAvailable(materialId, warehouseId, new BigDecimal("-1.000000")));
@@ -1469,7 +1492,7 @@ class BusinessLayerTest {
         when(inventoryBalanceRepository.increasePhysical(materialId, warehouseId, quantity, "system")).thenReturn(0);
         when(inventoryBalanceRepository.releaseReserved(materialId, warehouseId, quantity, "system")).thenReturn(0);
         when(inventoryBalanceRepository.consumeReserved(materialId, warehouseId, quantity, "system")).thenReturn(0);
-        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, Optional::empty);
+        InventoryBalanceServiceImpl service = balanceService(inventoryBalanceRepository, Optional::empty);
 
         assertThrows(ReservationException.class, () -> service.increasePhysical(materialId, warehouseId, quantity));
         assertThrows(ReservationException.class, () -> service.releaseReserved(materialId, warehouseId, quantity));
@@ -1498,7 +1521,7 @@ class BusinessLayerTest {
         when(warehouseRepository.findById(sourceWarehouse.getId())).thenReturn(Optional.of(sourceWarehouse));
         when(warehouseRepository.findById(targetWarehouse.getId())).thenReturn(Optional.of(targetWarehouse));
         doThrow(new InsufficientStockException(material.getId(), sourceWarehouse.getId(), request.quantity(), BigDecimal.ZERO))
-                .when(inventoryBalanceService).decreasePhysicalAndAvailable(material.getId(), sourceWarehouse.getId(), request.quantity());
+                .when(inventoryBalanceService).transfer(material.getId(), sourceWarehouse.getId(), targetWarehouse.getId(), request.quantity());
         TransferServiceImpl service = new TransferServiceImpl(
                 materialRepository,
                 warehouseRepository,
@@ -2203,6 +2226,216 @@ class BusinessLayerTest {
                 new MasterDataChangedEvent(MasterDataEntityNames.EXECUTION_PACKAGE, entityId,
                         MasterDataOperation.CREATED, values),
                 "hash");
+    }
+
+    // ----------------------------------------------------------------- own events (docs/06-messaging.md)
+
+    @Test
+    void anOutputThatCrossesBelowTheMinimumPublishesTheEventOnce() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        RecordingEventPublisher events = new RecordingEventPublisher();
+        Material material = material("MAT-MIN");
+        material.setMinimumStockLevel(new BigDecimal("10.000000"));
+        UUID warehouseId = UUID.randomUUID();
+        when(materialRepository.findByIdForUpdate(material.getId())).thenReturn(Optional.of(material));
+        when(inventoryBalanceRepository.decreasePhysicalAndAvailable(eq(material.getId()), eq(warehouseId), any(), eq("test-user"))).thenReturn(1);
+        // El disponible total tras cada salida: 12 -> 8 cruza, 8 -> 5 ya estaba por debajo, 13 -> 12 sigue por encima.
+        when(inventoryBalanceRepository.calculateAvailableQuantity(material.getId(), null, BigDecimal.ZERO))
+                .thenReturn(new BigDecimal("8.000000"), new BigDecimal("5.000000"), new BigDecimal("12.000000"));
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, materialRepository, events,
+                () -> Optional.of("test-user"));
+
+        service.decreasePhysicalAndAvailable(material.getId(), warehouseId, new BigDecimal("4.000000"));
+        service.decreasePhysicalAndAvailable(material.getId(), warehouseId, new BigDecimal("3.000000"));
+        service.decreasePhysicalAndAvailable(material.getId(), warehouseId, new BigDecimal("1.000000"));
+
+        assertEquals(List.of("material.below-minimum"), events.names(), "solo al cruzar, no en cada salida por debajo");
+        DomainEvent event = events.published.getFirst();
+        assertEquals(material.getId().toString(), event.entityId());
+        assertEquals("MAT-MIN", event.values().get("materialCode"));
+        assertEquals("unit", event.values().get("unit"));
+        assertEquals(new BigDecimal("10.000000"), event.values().get("minimumStockLevel"));
+        assertEquals(new BigDecimal("12.000000"), event.values().get("availableBefore"));
+        assertEquals(new BigDecimal("8.000000"), event.values().get("availableAfter"));
+        assertEquals(new BigDecimal("4.000000"), event.values().get("quantity"));
+        assertEquals("OUTPUT", event.values().get("operation"));
+        assertEquals(warehouseId, event.values().get("warehouseId"));
+        InOrder order = inOrder(materialRepository, inventoryBalanceRepository);
+        order.verify(materialRepository).findByIdForUpdate(material.getId());
+        order.verify(inventoryBalanceRepository).decreasePhysicalAndAvailable(eq(material.getId()), eq(warehouseId), any(), eq("test-user"));
+    }
+
+    @Test
+    void aReservationThatCrossesBelowTheMinimumPublishesTheEventAndATransferNeverDoes() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        RecordingEventPublisher events = new RecordingEventPublisher();
+        Material material = material("MAT-RES-MIN");
+        material.setMinimumStockLevel(new BigDecimal("10.000000"));
+        UUID warehouseId = UUID.randomUUID();
+        UUID otherWarehouseId = UUID.randomUUID();
+        when(materialRepository.findByIdForUpdate(material.getId())).thenReturn(Optional.of(material));
+        when(inventoryBalanceRepository.reserve(material.getId(), warehouseId, new BigDecimal("6.000000"), "system")).thenReturn(1);
+        when(inventoryBalanceRepository.calculateAvailableQuantity(material.getId(), null, BigDecimal.ZERO)).thenReturn(new BigDecimal("4.000000"));
+        when(inventoryBalanceRepository.decreasePhysicalAndAvailable(material.getId(), warehouseId, new BigDecimal("2.000000"), "system")).thenReturn(1);
+        when(inventoryBalanceRepository.increasePhysical(material.getId(), otherWarehouseId, new BigDecimal("2.000000"), "system")).thenReturn(1);
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, materialRepository, events, Optional::empty);
+
+        service.reserve(material.getId(), warehouseId, new BigDecimal("6.000000"));
+        service.transfer(material.getId(), warehouseId, otherWarehouseId, new BigDecimal("2.000000"));
+
+        assertEquals(List.of("material.below-minimum"), events.names(), "una transferencia no cambia el total del material");
+        assertEquals("RESERVATION", events.published.getFirst().values().get("operation"));
+        verify(materialRepository, times(2)).findByIdForUpdate(material.getId());
+        verify(inventoryBalanceRepository).insertZeroBalanceIfMissing(material.getId(), otherWarehouseId, "system");
+        verify(inventoryBalanceRepository, times(1)).calculateAvailableQuantity(material.getId(), null, BigDecimal.ZERO);
+    }
+
+    @Test
+    void aTransferWithoutStockAtTheSourceFailsBeforeTouchingTheTarget() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        Material material = material("MAT-TRF-EMPTY");
+        UUID sourceWarehouseId = UUID.randomUUID();
+        UUID targetWarehouseId = UUID.randomUUID();
+        when(materialRepository.findByIdForUpdate(material.getId())).thenReturn(Optional.of(material));
+        when(inventoryBalanceRepository.decreasePhysicalAndAvailable(material.getId(), sourceWarehouseId, BigDecimal.ONE, "system")).thenReturn(0);
+        when(inventoryBalanceRepository.calculateAvailableQuantity(material.getId(), sourceWarehouseId, BigDecimal.ZERO)).thenReturn(BigDecimal.ZERO);
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, materialRepository,
+                new RecordingEventPublisher(), Optional::empty);
+
+        assertThrows(InsufficientStockException.class, () -> service.transfer(material.getId(), sourceWarehouseId, targetWarehouseId, BigDecimal.ONE));
+
+        verify(inventoryBalanceRepository, never()).insertZeroBalanceIfMissing(any(), any(), any());
+        verify(inventoryBalanceRepository, never()).increasePhysical(any(), any(), any(), any());
+    }
+
+    @Test
+    void aMaterialWithoutAMinimumNeverSumsItsStockAndAnUnknownMaterialIsNotFound() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        RecordingEventPublisher events = new RecordingEventPublisher();
+        Material material = material("MAT-NO-MIN");
+        UUID warehouseId = UUID.randomUUID();
+        when(materialRepository.findByIdForUpdate(material.getId())).thenReturn(Optional.of(material));
+        when(inventoryBalanceRepository.decreasePhysicalAndAvailable(material.getId(), warehouseId, BigDecimal.ONE, "system")).thenReturn(1);
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, materialRepository, events, Optional::empty);
+
+        service.decreasePhysicalAndAvailable(material.getId(), warehouseId, BigDecimal.ONE);
+
+        assertTrue(events.published.isEmpty(), "un minimo de cero nunca se cruza");
+        verify(inventoryBalanceRepository, never()).calculateAvailableQuantity(any(), any(), any());
+        UUID unknown = UUID.randomUUID();
+        assertThrows(NotFoundException.class, () -> service.reserve(unknown, warehouseId, BigDecimal.ONE));
+    }
+
+    @Test
+    void cancellingAndReleasingAReservationPublishTheEventWithWhoCreatedIt() {
+        ReservationRepository reservationRepository = mock(ReservationRepository.class);
+        InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
+        InventoryValidationService validationService = mock(InventoryValidationService.class);
+        RecordingEventPublisher events = new RecordingEventPublisher();
+        Reservation cancelled = reservation();
+        cancelled.setCreatedBy("service-account-mto-maintenance-svc");
+        Reservation released = reservation();
+        released.setCreatedBy("almacen.operario");
+        when(reservationRepository.findById(cancelled.getId())).thenReturn(Optional.of(cancelled));
+        when(reservationRepository.findById(released.getId())).thenReturn(Optional.of(released));
+        ReservationEngineImpl service = new ReservationEngineImpl(reservationRepository, mock(MaterialRepository.class),
+                mock(WarehouseRepository.class), mock(ProjectRepository.class), inventoryBalanceService, validationService, events);
+
+        service.cancel(cancelled.getId());
+        service.release(released.getId());
+
+        assertEquals(List.of("reservation.cancelled", "reservation.released"), events.names());
+        DomainEvent event = events.published.getFirst();
+        assertEquals(cancelled.getId().toString(), event.entityId());
+        assertEquals("service-account-mto-maintenance-svc", event.values().get("createdBy"), "quien la creo: la regla sabe si la toca otro");
+        assertEquals("CANCELLED", event.values().get("status"));
+        assertEquals("MAT-RES", event.values().get("materialCode"));
+        assertEquals("WH-RES", event.values().get("warehouseCode"));
+        assertEquals("PRJ-001", event.values().get("projectCode"));
+        assertEquals(new BigDecimal("2.000000"), event.values().get("quantity"));
+        assertNotNull(event.values().get("releasedAt"));
+        assertEquals("RELEASED", events.published.get(1).values().get("status"));
+        assertEquals("almacen.operario", events.published.get(1).values().get("createdBy"));
+    }
+
+    @Test
+    void anAdjustmentPublishesTheEventWithItsDirectionAndWhatTheOperatorWrote() {
+        StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        WarehouseRepository warehouseRepository = mock(WarehouseRepository.class);
+        StockMovementMapper stockMovementMapper = mock(StockMovementMapper.class);
+        RecordingEventPublisher events = new RecordingEventPublisher();
+        Material material = material("MAT-ADJ-EVT");
+        Warehouse warehouse = warehouse("WH-ADJ-EVT");
+        StockMovementAdjustmentRequest request = new StockMovementAdjustmentRequest(material.getId(), warehouse.getId(),
+                StockAdjustmentDirection.NEGATIVE, new BigDecimal("1.500000"), null, "RECUENTO-39", "3 unidades danadas");
+        StockMovement movement = movement(StockMovementType.NEGATIVE_ADJUSTMENT, new BigDecimal("1.500000"));
+        movement.setExternalReference("RECUENTO-39");
+        movement.setNotes("3 unidades danadas");
+        setId(movement, UUID.randomUUID());
+        when(stockMovementMapper.toAdjustmentEntity(request)).thenReturn(movement);
+        when(materialRepository.findById(material.getId())).thenReturn(Optional.of(material));
+        when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
+        when(stockMovementRepository.save(movement)).thenReturn(movement);
+        StockMovementServiceImpl service = new StockMovementServiceImpl(stockMovementRepository, materialRepository, warehouseRepository,
+                mock(SupplierRepository.class), mock(ProjectRepository.class), mock(ReservationRepository.class), stockMovementMapper,
+                mock(InventoryBalanceService.class), mock(InventoryValidationService.class), mock(ReservationEngine.class),
+                mock(IdempotentRequestService.class), events);
+
+        service.registerAdjustment(request);
+
+        assertEquals(List.of("adjustment.registered"), events.names());
+        DomainEvent event = events.published.getFirst();
+        assertEquals(movement.getId().toString(), event.entityId());
+        assertEquals("NEGATIVE", event.values().get("direction"));
+        assertEquals("NEGATIVE_ADJUSTMENT", event.values().get("movementType"));
+        assertEquals(new BigDecimal("1.500000"), event.values().get("quantity"));
+        assertEquals(new BigDecimal("-1.500000"), event.values().get("signedQuantity"));
+        assertEquals("RECUENTO-39", event.values().get("externalReference"));
+        assertEquals("3 unidades danadas", event.values().get("notes"));
+        assertEquals("MAT-ADJ-EVT", event.values().get("materialCode"));
+        assertEquals("WH-ADJ-EVT", event.values().get("warehouseCode"));
+        assertNotNull(event.values().get("occurredAt"));
+    }
+
+    /** El saldo con el material bloqueado: solo se preparan los bloqueos que el test va a pedir (strict stubs). */
+    private static InventoryBalanceServiceImpl balanceService(InventoryBalanceRepository repository, AuditorAware<String> auditorAware,
+                                                              Material... locked) {
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        for (Material material : locked) {
+            when(materialRepository.findByIdForUpdate(material.getId())).thenReturn(Optional.of(material));
+        }
+        return new InventoryBalanceServiceImpl(repository, materialRepository, new RecordingEventPublisher(), auditorAware);
+    }
+
+    /** Lo que cada gancho cuenta hacia fuera, tal como llegaria al outbox. */
+    static final class RecordingEventPublisher implements DomainEventPublisher {
+        final List<DomainEvent> published = new ArrayList<>();
+        final List<UUID> operationIds = new ArrayList<>();
+
+        @Override
+        public void publish(DomainEvent event) {
+            publish(UUID.randomUUID(), event);
+        }
+
+        @Override
+        public void publish(UUID operationId, DomainEvent event) {
+            operationIds.add(operationId);
+            published.add(event);
+        }
+
+        @Override
+        public boolean isEnabled() {
+            return true;
+        }
+
+        List<String> names() {
+            return published.stream().map(event -> event.entityName() + "." + event.eventName()).toList();
+        }
     }
 
     private static final class RecordingEntityHandler implements MasterDataEntityHandler {

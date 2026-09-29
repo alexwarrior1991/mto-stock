@@ -3,6 +3,9 @@ package com.alejandro.mtostock;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
 import com.alejandro.mtostock.application.service.AssemblyService;
 import com.alejandro.mtostock.application.service.BOMCalculationService;
+import com.alejandro.mtostock.application.service.DomainEventPublisher;
+import com.alejandro.mtostock.application.dto.messaging.DomainEvent;
+import com.alejandro.mtostock.infrastructure.messaging.outbox.OutboxMessageRepository;
 import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.service.IdempotentRequestService;
 import com.alejandro.mtostock.application.service.InboxMessageService;
@@ -32,6 +35,8 @@ import org.springframework.test.context.DynamicPropertySource;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
@@ -94,6 +99,12 @@ class MtoStockApplicationTests extends PostgreSQLTestContainer {
     @Autowired(required = false)
     private Tracer tracer;
 
+    @Autowired
+    private DomainEventPublisher domainEventPublisher;
+
+    @Autowired
+    private OutboxMessageRepository outboxMessageRepository;
+
     @Test
     void contextLoads() {
         assertNotNull(masterDataEventHandler);
@@ -109,6 +120,9 @@ class MtoStockApplicationTests extends PostgreSQLTestContainer {
         List<Class<?>> servicios = List.of(
                 AssemblyService.class,
                 BOMCalculationService.class,
+                // El publicador de eventos propios: con el broker apagado es el NoOp, pero tiene que existir
+                // porque saldo, reservas y ajustes lo piden por constructor.
+                DomainEventPublisher.class,
                 // Lo piden por constructor los seis impls que sirven /revisions. Faltaba de esta
                 // lista desde que llegó con Envers, que es justo cuando un guardián de arranque
                 // deja de servir: el hueco lo abre siempre el servicio recién añadido.
@@ -166,6 +180,24 @@ class MtoStockApplicationTests extends PostgreSQLTestContainer {
     @Test
     void elPuenteDeTrazadoEstaEnElContexto() {
         assertNotNull(tracer);
+    }
+
+    /**
+     * Con el broker apagado el publicador de eventos es el NoOp y no queda ninguna pieza del outbox,
+     * pero la tabla si existe (V10) y la entidad valida contra ella. Se compara antes y despues porque
+     * la base es la misma que usa OutboxRelayDataJpaTest, que deja filas.
+     */
+    @Test
+    void conElBrokerApagadoLosEventosNoSePublicanYElOutboxNoSeToca() {
+        assertFalse(domainEventPublisher.isEnabled());
+        assertFalse(context.containsBean("outboxRabbitPublisher"));
+        assertFalse(context.containsBean("outboxPublisherScheduler"));
+        assertFalse(context.containsBean("outboxEndpoint"));
+
+        long before = outboxMessageRepository.count();
+        domainEventPublisher.publish(new DomainEvent("material", "b0000000-0000-4000-8000-000000000001", "below-minimum", java.util.Map.of("materialCode", "GA70")));
+
+        assertEquals(before, outboxMessageRepository.count(), "el evento paso por el NoOp: no se escribio nada");
     }
 
 }

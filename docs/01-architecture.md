@@ -17,10 +17,11 @@ infrastructure/
   persistence/repository/      Spring Data + native SQL where correctness needs it.
   persistence/specification/   Composable filters for search endpoints.
   persistence/audit/           The Envers revision entity and its listener.
-  messaging/rabbitmq/          Contract names, headers and the consumer.
+  messaging/rabbitmq/          Contract names, headers and the consumer; the names of the own exchange.
+  messaging/outbox/            The outbox that publishes the own events (a copy of mto-configuration's).
   web/controller/              REST.
   web/exception/               GlobalExceptionHandler.
-configuration/                 Wiring, not business: cache, messaging, rabbitmq, security.
+configuration/                 Wiring, not business: cache, messaging, rabbitmq, outbox, security.
 ```
 
 **`domain/model` and `infrastructure/persistence/entity` share class names on purpose.** Both hold a

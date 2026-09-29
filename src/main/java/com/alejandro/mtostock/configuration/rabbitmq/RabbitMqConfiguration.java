@@ -5,6 +5,7 @@ import com.alejandro.mtostock.configuration.messaging.MessagePayloadSignatureVer
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.MasterDataEventConsumer;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.MasterDataRabbitMqNames;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.RabbitListenerContainerFactoryNames;
+import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.StockRabbitMqNames;
 import lombok.RequiredArgsConstructor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,9 +30,11 @@ import tools.jackson.databind.json.JsonMapper;
 /**
  * Declares the master data channel and wires its consumer.
  *
- * <p>{@code mto-stock} solo consume: no publica nada, así que aquí no hay {@code RabbitTemplate} ni
- * publisher confirms. Lo que sí declara es su propia cola, su DLX, su DLQ y el binding contra el
- * exchange de {@code mto-configuration}, porque una cola pertenece a quien la consume.</p>
+ * <p>Lo que consume: su propia cola, su DLX, su DLQ y el binding contra el exchange de
+ * {@code mto-configuration}, porque una cola pertenece a quien la consume. Lo que publica (sus
+ * propios eventos, desde el outbox de {@code OutboxConfiguration}) solo necesita aqui el exchange
+ * propio: la {@code RabbitTemplate} con publisher confirms la autoconfigura Spring Boot con
+ * {@code spring.rabbitmq.*}, y la cola que lo escucha es de {@code mto-notification}.</p>
  *
  * <p>El exchange se redeclara con exactamente los mismos atributos que usa el emisor (topic,
  * durable, sin auto-delete). La redeclaración es idempotente solo si coinciden: cualquier
@@ -45,13 +48,26 @@ import tools.jackson.databind.json.JsonMapper;
  */
 @Configuration
 @RequiredArgsConstructor
-@EnableConfigurationProperties(MasterDataRabbitProperties.class)
+@EnableConfigurationProperties({MasterDataRabbitProperties.class, StockEventsProperties.class})
 @ConditionalOnProperty(prefix = "app.rabbitmq", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class RabbitMqConfiguration {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(RabbitMqConfiguration.class);
 
     private final MasterDataRabbitProperties properties;
+    private final StockEventsProperties eventsProperties;
+
+    /**
+     * Exchange propio: lo que este servicio cuenta de sí mismo, con la clave
+     * {@code mto.stock.<entidad>.<evento>} (ver {@link StockRabbitMqNames}). Aquí solo el exchange,
+     * topic y durable como el de datos maestros; ninguna cola ni binding, que son de quien consume.
+     * Se declara aunque nadie escuche todavía: sin exchange, el relay del outbox no tendría a dónde
+     * publicar y cada mensaje fallaría hasta agotar sus intentos.
+     */
+    @Bean
+    public TopicExchange stockExchange() {
+        return new TopicExchange(eventsProperties.exchange(), true, false);
+    }
 
     /** Exchange del emisor. Se replica tal cual; ver el javadoc de la clase. */
     @Bean

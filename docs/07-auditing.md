@@ -26,7 +26,7 @@ which only the final state survived.
 
 ## What is deliberately not audited, and why
 
-Four entities carry no `@Audited`, and this is not an oversight:
+Five entities carry no `@Audited`, and this is not an oversight:
 
 - **`StockMovement`** is already an append-only immutable ledger — it is only ever
   `save(new StockMovement(...))`, with no update or delete endpoints. A `stock_movement_aud` twin
@@ -38,10 +38,13 @@ Four entities carry no `@Audited`, and this is not an oversight:
   hooks the persistence context, so it would never see those writes. Their twins would sit
   permanently empty, and an empty history table does not read as "no auditing here", it reads as
   "this never changed". That is worse than not having it.
+- **`OutboxMessage`** (`V10`) is written only by the outbox and its history is itself: every row is
+  an event as it was sent, and its status moves from pending to published or failed.
 
-`AuditableEntity` therefore carries **no** `@Audited`: it is the mapped superclass of all eleven
-entities, so annotating it would sweep in all four. `JpaEntityModelTest` pins the split so it cannot
-drift silently.
+`AuditableEntity` therefore carries **no** `@Audited`: it is the mapped superclass of the eleven
+entities that extend it, so annotating it would sweep in the four of them that must stay out
+(`OutboxMessage` does not extend it). `JpaEntityModelTest` pins the split so it cannot drift
+silently.
 
 Its four audit fields carry `@NotAudited`, so the `_aud` twins do not repeat
 `created_at`/`updated_at`/`created_by`/`updated_by`: `audit_revision` already records who and when,

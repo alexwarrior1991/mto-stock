@@ -24,8 +24,9 @@ propio repositorio lo suyo. Este trae dos ficheros:
 | `mto-stock-dev.json` | Los tres usuarios de desarrollo. Aparte a propósito, para poder aplicar lo anterior en un entorno desplegado sin arrastrarlos. |
 
 Los aplica `mto-platform/keycloak/apply-partials.sh`, que fija el orden: primero las parciales que
-crean los clientes, después `mto-ops-cross-service.json`, que los nombra. Ese guion es la única
-forma soportada de obtener el realm completo.
+crean los clientes (la de `mto-notification` antes que esta, porque los perfiles de aquí nombran sus
+permisos), después `mto-ops-cross-service.json`, que los nombra. Ese guion es la única forma
+soportada de obtener el realm completo.
 
 Que los roles vivan aquí y no en el repositorio de plataforma es deliberado: así un permiso se
 cambia en el mismo commit que el código que lo comprueba (`SecurityRoles`).
@@ -68,7 +69,14 @@ La ventaja de separarlos: cambiar lo que puede hacer un perfil se hace aquí, si
 |---|---|
 | `mto-warehouse-viewer` | `stock-read` |
 | `mto-warehouse-operator` | `stock-read`, `stock-write` |
-| `mto-warehouse-admin` | los de operario + `stock-delete`, `stock-adjust` |
+| `mto-warehouse-admin` | los de operario + `stock-delete`, `stock-adjust`, y `notification-activity-read` |
+
+Los tres perfiles llevan además `notification-inbox` de `mto-notification-api` (la bandeja de avisos:
+lo que este servicio publica —un material por debajo de su mínimo, una reserva cancelada por otro,
+un ajuste grande— llega a estas personas como notificación), y el responsable también
+`notification-activity-read`, el registro de actividad del dominio. Ese cliente lo crea
+`mto-notification/keycloak/mto-notification-partial-import.json`, que `apply-partials.sh` aplica
+la primera; lo que este servicio publica hacia allí está en `docs/06-messaging.md`.
 
 `stock-adjust` va aparte porque un ajuste es la única escritura que corrige el saldo sin documento
 con el que contrastarlo después: es lo que se usa tras un recuento, y también lo que cuadraría un

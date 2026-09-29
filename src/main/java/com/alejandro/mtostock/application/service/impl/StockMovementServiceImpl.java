@@ -9,6 +9,7 @@ import com.alejandro.mtostock.application.dto.stock.StockMovementResponse;
 import com.alejandro.mtostock.application.exception.NotFoundException;
 import com.alejandro.mtostock.application.exception.ReservationException;
 import com.alejandro.mtostock.application.mapper.StockMovementMapper;
+import com.alejandro.mtostock.application.service.DomainEventPublisher;
 import com.alejandro.mtostock.application.service.IdempotentRequestService;
 import com.alejandro.mtostock.application.service.InventoryBalanceService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
@@ -61,6 +62,7 @@ class StockMovementServiceImpl implements StockMovementService {
     private final InventoryValidationService inventoryValidationService;
     private final ReservationEngine reservationEngine;
     private final IdempotentRequestService idempotentRequestService;
+    private final DomainEventPublisher domainEventPublisher;
 
     @Override
     @Transactional
@@ -125,6 +127,7 @@ class StockMovementServiceImpl implements StockMovementService {
         if (request.direction() == StockAdjustmentDirection.POSITIVE) {
             inventoryBalanceService.increasePhysical(request.materialId(), request.warehouseId(), request.quantity());
         }
+        domainEventPublisher.publish(StockEvents.adjustmentRegistered(savedMovement, request.direction()));
         log.info("Stock adjustment registered for material {} in warehouse {}", movement.getMaterial().getCode(), movement.getWarehouse().getCode());
         return stockMovementMapper.toResponse(savedMovement);
     }

@@ -3,6 +3,7 @@ package com.alejandro.mtostock.infrastructure.persistence.entity;
 import jakarta.persistence.Entity;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
+import com.alejandro.mtostock.infrastructure.messaging.outbox.OutboxMessage;
 import org.hibernate.envers.Audited;
 import org.hibernate.envers.NotAudited;
 import org.junit.jupiter.api.Test;
@@ -143,7 +144,9 @@ class JpaEntityModelTest {
         List<Class<?>> entities = List.of(
                 Material.class, Supplier.class, Warehouse.class, Project.class, Assembly.class,
                 AssemblyComponent.class, Reservation.class,
-                StockMovement.class, InventoryBalance.class, InboxMessage.class, IdempotentRequest.class);
+                StockMovement.class, InventoryBalance.class, InboxMessage.class, IdempotentRequest.class,
+                // OutboxMessage tampoco: la escribe solo el relay y su historia es ella misma (V10).
+                OutboxMessage.class);
 
         entities.forEach(entity -> assertTrue(entity.isAnnotationPresent(Entity.class),
                 entity.getSimpleName() + " should be a JPA entity"));
@@ -155,7 +158,7 @@ class JpaEntityModelTest {
         assertEquals(Set.of(Material.class, Supplier.class, Warehouse.class, Project.class,
                 Assembly.class, AssemblyComponent.class, Reservation.class), audited);
 
-        Stream.of(StockMovement.class, InventoryBalance.class, InboxMessage.class, IdempotentRequest.class)
+        Stream.of(StockMovement.class, InventoryBalance.class, InboxMessage.class, IdempotentRequest.class, OutboxMessage.class)
                 .forEach(entity -> assertFalse(entity.isAnnotationPresent(Audited.class),
                         entity.getSimpleName() + " must not be audited: see AuditableEntity"));
     }

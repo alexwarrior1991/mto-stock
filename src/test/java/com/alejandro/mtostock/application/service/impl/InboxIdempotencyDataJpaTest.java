@@ -389,16 +389,16 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
                 new ProjectMapperImpl(auditable, references), reservationMapper(), new StockMovementTypeMapperImpl(), references);
         return new StockMovementServiceImpl(stockMovementRepository, materialRepository, warehouseRepository, supplierRepository,
                 projectRepository, reservationRepository, mapper, balanceService(), validationService(), reservationEngine(),
-                idempotentRequestService());
+                idempotentRequestService(), new NoOpDomainEventPublisher());
     }
 
     private ReservationEngineImpl reservationEngine() {
         return new ReservationEngineImpl(reservationRepository, materialRepository, warehouseRepository, projectRepository,
-                balanceService(), validationService());
+                balanceService(), validationService(), new NoOpDomainEventPublisher());
     }
 
     private InventoryBalanceServiceImpl balanceService() {
-        return new InventoryBalanceServiceImpl(inventoryBalanceRepository, () -> Optional.of(CALLER));
+        return new InventoryBalanceServiceImpl(inventoryBalanceRepository, materialRepository, new NoOpDomainEventPublisher(), () -> Optional.of(CALLER));
     }
 
     private InventoryValidationServiceImpl validationService() {
