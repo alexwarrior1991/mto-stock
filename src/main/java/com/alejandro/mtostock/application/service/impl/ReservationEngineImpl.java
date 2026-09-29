@@ -1,6 +1,7 @@
 package com.alejandro.mtostock.application.service.impl;
 
 import com.alejandro.mtostock.application.exception.NotFoundException;
+import com.alejandro.mtostock.application.service.DomainEventPublisher;
 import com.alejandro.mtostock.application.service.InventoryBalanceService;
 import com.alejandro.mtostock.application.service.InventoryValidationService;
 import com.alejandro.mtostock.application.service.ReservationEngine;
@@ -37,6 +38,7 @@ class ReservationEngineImpl implements ReservationEngine {
     private final ProjectRepository projectRepository;
     private final InventoryBalanceService inventoryBalanceService;
     private final InventoryValidationService inventoryValidationService;
+    private final DomainEventPublisher domainEventPublisher;
 
     @Override
     @Transactional
@@ -86,6 +88,7 @@ class ReservationEngineImpl implements ReservationEngine {
         inventoryValidationService.validateReservationCanChange(reservation);
         reservation.cancel(Instant.now());
         inventoryBalanceService.releaseReserved(reservation.getMaterial().getId(), reservation.getWarehouse().getId(), reservation.getQuantity());
+        domainEventPublisher.publish(StockEvents.reservationCancelled(reservation));
         log.info("Reservation {} cancelled", id);
         return reservation;
     }
@@ -97,6 +100,7 @@ class ReservationEngineImpl implements ReservationEngine {
         inventoryValidationService.validateReservationCanChange(reservation);
         reservation.release(Instant.now());
         inventoryBalanceService.releaseReserved(reservation.getMaterial().getId(), reservation.getWarehouse().getId(), reservation.getQuantity());
+        domainEventPublisher.publish(StockEvents.reservationReleased(reservation));
         log.info("Reservation {} released", id);
         return reservation;
     }

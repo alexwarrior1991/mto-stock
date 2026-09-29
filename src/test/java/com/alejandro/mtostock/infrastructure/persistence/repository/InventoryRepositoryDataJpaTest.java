@@ -41,8 +41,10 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -477,6 +479,57 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
     }
 
     /** Lo que confirmaron los tests con transacciones de verdad no se queda en la base que comparten todas las clases. */
+    /**
+     * El bloqueo del material es lo que serializa las escrituras de saldo de un mismo material
+     * ({@code InventoryBalanceServiceImpl}): mientras una transaccion lo tiene, otra que lo pida no
+     * lo consigue. Se comprueba con {@code for update nowait} desde otra transaccion, que falla en
+     * vez de esperar, y que vuelve a conseguirse en cuanto la primera termina.
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void findByIdForUpdateLocksTheMaterialRowUntilTheTransactionEnds() throws Exception {
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        UUID materialId = template.execute(status -> {
+            Material material = material("MAT-LOCK-" + UUID.randomUUID().toString().substring(0, 8), "Locked material");
+            audit(material);
+            entityManager.persist(material);
+            return material.getId();
+        });
+        CountDownLatch locked = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            Future<Boolean> holder = executor.submit(() -> template.execute(status -> {
+                boolean found = materialRepository.findByIdForUpdate(materialId).isPresent();
+                locked.countDown();
+                try {
+                    release.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                return found;
+            }));
+            assertTrue(locked.await(10, TimeUnit.SECONDS));
+
+            assertThrows(RuntimeException.class, () -> template.executeWithoutResult(status -> lockNoWait(materialId)),
+                    "the row is locked while the first transaction is open");
+
+            release.countDown();
+            assertTrue(holder.get(10, TimeUnit.SECONDS));
+            template.executeWithoutResult(status -> assertEquals(1, lockNoWait(materialId).size()));
+        } finally {
+            release.countDown();
+            executor.shutdownNow();
+            template.executeWithoutResult(status -> entityManager
+                    .createNativeQuery("delete from material where id = :id").setParameter("id", materialId).executeUpdate());
+        }
+    }
+
+    private List<?> lockNoWait(UUID materialId) {
+        return entityManager.createNativeQuery("select id from material where id = :id for update nowait")
+                .setParameter("id", materialId).getResultList();
+    }
+
     private void deleteIdempotentRequests(String key) {
         new TransactionTemplate(transactionManager).executeWithoutResult(status -> entityManager
                 .createNativeQuery("delete from idempotent_request where idempotency_key = :key")

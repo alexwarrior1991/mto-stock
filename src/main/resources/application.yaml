@@ -49,8 +49,7 @@ spring:
       repositories:
         enabled: false
 
-  # Este servicio solo CONSUME: no publica nada, asi que no hay publisher confirms ni returns que
-  # configurar. Lo que hay debajo de listener.simple lo aplica Spring Boot a traves del
+  # Lo que hay debajo de listener.simple lo aplica Spring Boot a traves del
   # SimpleRabbitListenerContainerFactoryConfigurer; sin pasar por el, una factory declarada a mano
   # descarta todo este bloque en silencio (ver RabbitMqConfiguration).
   rabbitmq:
@@ -59,6 +58,17 @@ spring:
     username: ${SPRING_RABBITMQ_USERNAME:guest}
     password: ${SPRING_RABBITMQ_PASSWORD:guest}
     virtual-host: ${SPRING_RABBITMQ_VIRTUAL_HOST:/}
+    # Publicacion desde el outbox (docs/06-messaging.md): un mensaje solo pasa a PUBLISHED cuando el
+    # broker lo confirma, y uno que no encaja en ninguna cola vuelve al publicador en vez de perderse.
+    # Sin confirms el relay no arranca (OutboxRabbitPublisher): degradar en silencio seria volver a
+    # marcar como publicado lo que el broker no ha aceptado.
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    template:
+      mandatory: true
+      # Continua en la publicacion la traza guardada en la fila del outbox, como el listener continua
+      # la que llega en las cabeceras.
+      observation-enabled: ${SPRING_RABBITMQ_TEMPLATE_OBSERVATION_ENABLED:true}
     listener:
       simple:
         # El contenedor confirma el mensaje al volver el listener sin excepcion, y lo rechaza si
@@ -88,7 +98,9 @@ management:
   endpoints:
     web:
       exposure:
-        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info,metrics,prometheus}
+        # outbox: el estado del outbox (GET) y el redrive de los mensajes FAILED (POST), restringidos
+        # en SecurityConfiguration a ops-metrics y ops-write.
+        include: ${MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE:health,info,metrics,prometheus,outbox}
   endpoint:
     health:
       probes:
@@ -187,14 +199,13 @@ app:
       allow-credentials: false
       max-age: ${APP_CORS_MAX_AGE:3600}
 
-  # Canal de eventos de datos maestros publicados por mto-configuration.
+  # Canal de eventos de datos maestros publicados por mto-configuration, y el exchange propio por el
+  # que este servicio publica los suyos.
   #
-  # El exchange y la routing key son contrato del emisor y no se cambian por gusto: un binding
-  # contra un exchange que nadie usa se declara igual de bien y deja de llegar todo sin ningun
-  # error visible. La cola y su DLQ si son de este servicio, que es quien las consume.
-  #
-  # Hoy el consumidor solo registra lo que recibe; la logica de negocio esta pendiente y su punto
-  # de entrada es MasterDataEventHandler.
+  # El exchange y la routing key de datos maestros son contrato del emisor y no se cambian por
+  # gusto: un binding contra un exchange que nadie usa se declara igual de bien y deja de llegar
+  # todo sin ningun error visible. La cola y su DLQ si son de este servicio, que es quien las
+  # consume. El punto de entrada de la logica de negocio es MasterDataEntityHandler.
   rabbitmq:
     # Apaga la declaracion de la topologia Y el consumidor. Con esto en false nadie abre una
     # conexion, asi que la aplicacion arranca sin broker.
@@ -209,15 +220,22 @@ app:
       # Permite declarar la topologia sin consumir: util para dejar la cola creada acumulando
       # eventos mientras el servicio todavia no sabe que hacer con ellos.
       listener-enabled: ${APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED:true}
+    # Exchange propio: lo que este servicio cuenta de si mismo (un material por debajo de su minimo,
+    # una reserva cancelada o liberada, un ajuste de inventario), con la clave
+    # mto.stock.<entidad>.<evento>. Aqui solo se declara el exchange; la cola es de quien lo consume
+    # (mto-notification).
+    events:
+      exchange: ${APP_RABBITMQ_EVENTS_EXCHANGE:mto.stock.exchange}
 
   # Firma de los mensajes, sobre los bytes que viajan de verdad. Es la unica comprobacion de
   # integridad que un consumidor puede rehacer: el messageHash del payload se calcula sobre el objeto
   # antes de serializarlo y no sobrevive a la ida y vuelta.
   messaging:
     signature:
-      # EL MISMO VALOR que app.messaging.signature.secret en mto-configuration. Con secreto la firma
-      # es HMAC-SHA256 y protege de manipulacion; sin el se degrada a un SHA-256 simple, que detecta
-      # corrupcion pero no manipulacion, porque quien altere el mensaje puede recalcularlo.
+      # EL MISMO VALOR que app.messaging.signature.secret en mto-configuration y en mto-notification:
+      # con el se comprueba lo que llega y se firma lo que sale. Con secreto la firma es HMAC-SHA256 y
+      # protege de manipulacion; sin el se degrada a un SHA-256 simple, que detecta corrupcion pero
+      # no manipulacion, porque quien altere el mensaje puede recalcularlo.
       secret: ${MESSAGING_SIGNATURE_SECRET:}
       # DISABLED no comprueba nada; OPTIONAL rechaza una firma que no cuadra pero acepta lo que no
       # puede comprobar; REQUIRED exige que todo mensaje llegue firmado y sea comprobable.
@@ -227,6 +245,53 @@ app:
       # mandaria a la DLQ todos los mensajes validos. Se pasa a REQUIRED cuando el secreto ya esta
       # repartido, que es como debe quedar en produccion.
       mode: ${MESSAGING_SIGNATURE_MODE:OPTIONAL}
+
+  # Outbox de los eventos propios (docs/06-messaging.md): el evento se escribe en outbox_message
+  # dentro de la transaccion de negocio y un relay lo publica despues, esperando la confirmacion del
+  # broker. Todo el bloque, con el relay, las metricas, la purga y /actuator/outbox, existe solo con
+  # app.rabbitmq.enabled=true; con el broker apagado el publicador de eventos no escribe nada.
+  outbox:
+    # Con false el outbox sigue escribiendo y solo se para el relay: los eventos esperan en la tabla.
+    enabled: ${APP_OUTBOX_ENABLED:true}
+    # Intentos antes de dar el mensaje por perdido (FAILED). Con backoff exponencial acotado, 20
+    # intentos cubren mas de una hora de broker caido; un FAILED se reencola desde /actuator/outbox.
+    max-attempts: ${APP_OUTBOX_MAX_ATTEMPTS:20}
+    # Retardo del primer reintento; se duplica en cada intento hasta max-retry-delay.
+    initial-retry-delay: ${APP_OUTBOX_INITIAL_RETRY_DELAY:5s}
+    max-retry-delay: ${APP_OUTBOX_MAX_RETRY_DELAY:5m}
+    # Desviacion aleatoria del retardo (0.2 => [0.8*d, 1.2*d]): evita que todas las replicas
+    # reintenten a la vez contra un broker que acaba de levantarse.
+    retry-jitter: 0.2
+    # Sondeo de la tabla; es la red de seguridad, porque normalmente se publica al confirmar
+    # (immediate-dispatch).
+    publisher-fixed-delay: ${APP_OUTBOX_PUBLISHER_FIXED_DELAY:5s}
+    # Mensajes que reclama cada pasada del relay.
+    batch-size: 50
+    # Tiempo que un mensaje reclamado queda invisible para el resto de replicas: la red de seguridad
+    # si el proceso muere entre reclamar y publicar.
+    claim-visibility-timeout: 5m
+    # Espera maxima por el publisher confirm antes de dar el envio por fallido.
+    confirm-timeout: 10s
+    # Cada cuanto se refresca la foto del outbox que publican las metricas (los gauges no consultan
+    # la base de datos en cada scrape).
+    metrics-refresh-delay: 30s
+    # Publica los mensajes de un mismo agregado en el orden en que se generaron. El coste es que un
+    # mensaje atascado frena a los de SU agregado, solo a esos.
+    strict-ordering-per-aggregate: true
+    # Publica en cuanto la transaccion de negocio confirma, sin esperar al sondeo.
+    immediate-dispatch: ${APP_OUTBOX_IMMEDIATE_DISPATCH:true}
+    # Borrado de los mensajes ya publicados. Sin esto outbox_message solo crece: cada evento deja
+    # una fila con su JSON.
+    purge:
+      enabled: ${APP_OUTBOX_PURGE_ENABLED:true}
+      # Margen para investigar un incidente de mensajeria con la tabla delante.
+      retention: ${APP_OUTBOX_PURGE_RETENTION:7d}
+      # Se borra por lotes: un DELETE de millones de filas hincha el WAL y bloquea el vacuum.
+      batch-size: 500
+      # Tope de trabajo por pasada, para que la primera ejecucion sobre una tabla enorme no se
+      # convierta en un borrado de horas.
+      max-batches-per-run: 20
+      fixed-delay: 1h
 
   # Cache de datos maestros en Redis: material, almacen, proveedor, conjunto y proyecto, por id.
   #

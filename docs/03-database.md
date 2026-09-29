@@ -415,6 +415,22 @@ the retention has to outlast how long a client may take to retry (`mto-maintenan
 left without an answer every few minutes while stock answers). A retry arriving just as its expired
 row is deleted claims the key again instead of failing.
 
+#### `outbox_message`
+
+Added in `V10__create_outbox_message_table.sql`: the outbox of the events this service publishes
+(`06-messaging.md`), the `mto-configuration` table in its final shape, the same one `mto-maintenance`
+carries. `id` (uuid), `aggregate_type`/`aggregate_id` (the entity and its id), `event_type`,
+`exchange_name`, `routing_key`, `payload` (`text`: the envelope as sent; not a large object, which
+would not be deleted with the row), `status` (`varchar` with a `CHECK` for
+`PENDING`/`IN_PROGRESS`/`PUBLISHED`/`FAILED`: `ddl-auto: validate` does not check constraints, so the
+entity's enum and the `CHECK` are kept in step by hand), `attempts`, `max_attempts`,
+`sequence_number` (`bigint` from `outbox_message_sequence`, assigned by the database: the order of the
+relay and the "something earlier of this aggregate still unpublished" rule), `created_at`,
+`next_attempt_at`, `published_at`, `last_error` (1000, truncated), and the W3C trace context
+`trace_parent`/`trace_state`. Partial indexes for the relay's claim (`sequence_number` where pending
+or in progress), the aggregate retention, the purge (`published_at` where published) and the failed
+count. Written only by the outbox; no `_aud` twin.
+
 ### Enums
 
 #### `stock_movement_type`

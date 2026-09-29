@@ -97,12 +97,13 @@ Full detail in `docs/07-auditing.md`.
 - **Audited (7)**: `Material`, `Supplier`, `Warehouse`, `Project`, `Assembly`, `AssemblyComponent`,
   `Reservation` — one `<table>_aud` twin each, plus `audit_revision` (a custom `@RevisionEntity`
   replacing `REVINFO`) in `infrastructure/persistence/audit`.
-- **Not audited (4), on purpose**: `StockMovement` is already an immutable append-only ledger, so a
+- **Not audited (5), on purpose**: `StockMovement` is already an immutable append-only ledger, so a
   twin would double the biggest table for no new information; `InventoryBalance`, `InboxMessage` and
   `IdempotentRequest` are written **only** with native SQL, which Envers cannot see, so their twins
-  would sit empty and read as "never changed". `@Audited` therefore goes on each entity and **never**
-  on `AuditableEntity`, which would sweep in all four and stop the application from booting under
-  `ddl-auto: validate`. `JpaEntityModelTest` guards the split.
+  would sit empty and read as "never changed"; `OutboxMessage` (`V10`) is written only by the outbox
+  and its history is itself. `@Audited` therefore goes on each entity and **never**
+  on `AuditableEntity`, which would sweep in the four that extend it and stop the application from
+  booting under `ddl-auto: validate`. `JpaEntityModelTest` guards the split.
 - **Known gap**: a `project` changed by a master data event leaves no revision —
   `ProjectRepository.upsertFromMasterData`/`deactivateFromMasterData` are native SQL because the
   sequence watermark has to be checked inside the writing statement. `project_aud` covers the REST
@@ -166,11 +167,39 @@ rejected to the DLQ; a message that *cannot* be verified (unsigned, or signed wi
 side cannot compute because the secrets differ) is only rejected under `REQUIRED`. The default is
 `OPTIONAL` because `REQUIRED` with mismatched secrets sends every valid message to the DLQ.
 
-The message contract is owned by `mto-configuration` — check `docs/06-messaging.md` (and that
+The master-data contract is owned by `mto-configuration` — check `docs/06-messaging.md` (and that
 repository's `README_MESSAGING.md`) before changing anything under `application/dto/messaging`.
+
+Producer of its own events for `mto-notification` (`mto.stock.exchange`, routing key
+`mto.stock.<entity>.<event>`, no queue here). **`DomainEventPublisher.publish` is the only door, and
+it is called inside the business transaction**: the event goes to `outbox_message` (`V10`) with the
+change and the relay publishes it afterwards with publisher confirms (`OutboxRabbitPublisher`
+refuses to start without them). The outbox is the copy of `mto-configuration`'s `core/outbox` that
+`mto-maintenance` carries too (`infrastructure/messaging/outbox`, every piece a `@Bean` of
+`configuration/outbox/OutboxConfiguration`, all gone with `app.rabbitmq.enabled=false`, when the
+publisher is the `NoOpDomainEventPublisher`). The hooks: `InventoryBalanceServiceImpl` publishes
+`material.below-minimum` when the **total** available of a material (the sum over warehouses, the
+same view as `GET /materials/{id}/stock` without a warehouse) crosses below `minimumStockLevel` —
+only at the crossing, never while already below, never for a material with no minimum; every
+operation that reduces the available (`decreasePhysicalAndAvailable`, `reserve`, and `transfer`
+although it never crosses) **locks the material row first** (`MaterialRepository.findByIdForUpdate`,
+lock order material → `inventory_balance`) so that concurrent outputs serialize and exactly one sees
+the crossing; a transfer is one balance operation (`InventoryBalanceService.transfer`), not an output
+plus an entry, precisely so it never publishes. `ReservationEngineImpl.cancel/release` publish
+`reservation.cancelled`/`released` with `createdBy` (who created it: `service-account-mto-maintenance-svc`
+for the ones `mto-maintenance` makes). `StockMovementServiceImpl.registerAdjustment` publishes
+`adjustment.registered` with the direction. The names and `values` of every event live in
+`StockEvents` and nowhere else, with the same material, warehouse and project keys in all of them;
+the envelope is the `AsynchronousMessage` of `mto-configuration` plus `actor`
+(`PERSON`/`SERVICE`/`SYSTEM`, from the token) and `correlationId` (`X-Correlation-Id` of the request,
+else the master-data message id, as Envers stores it), both read by `MessageContextResolver` when
+the event is created. **Keys are only added**; a new key or event changes its example in
+`docs/messaging/examples/` in the same commit (`MessagingContractExamplesTest` compares them with
+the real factory; `MESSAGING_EXAMPLES_WRITE=true` regenerates them). `DomainEvent` rejects any key
+that smells like a secret.
 
 ### Testing
 
 - `PostgreSQLTestContainer` (in `support/`) is the shared base for integration tests needing a real Postgres (`postgres:17-alpine` via Testcontainers — the same version `mto-platform` runs, so CI and local do not test against different engines) with Flyway migrations applied — extend it rather than mocking the datasource for repository/persistence tests. Without Docker, `TEST_DATABASE_URL`/`TEST_DATABASE_USERNAME`/`TEST_DATABASE_PASSWORD` point it at a PostgreSQL instead, as in `mto-maintenance`; the classes that extend it do not carry `@Testcontainers(disabledWithoutDocker = true)`, which would switch them off even then.
 - `MtoStockApplicationTests` is the only `@SpringBootTest`: it boots the whole context against a real Postgres (`PostgreSQLTestContainer`), with no service replaced by a mock, and asserts every business service bean is present. It needs a real PostgreSQL for that reason. It used to mock the ten services and exclude `DataSourceAutoConfiguration`, which is why nothing caught that the 16 `@Service` impls carried `@ConditionalOnBean(XRepository.class)` — an annotation Spring only supports on auto-configurations, always false on a scanned `@Service`, so no service bean was ever created and the packaged application could not start. Do not reintroduce it.
-- Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` + `InboxMessageRepositoryDataJpaTest` (repositories), `InboxIdempotencyDataJpaTest` (idempotency end to end on real Postgres: the inbox, and the reservations and outputs written with an `Idempotency-Key`), `EnversAuditDataJpaTest` (change history end to end — **it disables the test transaction on purpose: Envers writes at transaction completion, not on flush, so a rolled-back slice test would record nothing and look like Envers is broken**), `MapperLayerTest` (mappers), `MessagingLayerTest` (RabbitMQ contract, consumer and topology), `CacheLayerTest` (cache wiring and invalidation, no Redis needed), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class.
+- Tests are consolidated **one class per layer**, not one class per production class: `BusinessLayerTest` (all services), `RestControllerLayerTest` + `ReservationControllerMockMvcTest` (controllers), `PersistenceLayerTest` + `InventoryRepositoryDataJpaTest` + `InboxMessageRepositoryDataJpaTest` (repositories), `InboxIdempotencyDataJpaTest` (idempotency end to end on real Postgres: the inbox, and the reservations and outputs written with an `Idempotency-Key`), `EnversAuditDataJpaTest` (change history end to end — **it disables the test transaction on purpose: Envers writes at transaction completion, not on flush, so a rolled-back slice test would record nothing and look like Envers is broken**), `MapperLayerTest` (mappers), `MessagingLayerTest` (RabbitMQ contract, consumer and topology; the own exchange, the envelope, the actor, the correlation, the signer and the outbox publisher), `MessagingContractExamplesTest` (one JSON per published event), the outbox's own tests under `infrastructure/messaging/outbox` (`OutboxRelayDataJpaTest` against PostgreSQL, `OutboxWiringTest`, `OutboxRabbitPublisherTest`...), `CacheLayerTest` (cache wiring and invalidation, no Redis needed), `DomainModelTest` (domain records), `JpaEntityModelTest` (entities), `DtoValidationTest` (Bean Validation on DTOs), `GlobalExceptionHandlerTest`. Each holds many narrowly-named `@Test` methods (e.g. `stockMovementEntryIncreasesPhysicalAndAvailableBalance`) rather than one test per class — when adding a service/controller/repository/mapper, add a method to the matching layer test instead of creating a new test class; the events of each hook are methods of `BusinessLayerTest` (`RecordingEventPublisher`) and the material lock of `InventoryRepositoryDataJpaTest`.

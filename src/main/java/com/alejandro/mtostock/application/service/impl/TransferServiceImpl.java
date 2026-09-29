@@ -50,8 +50,7 @@ class TransferServiceImpl implements TransferService {
         inventoryValidationService.validateActive(material);
         inventoryValidationService.validateActive(sourceWarehouse);
         inventoryValidationService.validateActive(targetWarehouse);
-        inventoryBalanceService.decreasePhysicalAndAvailable(material.getId(), sourceWarehouse.getId(), request.quantity());
-        inventoryBalanceService.increasePhysical(material.getId(), targetWarehouse.getId(), request.quantity());
+        inventoryBalanceService.transfer(material.getId(), sourceWarehouse.getId(), targetWarehouse.getId(), request.quantity());
 
         StockMovement outgoingMovement = stockMovementMapper.toOutgoingTransferEntity(request);
         StockMovement incomingMovement = stockMovementMapper.toIncomingTransferEntity(request);

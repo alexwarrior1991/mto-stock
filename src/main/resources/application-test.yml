@@ -38,6 +38,8 @@ app:
     enabled: ${APP_RABBITMQ_ENABLED:false}
     master-data:
       listener-enabled: ${APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED:false}
+  # Con el broker apagado tampoco hay outbox: el publicador de eventos es el NoOp, y el outbox se
+  # prueba aparte (OutboxRelayDataJpaTest, OutboxWiringTest) montando lo que necesita.
 
   # Los tests tampoco dependen de un Redis real. Va explicito aunque el valor por defecto de
   # application.yaml ya sea false: deja escrito que la suite no necesita cache, y no se rompe si

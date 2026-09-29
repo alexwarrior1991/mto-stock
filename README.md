@@ -138,12 +138,25 @@ touched. Whatever goes there is already covered by the inbox and does not need t
 itself.
 
 Turn the channel off with `APP_RABBITMQ_ENABLED=false` (no topology, no consumer, no connection: the
-application starts without a broker) or keep the topology and stop consuming with
-`APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED=false`. The test suite never needs a broker.
+application starts without a broker, no master data in and no events out) or keep the topology and
+stop consuming with `APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED=false`. The test suite never needs a
+broker.
 
 See `docs/06-messaging.md` for the message contract, the full variable list, how the inbox behaves
 on duplicates and failures, how to publish a test message from the management UI, and where to add
 the business logic.
+
+### Events for `mto-notification`
+
+What happens here that deserves a notice — a material whose total available stock falls below its
+minimum, a reservation cancelled or released, an inventory adjustment — is published as an event on
+the service's own exchange, `mto.stock.exchange` (`mto.stock.<entity>.<event>`), with who did it and
+under which `X-Correlation-Id`. The event is written in the same transaction as the change, into an
+outbox (`outbox_message`), and a relay publishes it afterwards waiting for the broker's confirmation,
+so nothing is announced that did not happen and nothing is lost while RabbitMQ is down.
+`GET/POST /actuator/outbox` shows and redrives what is stuck; `APP_OUTBOX_ENABLED=false` keeps
+writing the events and stops publishing them. The contract and one JSON example per event are in
+[`docs/06-messaging.md`](docs/06-messaging.md) and `docs/messaging/examples/`.
 
 ## Caching
 
@@ -222,9 +235,15 @@ Business profiles are composite realm roles that group them:
 
 | Realm profile | Groups |
 |---|---|
-| `mto-warehouse-viewer` | `stock-read` |
-| `mto-warehouse-operator` | `stock-read`, `stock-write` |
-| `mto-warehouse-admin` | the operator ones plus `stock-delete` and `stock-adjust` |
+| `mto-warehouse-viewer` | `stock-read`, and `notification-inbox` of `mto-notification-api` |
+| `mto-warehouse-operator` | `stock-read`, `stock-write`, and `notification-inbox` |
+| `mto-warehouse-admin` | the operator ones plus `stock-delete` and `stock-adjust`, and `notification-inbox` and `notification-activity-read` |
+
+The `notification-*` roles belong to `mto-notification`: the inbox is where the notices this service
+publishes (a material below its minimum, a reservation cancelled by somebody else, a large
+adjustment) reach these people, and the activity read lets the warehouse manager browse the domain's
+activity log. Its client has to exist in the realm before this file is applied, which
+`mto-platform/keycloak/apply-partials.sh` guarantees.
 
 The realm is shared with `mto-configuration` — same users, same issuer — and its definition is
 versioned in [`keycloak/`](keycloak/), which also documents how to load it, what the two import
@@ -303,9 +322,12 @@ The application exposes Actuator endpoints for health, info, metrics and Prometh
 - Info: `http://localhost:8080/actuator/info`
 - Metrics: `http://localhost:8080/actuator/metrics`
 - Prometheus: `http://localhost:8080/actuator/prometheus`
+- Outbox: `http://localhost:8080/actuator/outbox` (`GET` the counts of the events waiting to be
+  published; `POST` redrives the `FAILED` ones)
 
 Health and info are public so orchestrators can probe them without a token. The rest requires
-`ops-metrics`, and anything that modifies state requires `ops-write`.
+`ops-metrics`, and anything that modifies state (`POST /actuator/outbox` included) requires
+`ops-write`.
 
 ## Distributed tracing
 

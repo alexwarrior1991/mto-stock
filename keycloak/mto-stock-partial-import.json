@@ -37,6 +37,9 @@
           "client": {
             "mto-stock-api": [
               "stock-read"
+            ],
+            "mto-notification-api": [
+              "notification-inbox"
             ]
           }
         }
@@ -50,6 +53,9 @@
             "mto-stock-api": [
               "stock-read",
               "stock-write"
+            ],
+            "mto-notification-api": [
+              "notification-inbox"
             ]
           }
         }
@@ -65,6 +71,10 @@
               "stock-write",
               "stock-delete",
               "stock-adjust"
+            ],
+            "mto-notification-api": [
+              "notification-inbox",
+              "notification-activity-read"
             ]
           }
         }

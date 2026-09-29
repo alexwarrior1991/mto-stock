@@ -1,6 +1,14 @@
-# Messaging: master data events from `mto-configuration`
+# Messaging
 
-`mto-stock` consumes the master data change events that `mto-configuration` publishes to RabbitMQ.
+`mto-stock` **consumes** the master data change events that `mto-configuration` publishes to
+RabbitMQ, and **publishes** its own events (a material that falls below its minimum, a reservation
+cancelled or released, an inventory adjustment) for `mto-notification`. The two channels are
+separate: the master-data contract is owned by `mto-configuration` and mirrored here in
+`application/dto/messaging`; the own-events contract is owned by this repository and documented in
+[Published events](#published-events).
+
+## Consumed: master data from `mto-configuration`
+
 Every message is logged, recorded in the inbox and then routed by entity name to the
 `MasterDataEntityHandler` that claims it. Of the eight entities the publisher sends today, **one has
 a handler**: `execution-package`, which keeps a `project` in step with it — see
@@ -499,3 +507,153 @@ guessed byte by byte from that.
 | `application/service/impl` | `ExecutionPackageMasterDataHandler` | The only handler today: keeps `project` in step with its execution package |
 | `infrastructure/persistence` | `InboxMessage`, `InboxMessageStatus`, `InboxMessageRepository` | The `inbox_message` table and its atomic operations |
 | `infrastructure/persistence` | `ProjectRepository.upsertFromMasterData` / `deactivateFromMasterData` | The atomic project sync, `project.source_service` + `source_entity_id` (`V5`) |
+| `application/dto/messaging` | `AsynchronousMessage`, `DomainEvent`, `MessageActor`, `MessageActorKind` | The envelope and payload of the own events (below) |
+| `application/service` | `DomainEventPublisher` | The one door through which a service tells what it did |
+| `application/service/impl` | `StockEvents`, `NoOpDomainEventPublisher` | The names and `values` of every own event; the publisher with the broker off |
+| `infrastructure/messaging/rabbitmq` | `StockRabbitMqNames` | The own exchange, routing keys and event types |
+| `infrastructure/messaging/outbox` | `OutboxService`, `OutboxRelayService`, `OutboxRabbitPublisher`, `MessageContextResolver`, `OutboxDomainEventPublisher`... | The outbox (a copy of `mto-configuration`'s `core/outbox`) |
+| `configuration/outbox`, `configuration/rabbitmq` | `OutboxConfiguration`, `StockEventsProperties` | Every outbox piece as a `@Bean`, gone with `app.rabbitmq.enabled=false`; the exchange name |
+
+## Published events
+
+Everything this service tells the outside world goes through **one door**,
+`DomainEventPublisher.publish(DomainEvent)` (`application/service`), called **inside the business
+transaction** that makes the change. The implementation (`infrastructure/messaging/outbox`,
+`OutboxDomainEventPublisher`) writes the event into `outbox_message` (`V10`) in that same
+transaction, and a relay publishes it afterwards to RabbitMQ, waiting for the broker's confirm: the
+event exists if and only if the change it tells was committed, and it survives a broker outage.
+With `app.rabbitmq.enabled=false` the publisher is a `NoOpDomainEventPublisher` and nothing is
+written (the tests, and an environment without a broker).
+
+### Topology
+
+| | Value |
+|---|---|
+| Exchange (own) | `mto.stock.exchange` (topic, durable; `app.rabbitmq.events.exchange`) |
+| Routing key | `mto.stock.<entity>.<event>` (`StockRabbitMqNames`), e.g. `mto.stock.material.below-minimum` |
+| Queue | **none here**: a queue belongs to whoever consumes it. `mto-notification` declares `mto.notification.stock.queue` bound to `mto.stock.#` |
+| AMQP `message_id` | the id of the `outbox_message` row |
+| Headers | `eventType`, `aggregateType` (the entity), `aggregateId`, `sequenceNumber` (global, increasing), `messageSignature`, `messageSignatureAlgorithm`, `traceparent`/`tracestate` |
+
+The signature is computed over the bytes sent with `app.messaging.signature.secret` — **the same
+value** as in `mto-configuration` and `mto-notification` (HMAC-SHA256 with a secret, plain SHA-256
+without), by `MessagePayloadSignature`, the counterpart of the verifier used on the consuming side.
+
+### Envelope
+
+The same `AsynchronousMessage` as `mto-configuration`, so every source is read alike, with the two
+keys the new producers add:
+
+```json
+{
+  "operationId": "f0000000-0000-4000-8000-000000000002",
+  "referenceId": "reservation-d0000000-0000-4000-8000-000000000001",
+  "origin": "mto-stock",
+  "creationDate": "2026-09-29T09:00:00Z",
+  "eventType": "STOCK_RESERVATION_CANCELLED",
+  "data": {
+    "entityName": "reservation",
+    "entityId": "d0000000-0000-4000-8000-000000000001",
+    "eventName": "cancelled",
+    "values": { "materialCode": "GA70", "warehouseCode": "ALM-HZL", "projectCode": "EP-6", "quantity": 4.000000, "status": "CANCELLED", "createdBy": "service-account-mto-maintenance-svc", "...": "..." }
+  },
+  "messageHash": "…",
+  "actor": { "id": "6f1b1c8e-0000-4000-8000-000000000042", "username": "almacen.responsable", "kind": "PERSON" },
+  "correlationId": "8c3b8c1a-1111-4222-8333-444444444444"
+}
+```
+
+- `data` is a `DomainEvent` (`entityName`, `entityId`, `eventName`, `values`), not a
+  `MasterDataChangedEvent`: `below-minimum` or `cancelled` are not a create, an update or a delete,
+  and the event name travels as text so a consumer decides what to do with what it does not know.
+- `eventType` is `STOCK_<ENTITY>_<EVENT>`; the consumer derives the activity type from the routing
+  key (`stock.<entity>.<event>`).
+- `messageHash` is SHA-256 over the JSON of the seven original keys only; `actor` and
+  `correlationId` are outside it.
+- `actor` is who asked for the operation, classified by this service because only it has the token
+  in hand: `PERSON` (the `preferred_username` and `sub` of the token), `SERVICE` (a Keycloak service
+  account, named `service-account-<client>`: `mto-maintenance` reserving and releasing material) or
+  `SYSTEM` (nobody authenticated). Read in the thread that writes the outbox
+  (`MessageContextResolver`), the only one that still has it.
+- `correlationId` is the `X-Correlation-Id` header of the request in course (trimmed, printable
+  ASCII, at most 200 characters; anything else counts as absent), else the id of the master-data
+  message being processed (`MessagingAuditContext`), else `null` — the same value the Envers
+  revision stores, so the activity registered by `mto-notification` joins the revision and the inbox
+  row by one key.
+- **Keys are only added.** Renaming or removing a key, an entity name, an event name or a routing
+  key breaks `mto-notification`; a new key changes the example below in the same commit. `values`
+  never carries anything that smells like a secret: `DomainEvent` rejects such keys (`password`,
+  `secret`, `token`, `credential`, `otp`, `apiKey`...) at any depth before the event reaches the
+  outbox. Null values do travel ("no external reference" is information).
+
+### Events
+
+One per hook; the values are built in one place, `StockEvents` (`application/service/impl`), and
+every event has a real JSON example in `docs/messaging/examples/` that
+`MessagingContractExamplesTest` builds with the real factory and compares with the file
+(`MESSAGING_EXAMPLES_WRITE=true ./mvnw test -Dtest=MessagingContractExamplesTest` regenerates them).
+`mto-notification` copies those files as its contract fixtures. The material, the warehouse and the
+project travel with the same keys in every event (`materialId`, `materialCode`, `materialName`,
+`unit`; `warehouseId`, `warehouseCode`, `warehouseName`; `projectId`, `projectCode`, `projectName`),
+so a rule reads them alike.
+
+| Event (`entity.event`) | When | `values` (besides the common ones) |
+|---|---|---|
+| `material.below-minimum` | the **total** available of the material (the sum over its warehouses, the same view as `GET /materials/{id}/stock` without a warehouse and as the `belowMinimum` filter) crosses below `minimumStockLevel`: it was at or above it before the operation and below after. Only at the crossing: a second output while already below does not publish again, and a material with no minimum (zero) never does. The operations that can cross are an output, a negative adjustment (`operation = OUTPUT`) and a reservation (`RESERVATION`); a transfer never changes the total, so it never publishes | material + `minimumStockLevel`, `availableBefore`, `availableAfter`, `quantity`, `operation`, `warehouseId` (where the operation happened) |
+| `reservation.cancelled` | `DELETE /reservations/{id}` | material, warehouse, project + `quantity`, `status`, `reservedAt`, `releasedAt`, `createdBy` (who created it: `service-account-mto-maintenance-svc` for the ones `mto-maintenance` makes, so a rule can tell one touched by somebody else), `createdAt` |
+| `reservation.released` | `POST /reservations/{id}/release` | the same as `cancelled` |
+| `adjustment.registered` | `POST /movements/adjustments`, positive or negative | material, warehouse + `direction` (`POSITIVE`/`NEGATIVE`), `movementType`, `quantity`, `signedQuantity`, `occurredAt`, `externalReference`, `notes` (what the operator wrote) |
+
+The `entityId` is the UUID of the material, the reservation or the adjustment's movement. The
+aggregate of the outbox is the entity (`reservation`-`<id>`), so the relay's strict ordering per
+aggregate keeps the events of one entity in the order they happened. A consumed reservation, an
+entry, an output and a transfer publish nothing: `mto-maintenance` already tells what it consumes,
+and the rest is the ledger doing its job.
+
+### The crossing and the lock
+
+The check lives in `InventoryBalanceServiceImpl`, the one place every write of the available goes
+through. Each operation that reduces it locks the material row first
+(`MaterialRepository.findByIdForUpdate`, `select ... for update`), updates the balance with the
+conditional `UPDATE` as before, and only then sums the available of the material and compares it with
+the minimum: with the lock, two concurrent outputs of the same material are serialized and exactly one
+of them sees the crossing; without it both could read the sum at the same instant and publish twice,
+or neither. The lock order is always material and then `inventory_balance`, also in a transfer
+(`InventoryBalanceService.transfer`, one lock for the two rows), which is why a transfer is one
+operation of the balance service and not an output followed by an entry. Updating a reservation is a
+release followed by a new reservation, so the check runs on the second half against the total after
+the release.
+
+### The outbox
+
+A copy of `core/outbox` of `mto-configuration` (the same one `mto-maintenance` carries), wired as
+`@Bean`s in `configuration/outbox` (all gone with `app.rabbitmq.enabled=false`):
+
+- `OutboxService.save` writes the row in the business transaction and, on commit, wakes the relay
+  (`immediate-dispatch`); the scheduled poll (`publisher-fixed-delay`, 5 s) is the safety net.
+- `OutboxRabbitPublisher` sends with `mandatory=true` and **waits for the publisher confirm**
+  (`spring.rabbitmq.publisher-confirm-type=correlated`, `publisher-returns=true`): a nack, an
+  unroutable return or a timeout is a failure, and without confirms the relay refuses to start.
+- Failures retry with exponential backoff and jitter (`max-attempts` 20 covers more than an hour of
+  broker outage), then the row is `FAILED` and stays for someone to look at; `POST /actuator/outbox`
+  (`ops-write`) redrives them, `GET /actuator/outbox` (`ops-metrics`) shows the counts.
+  `app.outbox.enabled=false` stops the relay only (the outbox keeps writing).
+- Metrics `outbox.messages.pending`, `outbox.messages.in.progress`, `outbox.messages.failed`,
+  `outbox.pending.oldest.age.seconds` (the useful alarm: if it ages, the relay is broken) and
+  `outbox.publish.total{result=success|failure}`.
+- Published rows are purged after `app.outbox.purge.retention` (7 days), in batches.
+- The trace context of the operation is stored in the row and restored when publishing, so the
+  publication span hangs from the request that caused it and not from the scheduler.
+
+The tests of the relay (`OutboxRelayDataJpaTest`, against a real PostgreSQL), the wiring
+(`OutboxWiringTest`) and the pieces (`OutboxRabbitPublisherTest`...) are the ones of
+`mto-configuration`, on the same copy.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `APP_RABBITMQ_EVENTS_EXCHANGE` | `mto.stock.exchange` | The own exchange |
+| `APP_OUTBOX_ENABLED` | `true` | `false` keeps writing the events and stops publishing them |
+| `APP_OUTBOX_MAX_ATTEMPTS`, `APP_OUTBOX_INITIAL_RETRY_DELAY`, `APP_OUTBOX_MAX_RETRY_DELAY` | `20`, `5s`, `5m` | The retries of the relay |
+| `APP_OUTBOX_PUBLISHER_FIXED_DELAY` | `5s` | The safety-net poll |
+| `APP_OUTBOX_IMMEDIATE_DISPATCH` | `true` | Publish as soon as the transaction commits |
+| `APP_OUTBOX_PURGE_ENABLED`, `APP_OUTBOX_PURGE_RETENTION` | `true`, `7d` | The purge of the published rows |
