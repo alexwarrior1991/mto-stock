@@ -29,9 +29,11 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.head;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -57,11 +59,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "app.security.principal-claim=preferred_username",
         "app.security.audience-validation-enabled=false",
         "app.security.expose-api-docs=false",
-        "app.security.cors.allowed-origins=http://localhost:4200",
-        "app.security.cors.allowed-methods=GET,POST,PUT,PATCH,DELETE",
-        "app.security.cors.allowed-headers=Authorization,Content-Type",
-        "app.security.cors.allow-credentials=false",
-        "app.security.cors.max-age=3600",
         "spring.security.oauth2.resourceserver.jwt.issuer-uri=http://localhost:8082/realms/mto"
 })
 class ApiAuthorizationRulesTest {
@@ -110,6 +107,20 @@ class ApiAuthorizationRulesTest {
             mockMvc.perform(get("/actuator/health")).andExpect(status().isNotFound());
             mockMvc.perform(get("/actuator/health/readiness")).andExpect(status().isNotFound());
             mockMvc.perform(get("/actuator/info")).andExpect(status().isNotFound());
+        }
+
+        /**
+         * El CORS es de mto-gateway, que quita {@code Origin} antes de llamar. Aquí un preflight no
+         * se aprueba: pide token como cualquier otra petición y no vuelve con
+         * {@code Access-Control-Allow-Origin}.
+         */
+        @Test
+        void corsIsLeftToTheGateway() throws Exception {
+            mockMvc.perform(options(PROBES)
+                            .header("Origin", "http://localhost:4200")
+                            .header("Access-Control-Request-Method", "POST"))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
         }
 
         @Test

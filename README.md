@@ -26,7 +26,6 @@ Main variables:
 - `KEYCLOAK_CLIENT_ID`: Keycloak client representing this API; its client roles are the permissions the API checks
 - `KEYCLOAK_AUDIENCE`, `KEYCLOAK_AUDIENCE_VALIDATION_ENABLED`: audience expected in the token, and whether it is enforced
 - `APP_SECURITY_EXPOSE_API_DOCS`: publish Swagger UI and the OpenAPI document without a token
-- `APP_CORS_ALLOWED_ORIGIN`: browser origin allowed to call the API
 - `KC_BOOTSTRAP_ADMIN_USERNAME`, `KC_BOOTSTRAP_ADMIN_PASSWORD`, `KEYCLOAK_PORT`, `KEYCLOAK_MANAGEMENT_PORT`: the Keycloak container of the local Compose stack
 - `SPRING_RABBITMQ_HOST`, `SPRING_RABBITMQ_PORT`, `SPRING_RABBITMQ_USERNAME`, `SPRING_RABBITMQ_PASSWORD`, `SPRING_RABBITMQ_VIRTUAL_HOST`: broker this API consumes master data events from. It must be **the same broker** `mto-configuration` publishes to — the one in `mto-platform`
 - `APP_RABBITMQ_ENABLED`: declare the messaging topology and wire the consumer; `false` starts the application without a broker
@@ -265,6 +264,11 @@ files are for, and the one cross-repo step (`mto-frontend` needs an audience map
 
 Rejections use the same `ApiErrorResponse` payload as any other API error: `401` with error code
 `AUTH-401` when the token is missing or invalid, `403` with `AUTH-403` when the role is not enough.
+
+**No CORS of its own.** Every browser comes in through `mto-gateway`, which handles CORS and strips
+`Origin` before calling this service. There is no `.cors()` and no open `OPTIONS` here: a preflight
+that reached the service directly needs a token like any other request, and nothing answers with
+`Access-Control-Allow-Origin` (`ApiAuthorizationRulesTest` pins it).
 
 ### Authenticating
 

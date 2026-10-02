@@ -136,7 +136,6 @@ jobs:
             -e KEYCLOAK_ISSUER_URI=http://localhost:8082/realms/mto \
             -e KEYCLOAK_CLIENT_ID=mto-stock-api \
             -e KEYCLOAK_AUDIENCE=mto-stock-api \
-            -e APP_CORS_ALLOWED_ORIGIN=http://localhost:4200 \
             "$IMAGE"
           for i in $(seq 1 45); do
             if curl -fsS http://localhost:8080/actuator/health > /dev/null; then
