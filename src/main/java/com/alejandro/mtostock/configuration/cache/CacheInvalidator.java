@@ -47,6 +47,11 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
  * a estas alturas la escritura en Postgres ya está confirmada y no hay nada que deshacer, así que
  * dejar subir la excepción solo convertiría una caché rancia en un error para el cliente. Además, a
  * un {@code afterCommit} no le queda ya nadie a quien propagarle nada.</p>
+ *
+ * <p>Cuando vuelve {@code afterCommit}, Redis ya ha borrado la entrada, y si no ha podido, el fallo
+ * ha llegado aquí: las escrituras de la caché son inmediatas ({@link CacheConfiguration}). Con el
+ * escritor por defecto, que escribe en segundo plano, la invalidación volvía con la entrada aún en
+ * Redis y su fallo se perdía sin traza.</p>
  */
 @Component
 public class CacheInvalidator {

@@ -15,8 +15,13 @@ import org.springframework.cache.support.NoOpCacheManager;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.cache.RedisCacheManager;
+import org.springframework.data.redis.connection.RedisConnection;
+import org.springframework.data.redis.connection.RedisKeyCommands;
+import org.springframework.data.redis.connection.RedisStringCommands;
+import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.util.List;
@@ -28,9 +33,11 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockingDetails;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -233,6 +240,39 @@ class CacheLayerTest {
                 });
     }
 
+    /**
+     * Las escrituras llegan a Redis antes de volver. Spring Data Redis 4 escribe en segundo plano por
+     * defecto cuando la factoría de conexiones es también reactiva, como la de Lettuce: el comando
+     * salía por la conexión reactiva y la llamada volvía sin esperarlo. La lectura siguiente podía no
+     * encontrar lo recién escrito, una invalidación tras el commit volvía con la entrada aún en Redis,
+     * y un fallo no llegaba ni al manejador de errores ni al invalidador.
+     *
+     * <p>Con una factoría de Lettuce simulada, que es síncrona y reactiva a la vez, {@code put} y
+     * {@code evict} tienen que ir por la conexión síncrona y no pedir nunca la reactiva. Se mira el
+     * nombre del comando y no su firma, que Spring Data Redis cambió de la 4.0 a la 4.1.</p>
+     */
+    @Test
+    void writesReachRedisBeforeReturningInsteadOfInTheBackground() {
+        LettuceConnectionFactory connectionFactory = mock(LettuceConnectionFactory.class);
+        RedisConnection connection = mock(RedisConnection.class);
+        RedisStringCommands stringCommands = mock(RedisStringCommands.class);
+        RedisKeyCommands keyCommands = mock(RedisKeyCommands.class);
+        when(connectionFactory.getConnection()).thenReturn(connection);
+        when(connection.stringCommands()).thenReturn(stringCommands);
+        when(connection.keyCommands()).thenReturn(keyCommands);
+        RedisCacheManager manager = new CacheConfiguration.RedisCacheManagerConfiguration()
+                .cacheManager(connectionFactory, JsonMapper.builder().build(), new CacheProperties(null, null));
+        manager.afterPropertiesSet();
+        Cache cache = manager.getCache(CacheNames.MATERIALS);
+
+        cache.put(KEY, "value");
+        cache.evict(KEY);
+
+        assertTrue(invoked(stringCommands, "set"), "el put tiene que escribir en Redis antes de volver");
+        assertTrue(invoked(keyCommands, "del"), "el evict tiene que borrar en Redis antes de volver");
+        verify(connectionFactory, never()).getReactiveConnection();
+    }
+
     /** El manejador de errores tiene que llegar por CachingConfigurer: un @Bean suelto no lo mira nadie. */
     @Test
     void errorHandlerIsExposedThroughTheCachingConfigurer() {
@@ -274,6 +314,11 @@ class CacheLayerTest {
         // Un TTL de cero es una cache que no cachea nada y paga cada ida y vuelta a Redis.
         assertEquals(CacheProperties.DEFAULT_TTL, new CacheProperties(Duration.ZERO, "p:").defaultTtl());
         assertEquals(CacheProperties.DEFAULT_TTL, new CacheProperties(Duration.ofMinutes(-1), "p:").defaultTtl());
+    }
+
+    private static boolean invoked(Object mock, String method) {
+        return mockingDetails(mock).getInvocations().stream()
+                .anyMatch(invocation -> invocation.getMethod().getName().equals(method));
     }
 
     private static void commit() {
