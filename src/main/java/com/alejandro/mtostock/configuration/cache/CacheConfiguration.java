@@ -18,6 +18,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.cache.RedisCacheConfiguration;
 import org.springframework.data.redis.cache.RedisCacheManager;
+import org.springframework.data.redis.cache.RedisCacheWriter;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.serializer.JacksonJsonRedisSerializer;
 import org.springframework.data.redis.serializer.RedisSerializationContext.SerializationPair;
@@ -66,6 +67,27 @@ import java.util.Map;
  *
  * <p>Se parte del {@link JsonMapper} de la aplicación, el mismo que usa el canal de mensajería, para
  * no mantener dos configuraciones de Jackson que se separan con el tiempo.</p>
+ *
+ * <h2>Escrituras inmediatas</h2>
+ *
+ * <p>El escritor de la caché se construye con {@code immediateWrites()}: {@code put}, {@code evict}
+ * y {@code clear} vuelven cuando Redis ya los ha aplicado. Spring Data Redis 4 escribe en segundo
+ * plano por defecto cuando la factoría de conexiones es también reactiva, y la de Lettuce lo es: el
+ * comando salía por la conexión reactiva y la llamada volvía sin esperarlo. Así pasaban tres
+ * cosas:</p>
+ *
+ * <ul>
+ *   <li>la lectura que seguía a un fallo de caché, por la conexión síncrona, podía llegar a Redis
+ *       antes que el valor y volver a la base de datos;</li>
+ *   <li>la invalidación de {@link CacheInvalidator} volvía antes de que Redis borrase la entrada, y
+ *       una lectura justo después del commit seguía sirviendo el valor viejo;</li>
+ *   <li>y un fallo al escribir o al invalidar no llegaba ni a {@link LoggingCacheErrorHandler} ni al
+ *       invalidador: se perdía sin dejar ni la traza.</li>
+ * </ul>
+ *
+ * <p>Por lo demás es el escritor que el builder ya usaba: sin bloqueo y con {@code KEYS} para
+ * vaciar. Lo fija {@code CacheLayerTest} sin Redis, y {@code CacheRedisIT} contra uno real, que ya
+ * no espera a que aparezca lo escrito.</p>
  */
 @Configuration
 @EnableCaching
@@ -114,6 +136,8 @@ public class CacheConfiguration implements CachingConfigurer {
                     CacheNames.ALL, properties.defaultTtl(), properties.keyPrefix());
 
             return RedisCacheManager.builder(connectionFactory)
+                    .cacheWriter(RedisCacheWriter.create(connectionFactory,
+                            RedisCacheWriter.RedisCacheWriterConfigurer::immediateWrites))
                     .cacheDefaults(cacheConfiguration(properties, jsonMapper, Object.class))
                     .withInitialCacheConfigurations(configurations)
                     // Un nombre que no este en CACHED_TYPES no se crea sobre la marcha: falla. Sin

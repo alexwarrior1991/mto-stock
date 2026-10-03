@@ -54,6 +54,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@code LinkedHashMap} —o sea, un 500 en cada acierto de cache—. Ningun test sin Redis lo ve: con
  * el {@code NoOpCacheManager} nunca se lee nada de vuelta.</p>
  *
+ * <p>Ninguna aserción espera: lo escrito tiene que estar en Redis en cuanto vuelve {@code put},
+ * {@code evict} o {@code clear}, porque {@code CacheConfiguration} hace inmediatas las escrituras.
+ * Antes se esperaba hasta cinco segundos, porque escribían en segundo plano por la conexión
+ * reactiva y la entrada recién escrita faltaba en torno a un tercio de las veces. Si alguien vuelve
+ * a ese escritor, estos tests fallan de vez en cuando, y el de {@code CacheLayerTest} siempre.</p>
+ *
  * <p>El contenedor se declara aquí y no en {@code support/} porque es el único que lo usa, igual
  * que hace {@code KeycloakAuthorizationIT}. {@code PostgreSQLTestContainer} vive aparte porque lo
  * comparten tres clases.</p>
@@ -162,8 +168,9 @@ class CacheRedisIT {
             cache(context, CacheNames.MATERIALS).put(id, material(id));
 
             String key = PREFIX + CacheNames.MATERIALS + "::" + id;
-            awaitState(() -> rawValue(context, key) != null, "la entrada escrita tiene que aparecer: " + key);
-            String json = new String(rawValue(context, key), StandardCharsets.UTF_8);
+            byte[] stored = rawValue(context, key);
+            assertNotNull(stored, "la entrada escrita tiene que estar en Redis al volver el put: " + key);
+            String json = new String(stored, StandardCharsets.UTF_8);
 
             assertFalse(json.contains("@class"), () -> "el serializador tipado no escribe el tipo: " + json);
             assertTrue(json.startsWith("{\""), () -> "se esperaba un objeto JSON plano: " + json);
@@ -187,7 +194,7 @@ class CacheRedisIT {
             cache(context, CacheNames.PROJECTS).put(id, "cualquier cosa");
 
             String expected = PREFIX + CacheNames.PROJECTS + "::" + id;
-            awaitState(() -> keys(context, expected).contains(expected),
+            assertTrue(keys(context, expected).contains(expected),
                     "la entrada tiene que vivir bajo <prefijo><cache>::<id>: " + expected);
         });
     }
@@ -201,7 +208,7 @@ class CacheRedisIT {
             cache(context, CacheNames.MATERIALS).put(id, material(id));
 
             String ttlKey = PREFIX + CacheNames.MATERIALS + "::" + id;
-            awaitState(() -> rawValue(context, ttlKey) != null, "la entrada escrita tiene que aparecer: " + ttlKey);
+            assertNotNull(rawValue(context, ttlKey), "la entrada escrita tiene que estar en Redis al volver el put: " + ttlKey);
             Long ttl = withConnection(context, connection ->
                     connection.keyCommands().ttl(ttlKey.getBytes(StandardCharsets.UTF_8)));
 
@@ -226,8 +233,6 @@ class CacheRedisIT {
 
             assertEquals(first, second);
             assertEquals(1, CachedMaterials.CALLS.get(), "el segundo se sirve de Redis");
-            String hitKey = PREFIX + CacheNames.MATERIALS + "::" + id;
-            awaitState(() -> rawValue(context, hitKey) != null, "el fallo de cache tiene que dejar la entrada escrita: " + hitKey);
         });
     }
 
@@ -242,11 +247,11 @@ class CacheRedisIT {
         contextRunner.run(context -> {
             cache(context, CacheNames.MATERIALS).put(id, material(id));
             String key = PREFIX + CacheNames.MATERIALS + "::" + id;
-            awaitState(() -> rawValue(context, key) != null, "la entrada escrita tiene que aparecer: " + key);
+            assertNotNull(rawValue(context, key), "la entrada escrita tiene que estar en Redis al volver el put: " + key);
 
             context.getBean(CacheInvalidator.class).evictAfterCommit(CacheNames.MATERIALS, id);
 
-            awaitState(() -> rawValue(context, key) == null, "la clave sigue en Redis: " + key);
+            assertNull(rawValue(context, key), "la clave sigue en Redis al volver la invalidacion: " + key);
         });
     }
 
@@ -267,42 +272,10 @@ class CacheRedisIT {
 
             String projectKey = PREFIX + CacheNames.PROJECTS + "::" + projectId;
             String materialKey = PREFIX + CacheNames.MATERIALS + "::" + materialId;
-            awaitState(() -> rawValue(context, projectKey) == null,
-                    "vaciar la cache de proyectos tiene que llevarse su entrada");
+            assertNull(rawValue(context, projectKey),
+                    "vaciar la cache de proyectos tiene que llevarse su entrada antes de volver");
             assertNotNull(rawValue(context, materialKey), "vaciar una cache no puede tocar las otras");
         });
-    }
-
-    /**
-     * Espera a que Redis llegue al estado esperado, hasta un límite.
-     *
-     * <p>No es paciencia gratuita ni un parche para tapar un fallo: {@code Cache.put} y
-     * {@code Cache.clear} <b>devuelven antes de que la operación sea visible</b> en una lectura
-     * posterior. Medido en un bucle contra un Redis real: sin esperar, la entrada recién escrita
-     * falta en torno a un tercio de las veces; con veinte milisegundos, está siempre. Afirmar
-     * inmediatamente convierte a estos tests en una moneda al aire, que es exactamente como se
-     * portaban.</p>
-     *
-     * <p>Lo que se comprueba no se debilita: siguen siendo las mismas claves, los mismos bytes y el
-     * mismo TTL. Lo único que cambia es que se deja de dar por hecho algo que la caché no promete.
-     * A la aplicación no le afecta —entre que se llena una entrada y alguien la lee pasa una
-     * petición HTTP entera, y un fallo de caché solo cuesta una consulta— pero a un test que mide
-     * en microsegundos sí.</p>
-     */
-    private static void awaitState(java.util.function.BooleanSupplier condition, String description) {
-        long deadline = System.nanoTime() + java.time.Duration.ofSeconds(5).toNanos();
-        while (System.nanoTime() < deadline) {
-            if (condition.getAsBoolean()) {
-                return;
-            }
-            try {
-                Thread.sleep(20);
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-        throw new AssertionError("Redis nunca llego al estado esperado: " + description);
     }
 
     private static Cache cache(AssertableApplicationContext context, String name) {

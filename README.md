@@ -174,6 +174,13 @@ Entries are invalidated **after the transaction that changed the row commits**, 
 writing method returns. Between those two instants a concurrent read would otherwise refill the
 cache with the value that is still committed, and leave it there until the TTL expired.
 
+Cache writes are **immediate**: `put`, `evict` and `clear` return once Redis has applied them
+(`CacheConfiguration` builds the cache writer with `immediateWrites()`). Spring Data Redis 4 writes in
+the background by default when the connection factory is also reactive, as Lettuce's is: the command
+went out on a second connection and the call returned without waiting for it. A read right after a
+cache miss could then miss again, a read right after an invalidation could still be served the old
+entry, and a failed write or invalidation was not even logged.
+
 Two things are worth knowing before changing a cached response DTO:
 
 - Each cache serializes exactly one known type, so what Redis holds is plain JSON, readable with
