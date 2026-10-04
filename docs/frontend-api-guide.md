@@ -123,14 +123,16 @@ All API errors use this shape:
 
 - `code`: required for create/update master data; max length `64`; must be unique per resource type.
 - `name`: required for create/update master data; max length `255`.
-- `active`: optional/required depending on resource update DTO; use boolean values.
+- `active`: never sent on create — the record is created active; required on every update, because the
+  `PUT` replaces the record, and `false` retires it (catalogues are retired, never deleted).
 - `unitOfMeasure`: required for materials; max length `32`.
 - `minimumStockLevel`: required for materials; zero or positive; max precision 13 integer digits and 6 decimals.
 - `quantity`: required for BOM, stock movements, and reservations; positive; max precision 13 integer digits and 6 decimals.
 - `externalReference`: optional stock movement external document/reference; max length `128`.
 - `occurredAt` and `reservedAt`: optional ISO-8601 instant strings; server defaults may apply when omitted.
 - Transfer `sourceWarehouseId` and `targetWarehouseId` must be different.
-- Assembly `components` must contain at least one BOM line.
+- Assembly `components` must contain at least one BOM line, and a material at most once: a repeated
+  material is a `400` `REQ-VALIDATION` on the field `components`.
 - Reservation terminal actions only apply to valid lifecycle states.
 
 ## Shared example entities
@@ -239,7 +241,7 @@ Accept: application/json
 - URL: `/api/v1/inventory/materials/{id}`
 - Method: `PUT`
 - Description: Replaces editable material fields.
-- Request example: same body as create, optionally including `active` when supported by the current DTO.
+- Request example: the create body plus `active`, which is required.
 - Response example: material response.
 - Possible errors: `400`, `404`, `409`, `500`.
 
@@ -280,13 +282,30 @@ Accept: application/json
 
 ```json
 {
-  "materialId": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a020",
-  "warehouseId": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a001",
-  "physicalStock": 500.000000,
-  "reservedStock": 60.000000,
-  "availableStock": 440.000000
+  "material": {
+    "id": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a020",
+    "code": "MAT-COPPER-50",
+    "name": "Copper catenary wire 50 mm2",
+    "unitOfMeasure": "m",
+    "active": true
+  },
+  "warehouse": {
+    "id": "018f60be-1b9a-7cc3-8c6b-2f93e8c6a001",
+    "code": "WH-MAD-01",
+    "name": "Madrid central warehouse",
+    "active": true
+  },
+  "onHandQuantity": 500.000000,
+  "activeReservedQuantity": 60.000000,
+  "availableQuantity": 440.000000,
+  "minimumStockLevel": 250.000000,
+  "lowStock": false,
+  "calculatedAt": "2026-08-04T10:46:00Z"
 }
 ```
+
+Without `warehouseId`, `warehouse` is `null` and the figures are the material's total over every
+warehouse. `lowStock` says whether the `availableQuantity` shown is below `minimumStockLevel`.
 
 - Possible errors: `404`, `500`.
 
@@ -323,8 +342,7 @@ Accept: application/json
 ```json
 {
   "code": "WH-MAD-01",
-  "name": "Madrid central warehouse",
-  "active": true
+  "name": "Madrid central warehouse"
 }
 ```
 
@@ -336,7 +354,7 @@ Accept: application/json
 - URL: `/api/v1/inventory/warehouses/{id}`
 - Method: `PUT`
 - Description: Updates a warehouse catalogue record.
-- Request example: warehouse create body.
+- Request example: the warehouse create body plus `active`, which is required.
 - Response example: warehouse response.
 - Possible errors: `400`, `404`, `500`.
 
@@ -514,8 +532,11 @@ Accept: application/json
 
 - URL: `/api/v1/inventory/assemblies/{id}`
 - Method: `PUT`
-- Description: Updates an assembly and replaces its BOM definition.
-- Request example: assembly create body, plus `active` if supported by the update DTO.
+- Description: Updates an assembly and replaces its BOM with the list sent, matched by material: the line
+  of a material that stays keeps its `id` and changes only its quantity, the line of a material left out
+  is removed, and a new material gets a new line. The list is the whole BOM, cannot be empty and cannot
+  repeat a material (`400` on `components`); `2` and `2.000000` are the same quantity.
+- Request example: the assembly create body plus `active`, which is required.
 - Response example: assembly response.
 - Possible errors: `400`, `404`, `409`, `422`, `500`.
 
@@ -559,9 +580,10 @@ Accept: application/json
 
 - URL: `/api/v1/inventory/assemblies/{id}/revisions?page=&size=`
 - Method: `GET`
-- Description: Returns the audited change history of one assembly, newest revision first. Editing the
-  bill of materials also produces a revision of the assembly itself, even when its own fields did not
-  change — what the assembly is made of is part of what it is.
+- Description: Returns the audited change history of one assembly, newest revision first. Adding or
+  removing a BOM line also produces a revision of the assembly itself, even when its own fields did not
+  change — what the assembly is made of is part of what it is. Changing only the quantity of a line
+  that stays revises that line (`assembly_component`) and not the assembly, so it does not appear here.
 - Request example: `GET /api/v1/inventory/assemblies/018f60be-1b9a-7cc3-8c6b-2f93e8c6a040/revisions?page=0&size=20`
 - Response example: paginated revision response.
 - Possible errors: `404`, `500`.
@@ -628,10 +650,14 @@ Accept: application/json
 
 - URL: `/api/v1/inventory/reservations/{id}/consume`
 - Method: `POST`
-- Description: Consumes an active reservation through the business layer.
+- Description: Consumes a whole active reservation: writes its `OUTPUT` to the stock ledger (the
+  reservation's material, warehouse, project and quantity, with the reservation, without reference or
+  notes) and marks it `CONSUMED`, in one transaction. Physical and reserved stock go down by the
+  reserved quantity; the available does not change. To leave a reference or notes, register
+  `POST /movements/outputs` with the `reservationId` instead, which does the same.
 - Request example: `POST /api/v1/inventory/reservations/018f60be-1b9a-7cc3-8c6b-2f93e8c6a060/consume`
-- Response example: reservation response with released/consumed lifecycle state as implemented by the backend.
-- Possible errors: `404`, `409`, `422`, `500`.
+- Response example: reservation response with status `CONSUMED`.
+- Possible errors: `404`, `422` (`RES-001`: the reservation is not active), `500`.
 
 ### Get reservation
 
@@ -673,8 +699,7 @@ Accept: application/json
 ```json
 {
   "code": "SUP-CAT-001",
-  "name": "Catenary Components Europe",
-  "active": true
+  "name": "Catenary Components Europe"
 }
 ```
 
@@ -686,7 +711,7 @@ Accept: application/json
 - URL: `/api/v1/inventory/suppliers/{id}`
 - Method: `PUT`
 - Description: Updates a supplier catalogue record.
-- Request example: supplier create body.
+- Request example: the supplier create body plus `active`, which is required.
 - Response example: supplier response.
 - Possible errors: `400`, `404`, `500`.
 
@@ -729,8 +754,7 @@ Accept: application/json
 ```json
 {
   "code": "PRJ-AVE-2026-001",
-  "name": "High-speed catenary renewal section A",
-  "active": true
+  "name": "High-speed catenary renewal section A"
 }
 ```
 
@@ -742,7 +766,7 @@ Accept: application/json
 - URL: `/api/v1/inventory/projects/{id}`
 - Method: `PUT`
 - Description: Updates a project catalogue record. A project synchronized from master data (`synchronizedFromMasterData: true`) is owned by `mto-configuration` and is refused here.
-- Request example: project create body.
+- Request example: the project create body plus `active`, which is required.
 - Response example: project response.
 - Possible errors: `400`, `404`, `422` (`PRJ-001`, synchronized project), `500`.
 

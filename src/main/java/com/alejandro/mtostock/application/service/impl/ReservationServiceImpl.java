@@ -11,6 +11,7 @@ import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.service.IdempotentRequestService;
 import com.alejandro.mtostock.application.service.ReservationEngine;
 import com.alejandro.mtostock.application.service.ReservationService;
+import com.alejandro.mtostock.application.service.StockMovementService;
 import com.alejandro.mtostock.infrastructure.persistence.entity.EntityReferenceFactory;
 import com.alejandro.mtostock.infrastructure.persistence.entity.IdempotentOperation;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Reservation;
@@ -40,6 +41,7 @@ class ReservationServiceImpl implements ReservationService {
     private final ReservationEngine reservationEngine;
     private final EntityReferenceFactory entityReferenceFactory;
     private final IdempotentRequestService idempotentRequestService;
+    private final StockMovementService stockMovementService;
 
     @Override
     @Transactional
@@ -80,10 +82,15 @@ class ReservationServiceImpl implements ReservationService {
         return reservationMapper.toResponse(reservationEngine.release(id));
     }
 
+    /**
+     * Consumir es una salida del libro: sin ella el físico bajaba y el libro no lo contaba. Se devuelve
+     * la reserva, ya consumida, como siempre.
+     */
     @Override
     @Transactional
     public ReservationResponse consume(UUID id) {
-        return reservationMapper.toResponse(reservationEngine.consume(id));
+        stockMovementService.registerReservationConsumption(id);
+        return findById(id);
     }
 
     @Override

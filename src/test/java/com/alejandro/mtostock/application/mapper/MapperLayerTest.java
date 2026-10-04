@@ -2,6 +2,7 @@ package com.alejandro.mtostock.application.mapper;
 
 import com.alejandro.mtostock.application.dto.assembly.AssemblyComponentRequest;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyRequest;
+import com.alejandro.mtostock.application.dto.assembly.AssemblyUpdateRequest;
 import com.alejandro.mtostock.application.dto.material.MaterialUpdateRequest;
 import com.alejandro.mtostock.application.dto.project.ProjectResponse;
 import com.alejandro.mtostock.application.dto.reservation.ReservationStatusDto;
@@ -132,6 +133,30 @@ class MapperLayerTest {
         assertEquals(1, assembly.getComponents().size());
         assertSame(assembly, assembly.getComponents().getFirst().getAssembly());
         assertEquals(materialId, assembly.getComponents().getFirst().getMaterial().getId());
+    }
+
+    /**
+     * La modificación solo pone la cabecera: la lista de materiales la sustituye el servicio
+     * emparejando por material. Cuando la mapeaba aquí, añadía las líneas pedidas a las que había, y
+     * un material que ya estaba chocaba con la restricción única (500).
+     */
+    @Test
+    void updatingAnAssemblyChangesItsHeaderAndLeavesTheBomToTheService() {
+        Material material = references.toMaterial(UUID.randomUUID());
+        Assembly assembly = Assembly.builder().code("ASM-003").name("Old name").active(true).build();
+        AssemblyComponent line = AssemblyComponent.builder().material(material).quantity(new BigDecimal("2.000000")).build();
+        assembly.addComponent(line);
+        AssemblyUpdateRequest request = new AssemblyUpdateRequest("ASM-003B", "New name", false, List.of(
+                new AssemblyComponentRequest(material.getId(), new BigDecimal("5.000000")),
+                new AssemblyComponentRequest(UUID.randomUUID(), new BigDecimal("1.000000"))));
+
+        assemblyMapper.updateEntity(request, assembly);
+
+        assertEquals("ASM-003B", assembly.getCode());
+        assertEquals("New name", assembly.getName());
+        assertFalse(assembly.getActive());
+        assertEquals(List.of(line), assembly.getComponents());
+        assertEquals(new BigDecimal("2.000000"), line.getQuantity());
     }
 
     @Test

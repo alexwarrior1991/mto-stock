@@ -32,7 +32,11 @@ available = physical − reserved
 
 Only `ACTIVE` reservations reduce availability. A reservation that is `RELEASED` or `CANCELLED` gives
 the quantity back; one that is `CONSUMED` means the material actually left, so it lowers `physical`
-too.
+too — through the ledger, like any material that leaves. Consuming writes the reservation's `OUTPUT`
+either way: `POST /reservations/{id}/consume` writes it without reference or notes, and an output
+registered against the reservation is that row. `ReservationEngine.consume` only moves the balance;
+whoever calls it writes the row in the same transaction. Until V11 `/consume` lowered the balance
+without the row, so the sum above stopped adding up; the migration wrote the missing outputs.
 
 **That sum is not recomputed on every read.** `inventory_balance` holds it per material/warehouse
 pair, and every movement or reservation updates it in the same transaction that writes the row. It is
@@ -51,6 +55,13 @@ producible = min over BOM lines of ⌊ available(component) / quantity per assem
 
 The limiting component is the one whose figure equals that minimum — which is the part worth showing
 on screen, because it is what has to be bought. `BOMCalculationService` computes both.
+
+The BOM is keyed by material: a material appears once, with its quantity per assembly
+(`uq_assembly_component_assembly_material`; a request that repeats one is refused before reaching it).
+An update sends the whole list and it replaces the old one matched by material: the line of a
+material that stays keeps its identity and only its quantity changes, a material left out loses its
+line, and a new one gets a new line. A line is never deleted and inserted again for the same
+material.
 
 ## Multi-warehouse
 

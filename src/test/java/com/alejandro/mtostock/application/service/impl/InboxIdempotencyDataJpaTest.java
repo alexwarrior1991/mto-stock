@@ -1,5 +1,9 @@
 package com.alejandro.mtostock.application.service.impl;
 
+import com.alejandro.mtostock.application.dto.assembly.AssemblyComponentRequest;
+import com.alejandro.mtostock.application.dto.assembly.AssemblyRequest;
+import com.alejandro.mtostock.application.dto.assembly.AssemblyResponse;
+import com.alejandro.mtostock.application.dto.assembly.AssemblyUpdateRequest;
 import com.alejandro.mtostock.application.dto.messaging.InboxMessageCommand;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedEvent;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataChangedMessage;
@@ -9,9 +13,13 @@ import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
 import com.alejandro.mtostock.application.dto.reservation.ReservationRequest;
 import com.alejandro.mtostock.application.dto.reservation.ReservationResponse;
+import com.alejandro.mtostock.application.dto.reservation.ReservationStatusDto;
+import com.alejandro.mtostock.application.dto.stock.StockMovementEntryRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementOutputRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementResponse;
 import com.alejandro.mtostock.application.exception.IdempotencyKeyConflictException;
+import com.alejandro.mtostock.application.exception.ReservationException;
+import com.alejandro.mtostock.application.mapper.AssemblyMapperImpl;
 import com.alejandro.mtostock.application.mapper.AuditableMapper;
 import com.alejandro.mtostock.application.mapper.AuditableMapperImpl;
 import com.alejandro.mtostock.application.mapper.MaterialMapperImpl;
@@ -24,6 +32,7 @@ import com.alejandro.mtostock.application.mapper.StockMovementMapperImpl;
 import com.alejandro.mtostock.application.mapper.StockMovementTypeMapperImpl;
 import com.alejandro.mtostock.application.mapper.SupplierMapperImpl;
 import com.alejandro.mtostock.application.mapper.WarehouseMapperImpl;
+import com.alejandro.mtostock.application.service.BOMCalculationService;
 import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.service.InboxMessageService;
 import com.alejandro.mtostock.application.service.MasterDataEventHandler;
@@ -34,6 +43,7 @@ import com.alejandro.mtostock.infrastructure.persistence.entity.InboxMessage;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Project;
 import com.alejandro.mtostock.infrastructure.persistence.entity.InboxMessageStatus;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Material;
+import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovement;
 import com.alejandro.mtostock.infrastructure.persistence.entity.StockMovementType;
 import com.alejandro.mtostock.infrastructure.persistence.entity.Warehouse;
 import com.alejandro.mtostock.infrastructure.persistence.repository.AssemblyRepository;
@@ -65,6 +75,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -72,6 +83,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.mockito.Mockito.mock;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -94,6 +106,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * cuando la primera ya terminó, que es el resultado de esa espera. La espera misma, con dos
  * transacciones de verdad, está para las claves de las escrituras en
  * {@code InventoryRepositoryDataJpaTest}.</p>
+ *
+ * <p>Por la misma razón están aquí otras dos cosas que solo decide el SQL de verdad: que consumir una
+ * reserva deja el libro y el saldo cuadrando, y que modificar un conjunto sustituye su lista de
+ * materiales sin chocar con la restricción única de sus líneas.</p>
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
@@ -357,6 +373,91 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
         assertEquals(3, reservationRepository.findAll(ReservationSpecification.materialIdEquals(stock.material().getId())).size());
     }
 
+    /**
+     * Consumir una reserva deja su salida en el libro, y el libro y el saldo cuadran: entran 10, se
+     * reservan 4 y se consumen, y el libro suma 6, que es el físico. Antes el físico bajaba a 6 y el
+     * libro seguía sumando 10.
+     */
+    @Test
+    void consumingAReservationLeavesTheLedgerAndTheBalanceAgreeing() {
+        Stock stock = ledgerStock("10.000000");
+        ReservationServiceImpl reservations = reservationService();
+        ReservationResponse reservation = reservations.create(new ReservationRequest(stock.material().getId(),
+                stock.warehouse().getId(), stock.project().getId(), new BigDecimal("4.000000"), null), null);
+        entityManager.flush();
+        entityManager.clear();
+
+        ReservationResponse consumed = reservations.consume(reservation.id());
+        entityManager.flush();
+        entityManager.clear();
+
+        assertEquals(ReservationStatusDto.CONSUMED, consumed.status());
+        List<StockMovement> outputs = outputsOf(stock);
+        assertEquals(1, outputs.size());
+        StockMovement output = outputs.getFirst();
+        assertEquals(reservation.id(), output.getReservation().getId());
+        assertEquals(stock.project().getId(), output.getProject().getId());
+        assertEquals(0, new BigDecimal("4").compareTo(output.getQuantity()));
+        assertEquals(0, new BigDecimal("6").compareTo(ledgerTotal(stock)));
+        assertEquals(0, new BigDecimal("6").compareTo(inventoryBalanceRepository.calculatePhysicalQuantity(
+                stock.material().getId(), stock.warehouse().getId(), BigDecimal.ZERO)));
+        assertEquals(0, BigDecimal.ZERO.compareTo(inventoryBalanceRepository.calculateReservedQuantity(
+                stock.material().getId(), stock.warehouse().getId(), BigDecimal.ZERO)));
+    }
+
+    /** Un segundo consumo de la misma reserva es un 422 y no escribe nada: ni otra salida ni otro descuento. */
+    @Test
+    void aSecondConsumeOfTheSameReservationIsRefusedAndWritesNothing() {
+        Stock stock = ledgerStock("10.000000");
+        ReservationServiceImpl reservations = reservationService();
+        UUID reservationId = reservations.create(new ReservationRequest(stock.material().getId(), stock.warehouse().getId(),
+                stock.project().getId(), new BigDecimal("4.000000"), null), null).id();
+        reservations.consume(reservationId);
+        entityManager.flush();
+        entityManager.clear();
+
+        assertThrows(ReservationException.class, () -> reservations.consume(reservationId));
+        entityManager.clear();
+
+        assertEquals(1, outputsOf(stock).size());
+        assertEquals(0, new BigDecimal("6").compareTo(ledgerTotal(stock)));
+        assertEquals(0, new BigDecimal("6").compareTo(inventoryBalanceRepository.calculatePhysicalQuantity(
+                stock.material().getId(), stock.warehouse().getId(), BigDecimal.ZERO)));
+    }
+
+    /**
+     * La lista de un conjunto se sustituye sobre la restricción única de verdad: A(2) y B(4) pasan a
+     * A(3) y C(1), y la línea de A conserva su id; luego, a B(4) sola. Antes la modificación añadía
+     * las líneas pedidas a las que había, y A chocaba con uq_assembly_component_assembly_material
+     * (500). La respuesta ya lleva el id de la línea nueva: el servicio hace flush antes de mapearla.
+     */
+    @Test
+    void updatingAnAssemblyReplacesItsBomOnTheRealUniqueConstraint() {
+        Material a = persist(material("MAT-BOM-A"));
+        Material b = persist(material("MAT-BOM-B"));
+        Material c = persist(material("MAT-BOM-C"));
+        entityManager.flush();
+        AssemblyServiceImpl assemblies = assemblyService();
+        AssemblyResponse created = assemblies.create(new AssemblyRequest("ASM-BOM", "Cantilever", List.of(line(a, "2"), line(b, "4"))));
+        entityManager.flush();
+        entityManager.clear();
+
+        AssemblyResponse updated = assemblies.update(created.id(),
+                new AssemblyUpdateRequest("ASM-BOM", "Cantilever", true, List.of(line(a, "3"), line(c, "1"))));
+        entityManager.flush();
+        entityManager.clear();
+
+        assertEquals(Map.of(a.getId(), new BigDecimal("3"), c.getId(), new BigDecimal("1")), bom(created.id()));
+        assertEquals(lineOf(created, a), lineOf(updated, a));
+        assertNotNull(lineOf(updated, c));
+
+        assemblies.update(created.id(), new AssemblyUpdateRequest("ASM-BOM", "Cantilever", true, List.of(line(b, "4"))));
+        entityManager.flush();
+        entityManager.clear();
+
+        assertEquals(Map.of(b.getId(), new BigDecimal("4")), bom(created.id()));
+    }
+
     /** Material, almacén y proyecto dados de alta, con {@code physical} en el almacén y nada reservado. */
     private Stock stock(String physical) {
         Material material = persist(Material.builder().code("MAT-IDEM").name("Contact wire")
@@ -375,10 +476,61 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
         return entity;
     }
 
+    /**
+     * Como {@link #stock}, pero el físico entra por el libro ({@code registerEntry}) en vez de
+     * escribirse en el saldo a mano: así el libro y el saldo empiezan cuadrando.
+     */
+    private Stock ledgerStock(String physical) {
+        Material material = persist(material("MAT-LEDGER"));
+        Warehouse warehouse = persist(Warehouse.builder().code("WH-LEDGER").name("Warehouse LEDGER").build());
+        Project project = persist(Project.builder().code("PRJ-LEDGER").name("Project LEDGER").build());
+        entityManager.flush();
+        stockMovementService().registerEntry(new StockMovementEntryRequest(material.getId(), warehouse.getId(), null,
+                new BigDecimal(physical), null, "ALB-000001", null));
+        entityManager.flush();
+        entityManager.clear();
+        return new Stock(material, warehouse, project);
+    }
+
+    private List<StockMovement> outputsOf(Stock stock) {
+        return stockMovementRepository.findAll(StockMovementSpecification.materialIdEquals(stock.material().getId())
+                .and(StockMovementSpecification.typeEquals(StockMovementType.OUTPUT)));
+    }
+
+    /** Lo que suma el libro del material, cada apunte con su signo. */
+    private BigDecimal ledgerTotal(Stock stock) {
+        return stockMovementRepository.findAll(StockMovementSpecification.materialIdEquals(stock.material().getId())).stream()
+                .map(StockMovement::signedQuantity)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    /** Cada línea de la lista de materiales guardada, por material, sin los ceros de la escala. */
+    private Map<UUID, BigDecimal> bom(UUID assemblyId) {
+        return assemblyRepository.findWithComponentsById(assemblyId).orElseThrow().getComponents().stream()
+                .collect(Collectors.toMap(component -> component.getMaterial().getId(),
+                        component -> component.getQuantity().stripTrailingZeros()));
+    }
+
+    private static UUID lineOf(AssemblyResponse assembly, Material material) {
+        return assembly.components().stream()
+                .filter(component -> component.material().id().equals(material.getId()))
+                .findFirst()
+                .orElseThrow()
+                .id();
+    }
+
+    private static AssemblyComponentRequest line(Material material, String quantity) {
+        return new AssemblyComponentRequest(material.getId(), new BigDecimal(quantity));
+    }
+
+    private static Material material(String code) {
+        return Material.builder().code(code).name("Material " + code).unitOfMeasure("unit").minimumStockLevel(BigDecimal.ZERO).build();
+    }
+
     /** Los servicios de verdad, montados a mano como el resto de la clase, con los mappers generados. */
     private ReservationServiceImpl reservationService() {
         return new ReservationServiceImpl(reservationRepository, reservationMapper(), mock(EntityAuditService.class),
-                reservationEngine(), new EntityReferenceFactory(), idempotentRequestService());
+                reservationEngine(), new EntityReferenceFactory(), idempotentRequestService(), stockMovementService());
     }
 
     private StockMovementServiceImpl stockMovementService() {
@@ -390,6 +542,14 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
         return new StockMovementServiceImpl(stockMovementRepository, materialRepository, warehouseRepository, supplierRepository,
                 projectRepository, reservationRepository, mapper, balanceService(), validationService(), reservationEngine(),
                 idempotentRequestService(), new NoOpDomainEventPublisher());
+    }
+
+    private AssemblyServiceImpl assemblyService() {
+        AuditableMapper auditable = new AuditableMapperImpl();
+        EntityReferenceFactory references = new EntityReferenceFactory();
+        return new AssemblyServiceImpl(assemblyRepository, materialRepository,
+                new AssemblyMapperImpl(auditable, new MaterialMapperImpl(auditable, references), references),
+                mock(EntityAuditService.class), validationService(), mock(BOMCalculationService.class), mock(CacheInvalidator.class));
     }
 
     private ReservationEngineImpl reservationEngine() {

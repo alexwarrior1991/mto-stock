@@ -133,6 +133,28 @@ class StockMovementServiceImpl implements StockMovementService {
     }
 
     @Override
+    @Transactional
+    public StockMovementResponse registerReservationConsumption(UUID reservationId) {
+        Reservation reservation = reservationRepository.findById(reservationId)
+                .orElseThrow(() -> new NotFoundException("Reservation", reservationId));
+        inventoryValidationService.validateReservationCanChange(reservation);
+        StockMovement movement = StockMovement.builder()
+                .type(StockMovementType.OUTPUT)
+                .material(reservation.getMaterial())
+                .warehouse(reservation.getWarehouse())
+                .project(reservation.getProject())
+                .reservation(reservation)
+                .quantity(reservation.getQuantity())
+                .occurredAt(Instant.now())
+                .build();
+        StockMovement savedMovement = stockMovementRepository.save(movement);
+        reservationEngine.consume(reservation.getId());
+        log.info("Reservation {} consumed through an output of material {} in warehouse {}",
+                reservation.getId(), reservation.getMaterial().getCode(), reservation.getWarehouse().getCode());
+        return stockMovementMapper.toResponse(savedMovement);
+    }
+
+    @Override
     @Transactional(readOnly = true)
     public StockMovementResponse findById(UUID id) {
         return stockMovementMapper.toResponse(stockMovementRepository.findById(id).orElseThrow(() -> new NotFoundException("Stock movement", id)));

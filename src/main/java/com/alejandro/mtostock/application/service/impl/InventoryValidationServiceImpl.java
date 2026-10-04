@@ -21,6 +21,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -125,6 +128,16 @@ class InventoryValidationServiceImpl implements InventoryValidationService {
     public void validateAssemblyHasComponents(Assembly assembly) {
         if (assembly.getComponents() == null || assembly.getComponents().isEmpty()) {
             throw new AssemblyException("Assembly '%s' must contain at least one BOM component".formatted(assembly.getCode()));
+        }
+    }
+
+    @Override
+    public void validateAssemblyComponentsAreDistinct(List<UUID> materialIds) {
+        Set<UUID> seen = new HashSet<>();
+        for (UUID materialId : materialIds) {
+            if (materialId != null && !seen.add(materialId)) {
+                throw new AssemblyException("Material %s appears more than once in the BOM".formatted(materialId));
+            }
         }
     }
 

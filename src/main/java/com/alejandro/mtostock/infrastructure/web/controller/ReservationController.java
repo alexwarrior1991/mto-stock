@@ -126,14 +126,16 @@ public class ReservationController {
     }
 
     /**
-     * Consumes a reservation through an atomic business operation.
+     * Consumes a whole active reservation: writes its output to the ledger and marks it consumed, in one
+     * transaction. The available stock does not change, so it never answers 409.
      */
-    @Operation(summary = "Consume reservation", description = "Consumes an active reservation through the business layer.")
+    @Operation(summary = "Consume reservation", description = "Consumes a whole active reservation: writes its OUTPUT to the ledger "
+            + "(material, warehouse, project, quantity and reservation, without reference or notes) and marks it CONSUMED. "
+            + "An output with reservationId does the same and also carries a reference and notes.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "Reservation consumed"),
             @ApiResponse(responseCode = "404", description = "Reservation not found", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
-            @ApiResponse(responseCode = "409", description = "Insufficient stock", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
-            @ApiResponse(responseCode = "422", description = "Reservation rule violation", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
+            @ApiResponse(responseCode = "422", description = "Reservation is not active", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class))),
             @ApiResponse(responseCode = "500", description = "Unexpected server error", content = @Content(schema = @Schema(implementation = ApiErrorResponse.class)))
     })
     @PostMapping("/{id}/consume")

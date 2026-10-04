@@ -172,6 +172,43 @@ class EnversAuditDataJpaTest extends PostgreSQLTestContainer {
     }
 
     /**
+     * Lo que hace la modificación de un conjunto con una línea que sigue y cambia de cantidad: la
+     * misma línea, modificada. El historial de la línea lo cuenta (alta y modificación, con la
+     * cantidad de cada una), pero el del conjunto no: la lista no cambió de miembros, así que
+     * revision_on_collection_change no abre revisión del conjunto. Se fija para que se sepa dónde
+     * mirar.
+     */
+    @Test
+    void changingTheQuantityOfABomLineRevisesTheSameLine() {
+        UUID assemblyId = inTransactionReturning(em -> {
+            Material material = material("MAT-AUD-6", "Cantilever tube");
+            em.persist(material);
+            Assembly assembly = Assembly.builder().code("ASM-AUD-2").name("Cantilever").build();
+            AssemblyComponent component = AssemblyComponent.builder()
+                    .material(material)
+                    .quantity(new BigDecimal("2.000000"))
+                    .build();
+            audit(component);
+            assembly.addComponent(component);
+            audit(assembly);
+            em.persist(assembly);
+            return assembly.getId();
+        });
+
+        UUID componentId = inTransactionReturning(em -> {
+            AssemblyComponent component = em.find(Assembly.class, assemblyId).getComponents().getFirst();
+            component.setQuantity(new BigDecimal("3.000000"));
+            return component.getId();
+        });
+
+        List<Object[]> history = componentRevisions(componentId);
+        assertEquals(List.of(RevisionType.ADD, RevisionType.MOD), history.stream().map(row -> row[2]).toList());
+        assertEquals(0, new BigDecimal("2").compareTo(((AssemblyComponent) history.get(0)[0]).getQuantity()));
+        assertEquals(0, new BigDecimal("3").compareTo(((AssemblyComponent) history.get(1)[0]).getQuantity()));
+        assertEquals(1, reading(reader -> reader.getRevisions(Assembly.class, assemblyId)).size());
+    }
+
+    /**
      * La comprobacion de que reservation_aud.status es el tipo enum nativo y no varchar: si V7 se
      * hubiera escrito con varchar, esto no llegaria ni a ejecutarse porque el contexto no arrancaria.
      */

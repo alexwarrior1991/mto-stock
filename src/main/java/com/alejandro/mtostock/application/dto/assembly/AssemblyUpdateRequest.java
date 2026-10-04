@@ -24,6 +24,7 @@ public record AssemblyUpdateRequest(
         Boolean active,
 
         @NotEmpty
+        @UniqueComponentMaterials
         List<@Valid AssemblyComponentRequest> components
 ) {
 }

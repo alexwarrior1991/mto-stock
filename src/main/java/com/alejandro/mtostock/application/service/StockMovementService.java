@@ -29,6 +29,20 @@ public interface StockMovementService {
 
     StockMovementResponse registerAdjustment(StockMovementAdjustmentRequest request);
 
+    /**
+     * Consume entera una reserva activa: escribe su salida en el libro (con el material, el almacén,
+     * el proyecto y la cantidad de la reserva, y la reserva) y deja la reserva consumida, en la misma
+     * transacción. Es {@code POST /reservations/{id}/consume}; la salida con {@code reservationId} hace
+     * lo mismo y además lleva referencia y notas.
+     *
+     * <p>No comprueba que el material y el almacén sigan activos, como la salida: lo reservado ya
+     * salió del disponible, y consumirlo nunca lo ha exigido. Tampoco publica nada ni lleva clave de
+     * idempotencia: el disponible no cambia, y un segundo consumo es un 422 {@code RES-001}.</p>
+     *
+     * @return la salida escrita
+     */
+    StockMovementResponse registerReservationConsumption(UUID reservationId);
+
     StockMovementResponse findById(UUID id);
 
     PageResponse<StockMovementResponse> search(StockMovementType type, UUID warehouseId, UUID projectId, UUID materialId,

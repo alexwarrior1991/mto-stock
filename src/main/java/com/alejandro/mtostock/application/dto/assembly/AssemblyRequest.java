@@ -20,6 +20,7 @@ public record AssemblyRequest(
         String name,
 
         @NotEmpty
+        @UniqueComponentMaterials
         List<@Valid AssemblyComponentRequest> components
 ) {
 }

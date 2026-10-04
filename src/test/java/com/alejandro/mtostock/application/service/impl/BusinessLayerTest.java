@@ -4,6 +4,7 @@ import com.alejandro.mtostock.application.service.EntityAuditService;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyAvailabilityResponse;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyComponentRequest;
 import com.alejandro.mtostock.application.dto.assembly.AssemblyRequest;
+import com.alejandro.mtostock.application.dto.assembly.AssemblyUpdateRequest;
 import com.alejandro.mtostock.application.dto.assembly.AssemblySummaryResponse;
 import com.alejandro.mtostock.application.dto.material.MaterialRequest;
 import com.alejandro.mtostock.application.dto.material.MaterialStockResponse;
@@ -57,6 +58,7 @@ import com.alejandro.mtostock.application.service.MasterDataEntityHandler;
 import com.alejandro.mtostock.application.service.MasterDataEventHandler;
 import com.alejandro.mtostock.application.service.ReservationEngine;
 import com.alejandro.mtostock.application.service.StockCalculationService;
+import com.alejandro.mtostock.application.service.StockMovementService;
 import com.alejandro.mtostock.application.service.TransferService;
 import com.alejandro.mtostock.configuration.cache.CacheInvalidator;
 import com.alejandro.mtostock.configuration.cache.CacheNames;
@@ -874,7 +876,8 @@ class BusinessLayerTest {
         when(reservationRepository.findById(existing.getId())).thenReturn(Optional.of(existing));
         when(reservationMapper.toResponse(existing)).thenReturn(firstAnswer);
         ReservationServiceImpl service = new ReservationServiceImpl(reservationRepository, reservationMapper,
-                mock(EntityAuditService.class), reservationEngine, new EntityReferenceFactory(), idempotentRequestService);
+                mock(EntityAuditService.class), reservationEngine, new EntityReferenceFactory(), idempotentRequestService,
+                mock(StockMovementService.class));
 
         assertSame(firstAnswer, service.create(request, "retry-1"));
 
@@ -895,7 +898,8 @@ class BusinessLayerTest {
         when(reservationEngine.create(created)).thenReturn(created);
         when(reservationMapper.toResponse(created)).thenReturn(reservationResponse(created));
         ReservationServiceImpl service = new ReservationServiceImpl(mock(ReservationRepository.class), reservationMapper,
-                mock(EntityAuditService.class), reservationEngine, new EntityReferenceFactory(), idempotentRequestService);
+                mock(EntityAuditService.class), reservationEngine, new EntityReferenceFactory(), idempotentRequestService,
+                mock(StockMovementService.class));
 
         service.create(request, "first-1");
 
@@ -903,6 +907,107 @@ class BusinessLayerTest {
         order.verify(idempotentRequestService).claim(IdempotentOperation.RESERVATION, "first-1", request);
         order.verify(reservationEngine).create(created);
         order.verify(idempotentRequestService).complete(IdempotentOperation.RESERVATION, "first-1", created.getId());
+    }
+
+    /**
+     * Consumir una reserva desde su endpoint pasa por el libro: el servicio de reservas no llama al
+     * motor, que solo baja el saldo, sino al de movimientos, que escribe la salida y después consume.
+     * Devuelve la reserva tal como queda.
+     */
+    @Test
+    void consumingAReservationGoesThroughTheLedger() {
+        ReservationRepository reservationRepository = mock(ReservationRepository.class);
+        ReservationMapper reservationMapper = mock(ReservationMapper.class);
+        ReservationEngine reservationEngine = mock(ReservationEngine.class);
+        StockMovementService stockMovementService = mock(StockMovementService.class);
+        Reservation reservation = reservation();
+        ReservationResponse consumed = reservationResponse(reservation);
+        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(reservationMapper.toResponse(reservation)).thenReturn(consumed);
+        ReservationServiceImpl service = new ReservationServiceImpl(reservationRepository, reservationMapper,
+                mock(EntityAuditService.class), reservationEngine, new EntityReferenceFactory(),
+                mock(IdempotentRequestService.class), stockMovementService);
+
+        assertSame(consumed, service.consume(reservation.getId()));
+
+        InOrder order = inOrder(stockMovementService, reservationRepository);
+        order.verify(stockMovementService).registerReservationConsumption(reservation.getId());
+        order.verify(reservationRepository).findById(reservation.getId());
+        verifyNoInteractions(reservationEngine);
+    }
+
+    /**
+     * La salida que deja consumir es lo reservado: el material, el almacén, el proyecto y la cantidad
+     * de la reserva, con la reserva y sin referencia ni notas. Se escribe antes de consumir, como la
+     * salida con reserva, y no descuenta el disponible otra vez, porque ya lo descontó la reserva. No
+     * lleva clave de idempotencia ni publica nada.
+     */
+    @Test
+    void aConsumedReservationLeavesAnOutputForWhatWasReservedBeforeItCloses() {
+        StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
+        ReservationRepository reservationRepository = mock(ReservationRepository.class);
+        InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
+        InventoryValidationService validationService = mock(InventoryValidationService.class);
+        ReservationEngine reservationEngine = mock(ReservationEngine.class);
+        IdempotentRequestService idempotentRequestService = mock(IdempotentRequestService.class);
+        RecordingEventPublisher events = new RecordingEventPublisher();
+        Reservation reservation = reservation();
+        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(stockMovementRepository.save(any(StockMovement.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        StockMovementServiceImpl service = new StockMovementServiceImpl(stockMovementRepository, mock(MaterialRepository.class),
+                mock(WarehouseRepository.class), mock(SupplierRepository.class), mock(ProjectRepository.class), reservationRepository,
+                mock(StockMovementMapper.class), inventoryBalanceService, validationService, reservationEngine,
+                idempotentRequestService, events);
+
+        service.registerReservationConsumption(reservation.getId());
+
+        ArgumentCaptor<StockMovement> saved = ArgumentCaptor.forClass(StockMovement.class);
+        InOrder order = inOrder(validationService, stockMovementRepository, reservationEngine);
+        order.verify(validationService).validateReservationCanChange(reservation);
+        order.verify(stockMovementRepository).save(saved.capture());
+        order.verify(reservationEngine).consume(reservation.getId());
+        StockMovement output = saved.getValue();
+        assertEquals(StockMovementType.OUTPUT, output.getType());
+        assertEquals(reservation.getQuantity(), output.getQuantity());
+        assertSame(reservation.getMaterial(), output.getMaterial());
+        assertSame(reservation.getWarehouse(), output.getWarehouse());
+        assertSame(reservation.getProject(), output.getProject());
+        assertSame(reservation, output.getReservation());
+        assertNotNull(output.getOccurredAt());
+        assertNull(output.getExternalReference());
+        assertNull(output.getNotes());
+        verifyNoInteractions(inventoryBalanceService, idempotentRequestService);
+        assertTrue(events.published.isEmpty());
+    }
+
+    /**
+     * Una reserva que ya no está activa no se consume, ni una que no existe: el 422 o el 404 llegan
+     * antes de escribir la salida, así que un segundo consumo no deja otra salida en el libro.
+     */
+    @Test
+    void consumingAReservationThatIsNoLongerActiveWritesNoOutput() {
+        StockMovementRepository stockMovementRepository = mock(StockMovementRepository.class);
+        ReservationRepository reservationRepository = mock(ReservationRepository.class);
+        ReservationEngine reservationEngine = mock(ReservationEngine.class);
+        Reservation reservation = reservation();
+        reservation.consume(Instant.now());
+        UUID missingId = UUID.randomUUID();
+        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findById(missingId)).thenReturn(Optional.empty());
+        InventoryValidationServiceImpl validationService = new InventoryValidationServiceImpl(mock(MaterialRepository.class),
+                mock(AssemblyRepository.class), mock(WarehouseRepository.class), mock(SupplierRepository.class),
+                mock(ProjectRepository.class));
+        StockMovementServiceImpl service = new StockMovementServiceImpl(stockMovementRepository, mock(MaterialRepository.class),
+                mock(WarehouseRepository.class), mock(SupplierRepository.class), mock(ProjectRepository.class), reservationRepository,
+                mock(StockMovementMapper.class), mock(InventoryBalanceService.class), validationService, reservationEngine,
+                mock(IdempotentRequestService.class), new RecordingEventPublisher());
+
+        assertThrows(ReservationException.class, () -> service.registerReservationConsumption(reservation.getId()));
+        NotFoundException missing = assertThrows(NotFoundException.class, () -> service.registerReservationConsumption(missingId));
+
+        assertEquals("Reservation", missing.getAggregate());
+        verify(stockMovementRepository, never()).save(any(StockMovement.class));
+        verifyNoInteractions(reservationEngine);
     }
 
     /**
@@ -1390,6 +1495,26 @@ class BusinessLayerTest {
         assertThrows(AssemblyException.class, () -> service.validateActive(inactiveAssembly));
     }
 
+    /** La lista de materiales de un conjunto no repite material; los {@code null} los rechaza su campo. */
+    @Test
+    void inventoryValidationRejectsARepeatedBomMaterial() {
+        InventoryValidationServiceImpl service = new InventoryValidationServiceImpl(
+                mock(MaterialRepository.class),
+                mock(AssemblyRepository.class),
+                mock(WarehouseRepository.class),
+                mock(SupplierRepository.class),
+                mock(ProjectRepository.class)
+        );
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+
+        assertDoesNotThrow(() -> service.validateAssemblyComponentsAreDistinct(List.of(first, second)));
+        assertDoesNotThrow(() -> service.validateAssemblyComponentsAreDistinct(Arrays.asList(first, null, null)));
+        AssemblyException exception = assertThrows(AssemblyException.class,
+                () -> service.validateAssemblyComponentsAreDistinct(List.of(first, second, first)));
+        assertTrue(exception.getMessage().contains(first.toString()));
+    }
+
     @Test
     void stockCalculationFlagsMaterialsBelowTheirMinimumStockLevel() {
         InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
@@ -1601,6 +1726,114 @@ class BusinessLayerTest {
         assertSame(assembly, storedComponent.getAssembly());
         verify(validationService).validateActive(managedMaterial);
         verify(validationService).validateAssemblyHasComponents(assembly);
+    }
+
+    /**
+     * Modificar un conjunto sustituye su lista de materiales emparejando por material: la línea del
+     * material que sigue es la misma (conserva su id) con la cantidad nueva, la del que ya no está se
+     * quita y la del nuevo se añade con su material gestionado. Antes se añadían las pedidas a las que
+     * había, y el material que seguía chocaba con la restricción única (500). El flush va al final,
+     * para que la respuesta lleve las líneas nuevas con su id.
+     */
+    @Test
+    void assemblyUpdateReplacesTheBomByMaterialKeepingTheLinesThatStay() {
+        AssemblyRepository assemblyRepository = mock(AssemblyRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        AssemblyMapper assemblyMapper = mock(AssemblyMapper.class);
+        InventoryValidationService validationService = mock(InventoryValidationService.class);
+        CacheInvalidator cacheInvalidator = mock(CacheInvalidator.class);
+        Material kept = material("MAT-KEEP");
+        Material dropped = material("MAT-DROP");
+        Material added = material("MAT-ADD");
+        Assembly assembly = assembly("ASM-BOM");
+        AssemblyComponent keptLine = component(kept, "2.000000");
+        AssemblyComponent droppedLine = component(dropped, "4.000000");
+        assembly.addComponent(keptLine);
+        assembly.addComponent(droppedLine);
+        AssemblyComponentRequest addedRequest = new AssemblyComponentRequest(added.getId(), new BigDecimal("1.000000"));
+        AssemblyUpdateRequest request = new AssemblyUpdateRequest("ASM-BOM", "Section", true, List.of(
+                new AssemblyComponentRequest(kept.getId(), new BigDecimal("3.000000")), addedRequest));
+        when(assemblyRepository.findWithComponentsById(assembly.getId())).thenReturn(Optional.of(assembly));
+        when(assemblyMapper.toComponentEntity(addedRequest))
+                .thenReturn(component(new EntityReferenceFactory().toMaterial(added.getId()), "1.000000"));
+        when(materialRepository.findById(kept.getId())).thenReturn(Optional.of(kept));
+        when(materialRepository.findById(added.getId())).thenReturn(Optional.of(added));
+        AssemblyServiceImpl service = new AssemblyServiceImpl(assemblyRepository, materialRepository, assemblyMapper,
+                mock(EntityAuditService.class), validationService, mock(BOMCalculationService.class), cacheInvalidator);
+
+        service.update(assembly.getId(), request);
+
+        assertEquals(2, assembly.getComponents().size());
+        assertSame(keptLine, assembly.getComponents().getFirst());
+        assertEquals(new BigDecimal("3.000000"), keptLine.getQuantity());
+        AssemblyComponent addedLine = assembly.getComponents().get(1);
+        assertSame(added, addedLine.getMaterial());
+        assertSame(assembly, addedLine.getAssembly());
+        assertEquals(new BigDecimal("1.000000"), addedLine.getQuantity());
+        assertNull(droppedLine.getAssembly());
+        InOrder order = inOrder(validationService, assemblyMapper, assemblyRepository);
+        order.verify(validationService).validateAssemblyComponentsAreDistinct(List.of(kept.getId(), added.getId()));
+        order.verify(assemblyMapper).updateEntity(request, assembly);
+        order.verify(validationService).validateAssemblyHasComponents(assembly);
+        order.verify(assemblyRepository).flush();
+        verify(cacheInvalidator).evictAfterCommit(CacheNames.ASSEMBLIES, assembly.getId());
+    }
+
+    /** 2 y 2.000000 son la misma cantidad: la línea no se toca, y Envers no apunta un cambio que no hay. */
+    @Test
+    void assemblyUpdateLeavesALineAloneWhenOnlyTheScaleDiffers() {
+        AssemblyRepository assemblyRepository = mock(AssemblyRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        Material material = material("MAT-SCALE");
+        Assembly assembly = assembly("ASM-SCALE");
+        AssemblyComponent line = component(material, "2.000000");
+        BigDecimal stored = line.getQuantity();
+        assembly.addComponent(line);
+        AssemblyUpdateRequest request = new AssemblyUpdateRequest("ASM-SCALE", "Section", true,
+                List.of(new AssemblyComponentRequest(material.getId(), new BigDecimal("2"))));
+        when(assemblyRepository.findWithComponentsById(assembly.getId())).thenReturn(Optional.of(assembly));
+        when(materialRepository.findById(material.getId())).thenReturn(Optional.of(material));
+        AssemblyServiceImpl service = new AssemblyServiceImpl(assemblyRepository, materialRepository, mock(AssemblyMapper.class),
+                mock(EntityAuditService.class), mock(InventoryValidationService.class), mock(BOMCalculationService.class),
+                mock(CacheInvalidator.class));
+
+        service.update(assembly.getId(), request);
+
+        assertEquals(List.of(line), assembly.getComponents());
+        assertSame(stored, line.getQuantity());
+    }
+
+    /**
+     * Un material repetido se rechaza antes de escribir nada: en el alta, antes de mapear; en la
+     * modificación, antes de tocar la cabecera o la lista. Con la validación de verdad, porque con un
+     * doble el test no comprobaría quién lo detecta.
+     */
+    @Test
+    void assemblyCreateAndUpdateRejectARepeatedMaterialBeforeWritingAnything() {
+        AssemblyRepository assemblyRepository = mock(AssemblyRepository.class);
+        AssemblyMapper assemblyMapper = mock(AssemblyMapper.class);
+        InventoryValidationServiceImpl validationService = new InventoryValidationServiceImpl(mock(MaterialRepository.class),
+                assemblyRepository, mock(WarehouseRepository.class), mock(SupplierRepository.class), mock(ProjectRepository.class));
+        Material material = material("MAT-TWICE");
+        Assembly assembly = assembly("ASM-TWICE");
+        AssemblyComponent line = component(material, "2.000000");
+        assembly.addComponent(line);
+        List<AssemblyComponentRequest> repeated = List.of(
+                new AssemblyComponentRequest(material.getId(), new BigDecimal("2.000000")),
+                new AssemblyComponentRequest(material.getId(), new BigDecimal("5.000000")));
+        when(assemblyRepository.findWithComponentsById(assembly.getId())).thenReturn(Optional.of(assembly));
+        AssemblyServiceImpl service = new AssemblyServiceImpl(assemblyRepository, mock(MaterialRepository.class), assemblyMapper,
+                mock(EntityAuditService.class), validationService, mock(BOMCalculationService.class), mock(CacheInvalidator.class));
+
+        assertThrows(AssemblyException.class, () -> service.create(new AssemblyRequest("ASM-NEW", "Section", repeated)));
+        assertThrows(AssemblyException.class, () -> service.update(assembly.getId(),
+                new AssemblyUpdateRequest("ASM-TWICE", "Section", true, repeated)));
+
+        verifyNoInteractions(assemblyMapper);
+        verify(assemblyRepository, never()).save(any(Assembly.class));
+        verify(assemblyRepository, never()).flush();
+        assertEquals(List.of(line), assembly.getComponents());
+        assertEquals(new BigDecimal("2.000000"), line.getQuantity());
     }
 
     // -----------------------------------------------------------------------------------------

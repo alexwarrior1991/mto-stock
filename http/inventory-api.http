@@ -101,8 +101,7 @@ Content-Type: application/json
 
 {
   "code": "WH-MAD-01",
-  "name": "Madrid central warehouse",
-  "active": true
+  "name": "Madrid central warehouse"
 }
 
 ### Warehouses - Update warehouse
@@ -250,6 +249,8 @@ Content-Type: application/json
 }
 
 ### Assemblies - Update assembly
+# La lista va entera y sustituye a la del alta emparejando por material: la linea de {{materialId}} es
+# la misma (su id no cambia) y la de {{secondMaterialId}} pasa de 4 a 6. Un material repetido es un 400.
 PUT {{baseUrl}}/assemblies/{{assemblyId}}
 Authorization: Bearer {{accessToken}}
 Accept: application/json
@@ -336,6 +337,8 @@ Authorization: Bearer {{accessToken}}
 Accept: application/json
 
 ### Reservations - Consume reservation
+# Escribe la salida de la reserva en el libro (sin referencia ni notas) y la deja CONSUMED. Para dejar
+# referencia o notas, la salida de movimientos con reservationId hace lo mismo.
 POST {{baseUrl}}/reservations/{{reservationId}}/consume
 Authorization: Bearer {{accessToken}}
 Accept: application/json
@@ -363,8 +366,7 @@ Content-Type: application/json
 
 {
   "code": "SUP-CAT-001",
-  "name": "Catenary Components Europe",
-  "active": true
+  "name": "Catenary Components Europe"
 }
 
 ### Suppliers - Update supplier
@@ -402,8 +404,7 @@ Content-Type: application/json
 
 {
   "code": "PRJ-AVE-2026-001",
-  "name": "High-speed catenary renewal section A",
-  "active": true
+  "name": "High-speed catenary renewal section A"
 }
 
 ### Projects - Update project

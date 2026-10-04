@@ -90,13 +90,16 @@ adjustment, which leaves both rows visible.
 | `PUT` | `/reservations/{id}` | Warehouse, project and quantity. Only on an `ACTIVE` reservation. |
 | `DELETE` | `/reservations/{id}` | Cancels it — `CANCELLED`. Returns the reservation, not `204`. Needs `STOCK_DELETE`. |
 | `POST` | `/reservations/{id}/release` | Gives the stock back without it leaving — `RELEASED`. |
-| `POST` | `/reservations/{id}/consume` | The material left against it — `CONSUMED`. |
+| `POST` | `/reservations/{id}/consume` | The material left against it — `CONSUMED`. Writes the reservation's `OUTPUT` to the ledger (material, warehouse, project and quantity, with the reservation, without reference or notes). For a reference or notes, register `POST /movements/outputs` with the `reservationId` instead. |
 | `GET` | `/reservations/{id}` | |
 | `GET` | `/reservations` | `warehouseId`, `status`, `projectId`, `materialId`. |
 | `GET` | `/reservations/{id}/revisions` | |
 
 `DELETE` and the two `POST`s all end the reservation and all free the reserved quantity; they differ
-in what happened, which is what the history is for. Only `consume` also lowers physical stock.
+in what happened, which is what the history is for. Only `consume` also lowers physical stock, and it
+does so through the ledger: one `OUTPUT` with the reservation, the same row an output against the
+reservation writes, so the ledger and the balance keep adding up. Until V11 `consume` lowered the
+balance without that row; the migration wrote the one missing for every reservation consumed before.
 
 ## Assemblies
 
@@ -104,13 +107,13 @@ An assembly is a virtual product defined by its bill of materials. It never has 
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/assemblies` | Must carry at least one BOM component. |
-| `PUT` | `/assemblies/{id}` | Replaces the BOM as well. |
+| `POST` | `/assemblies` | Must carry at least one BOM component, and a material at most once (`400` `REQ-VALIDATION` on `components`). |
+| `PUT` | `/assemblies/{id}` | Replaces the BOM as well, with the whole list sent, matched by material: the line of a material that stays keeps its `id` and changes only its quantity, the line of a material left out is removed, and a new material gets a new line. Same rules as the create. |
 | `GET` | `/assemblies/{id}` | |
 | `GET` | `/assemblies` | `search`, `code`, `name`, `active`. |
 | `GET` | `/assemblies/{id}/availability` | Requires `warehouseId`. How many could be built right now from component stock, and which component is the limiting one. |
 | `GET` | `/assemblies/{id}/production-capacity` | The same response, under the ERP term. |
-| `GET` | `/assemblies/{id}/revisions` | Changing the bill of materials revises the assembly too. |
+| `GET` | `/assemblies/{id}/revisions` | Adding or removing a BOM line revises the assembly too. Changing only the quantity of a line that stays revises that line, not the assembly, so it does not show here. |
 
 ## Suppliers
 

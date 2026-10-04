@@ -35,6 +35,8 @@ never changes anything:
 | `V7__add_envers_audit_tables.sql` | `audit_revision` and the seven `<table>_aud` twins. |
 | `V8__create_idempotent_request_table.sql` | `idempotent_request` and `idempotent_operation`: the reservations and outputs written with an `Idempotency-Key`. |
 | `V9__index_idempotent_request_created_at.sql` | `idx_idempotent_request_created_at`, for the purge of expired keys. |
+| `V10__create_outbox_message_table.sql` | `outbox_message` and its sequence: the outbox of the events this service publishes (see below). |
+| `V11__backfill_outputs_of_consumed_reservations.sql` | No schema change. The `OUTPUT` that `POST /reservations/{id}/consume` did not write before: one per `CONSUMED` reservation that had none, with its material, warehouse, project and quantity, `occurred_at = released_at` and written by whoever consumed it (`updated_by`). Idempotent; `inventory_balance` is not touched, because it had already been lowered. |
 
 A migration that changes a column on one of the seven audited tables has to change its `_aud` twin in
 the same migration, or the application stops booting under `validate`.
@@ -63,7 +65,7 @@ The documented proposal intentionally lists only the core tables. The Phase 2 sc
 - `assembly_component` is the BOM line table. Each row links one `assembly` to one component `material` with the required quantity per assembly unit.
 - `stock_movement` is the append-only inventory ledger. Every inventory change is recorded here and current stock is derived by summing signed quantities by material and warehouse.
 - `reservation` reserves a positive quantity of a material in a warehouse for a project. Only `ACTIVE` reservations reduce availability.
-- `stock_movement.reservation_id` can reference the reservation released by an output movement, preserving traceability between reservations and consumption.
+- `stock_movement.reservation_id` references the reservation an output consumed: every `CONSUMED` reservation has exactly one `OUTPUT` with its id, whether it was consumed with `POST /reservations/{id}/consume` or with an output against it. Until `V11`, `/consume` left none, and that migration wrote them.
 - `stock_movement.related_movement_id` links transfer pairs or correction movements without changing the stock calculation model.
 - `inventory_balance` is the current-stock projection: one row per material/warehouse pair, holding what `stock_movement` and the `ACTIVE` reservations add up to. It is derived data with a unique key, not a relationship, so it hangs off `material` and `warehouse` and nothing points at it.
 - `inbox_message` is not part of the inventory model at all. It records the master data messages this service has received from `mto-configuration` and what it did with each one, so a redelivery is applied at most once. It has no foreign key to anything: it describes traffic, not stock.
@@ -323,7 +325,7 @@ a `select` and an `update` fit two deliveries. That is also why
 | `quantity` | `numeric(19,6)` | Positive reserved quantity. |
 | `status` | `reservation_status` | Current reservation status. |
 | `reserved_at` | `timestamptz` | Business timestamp when the reservation was created. |
-| `released_at` | `timestamptz` | Business timestamp when it was released or cancelled. |
+| `released_at` | `timestamptz` | Business timestamp when it was released, cancelled or consumed. |
 | `created_at` | `timestamptz` | Creation timestamp. |
 | `updated_at` | `timestamptz` | Last update timestamp. |
 
@@ -518,7 +520,7 @@ the entity maps it with `@JdbcTypeCode(SqlTypes.NAMED_ENUM)`, so a `varchar` her
 - Business codes are non-blank and globally unique per master table.
 - Quantities use `numeric(19,6)` to avoid floating-point errors and support future fractional units.
 - All quantities are constrained to non-negative or positive according to the domain rule.
-- `assembly_component` has a unique `(assembly_id, material_id)` constraint to prevent duplicated BOM lines.
+- `assembly_component` has a unique `(assembly_id, material_id)` constraint to prevent duplicated BOM lines. The API refuses a repeated material before reaching it (`400` on `components`), and an update replaces the BOM matched by material, so it never deletes and inserts again the line of the same material.
 - `reservation.released_at` must be set for every status other than `ACTIVE`, and must be `null` when status is `ACTIVE`. `V3` widened this from an explicit `RELEASED`/`CANCELLED` list when it added `CONSUMED`, so a future status cannot slip past it.
 - Foreign keys use restrictive deletes to preserve inventory history and auditability.
 - `stock_movement.related_movement_id` cannot point to itself.
