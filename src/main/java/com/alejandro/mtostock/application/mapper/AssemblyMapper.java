@@ -59,11 +59,15 @@ public interface AssemblyMapper {
     @Mapping(target = "material", source = "materialId")
     AssemblyComponent toComponentEntity(AssemblyComponentRequest request);
 
+    /**
+     * Solo la cabecera del conjunto. La lista de materiales no se mapea aquí: la sustituye
+     * {@code AssemblyServiceImpl.update} emparejando por material, porque añadir las líneas pedidas a
+     * las que ya había chocaba con {@code uq_assembly_component_assembly_material}.
+     */
     @BeanMapping(ignoreByDefault = true)
     @Mapping(target = "code", source = "code")
     @Mapping(target = "name", source = "name")
     @Mapping(target = "active", source = "active")
-    @Mapping(target = "components", source = "components")
     void updateEntity(AssemblyUpdateRequest request, @MappingTarget Assembly assembly);
 
     @AfterMapping

@@ -19,9 +19,10 @@ Seven entities carry `@Audited`:
 `Material`, `Supplier`, `Warehouse`, `Project`, `Assembly`, `AssemblyComponent`, `Reservation`.
 
 These are the mutable ones. The case that motivated the whole thing is `AssemblyComponent`: a
-`PUT /assemblies/{id}` replaces the component list through `orphanRemoval`, so before Envers a
-deleted bill-of-materials line left **no trace anywhere** — not in the ledger, not in the audit
-columns. `Reservation` is the second: `quantity` is edited in place and `status` walks a lifecycle of
+`PUT /assemblies/{id}` replaces the component list, removing the lines of the materials left out
+through `orphanRemoval`, so before Envers a deleted bill-of-materials line left **no trace anywhere**
+— not in the ledger, not in the audit columns. The replacement is matched by material, so the line of
+a material that stays is the same row, and a change of its quantity is a `MOD` of that line. `Reservation` is the second: `quantity` is edited in place and `status` walks a lifecycle of
 which only the final state survived.
 
 ## What is deliberately not audited, and why
@@ -129,6 +130,11 @@ Changing an assembly's component list also produces a `MOD` revision of the asse
 when its own columns did not change (`revision_on_collection_change`, on by default). This is
 desirable — what the assembly is made of changed — but surprising, so `EnversAuditDataJpaTest` pins
 it.
+
+What it does not catch is a change of quantity alone: the list keeps the same lines, so only that
+line gets a revision (`assembly_component_aud`) and `GET /assemblies/{id}/revisions` does not show it.
+`EnversAuditDataJpaTest` pins that too, so nobody reads the assembly's history as the whole story of
+its BOM.
 
 ## Maintenance rule
 

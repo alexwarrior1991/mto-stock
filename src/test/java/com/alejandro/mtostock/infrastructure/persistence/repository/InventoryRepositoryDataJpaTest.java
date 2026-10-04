@@ -24,12 +24,14 @@ import com.alejandro.mtostock.infrastructure.persistence.specification.Warehouse
 import com.alejandro.mtostock.support.PostgreSQLTestContainer;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceException;
+import org.hibernate.Session;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
 import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -40,6 +42,8 @@ import org.springframework.transaction.support.DefaultTransactionDefinition;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.sql.Statement;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -461,6 +465,68 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
         } finally {
             deleteIdempotentRequests(key);
         }
+    }
+
+    /**
+     * La V11 escribe la salida que le falta a cada reserva consumida antes de que consumir escribiera
+     * el libro, y solo esa: la consumida con una salida de movimientos ya tiene la suya, y la activa y
+     * la liberada no salen. Se ejecuta el script de verdad dos veces, porque Flyway lo corrió sobre las
+     * tablas vacías al arrancar: la segunda pasada no duplica nada.
+     */
+    @Test
+    void theBackfillWritesTheMissingOutputOfAConsumedReservationOnce() throws Exception {
+        Material material = persist(material("MAT-V11", "Contact wire"));
+        Warehouse warehouse = persist(warehouse("WH-V11"));
+        Project project = persist(project("PRJ-V11"));
+        Reservation withoutOutput = persist(reservation(material, warehouse, project, "4.000000", ReservationStatus.CONSUMED));
+        Reservation withOutput = persist(reservation(material, warehouse, project, "2.000000", ReservationStatus.CONSUMED));
+        StockMovement existing = movement(material, warehouse, project, StockMovementType.OUTPUT, "2.000000",
+                Instant.parse("2026-08-01T12:00:00Z"));
+        existing.setReservation(withOutput);
+        persist(existing);
+        Reservation active = persist(reservation(material, warehouse, project, "1.000000", ReservationStatus.ACTIVE));
+        Reservation released = persist(reservation(material, warehouse, project, "3.000000", ReservationStatus.RELEASED));
+        flushAndClear();
+        // Quien la consumió va con SQL y no por la entidad: AuditingEntityListener pisaría updated_by con
+        // el actor del test ("system") si un contexto con auditoría arrancó antes en la misma JVM, porque
+        // el aspecto @Configurable que lo configura es uno para toda ella.
+        entityManager.createNativeQuery("update reservation set updated_by = 'almacen.responsable' where id = :id")
+                .setParameter("id", withoutOutput.getId())
+                .executeUpdate();
+        String backfill = new ClassPathResource("db/migration/V11__backfill_outputs_of_consumed_reservations.sql")
+                .getContentAsString(StandardCharsets.UTF_8);
+
+        entityManager.unwrap(Session.class).doWork(connection -> {
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate(backfill);
+                statement.executeUpdate(backfill);
+            }
+        });
+        entityManager.clear();
+
+        List<StockMovement> backfilled = outputsOf(withoutOutput);
+        assertEquals(1, backfilled.size());
+        StockMovement output = backfilled.getFirst();
+        assertEquals(0, new BigDecimal("4").compareTo(output.getQuantity()));
+        assertEquals(material.getId(), output.getMaterial().getId());
+        assertEquals(warehouse.getId(), output.getWarehouse().getId());
+        assertEquals(project.getId(), output.getProject().getId());
+        assertEquals(Instant.parse("2026-08-01T12:00:00Z"), output.getOccurredAt());
+        assertEquals("almacen.responsable", output.getCreatedBy());
+        assertTrue(output.getNotes().contains("V11"));
+        assertEquals(List.of(existing.getId()), outputsOf(withOutput).stream().map(StockMovement::getId).toList());
+        assertTrue(outputsOf(active).isEmpty());
+        assertTrue(outputsOf(released).isEmpty());
+    }
+
+    private List<StockMovement> outputsOf(Reservation reservation) {
+        return entityManager.createQuery("""
+                        select m from StockMovement m
+                         where m.reservation.id = :reservationId and m.type = :type
+                        """, StockMovement.class)
+                .setParameter("reservationId", reservation.getId())
+                .setParameter("type", StockMovementType.OUTPUT)
+                .getResultList();
     }
 
     private java.util.List<String> lowStockCodes(org.springframework.data.jpa.domain.Specification<Material> specification) {
