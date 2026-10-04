@@ -479,7 +479,6 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
         Warehouse warehouse = persist(warehouse("WH-V11"));
         Project project = persist(project("PRJ-V11"));
         Reservation withoutOutput = persist(reservation(material, warehouse, project, "4.000000", ReservationStatus.CONSUMED));
-        withoutOutput.setUpdatedBy("almacen.responsable");
         Reservation withOutput = persist(reservation(material, warehouse, project, "2.000000", ReservationStatus.CONSUMED));
         StockMovement existing = movement(material, warehouse, project, StockMovementType.OUTPUT, "2.000000",
                 Instant.parse("2026-08-01T12:00:00Z"));
@@ -488,6 +487,12 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
         Reservation active = persist(reservation(material, warehouse, project, "1.000000", ReservationStatus.ACTIVE));
         Reservation released = persist(reservation(material, warehouse, project, "3.000000", ReservationStatus.RELEASED));
         flushAndClear();
+        // Quien la consumió va con SQL y no por la entidad: AuditingEntityListener pisaría updated_by con
+        // el actor del test ("system") si un contexto con auditoría arrancó antes en la misma JVM, porque
+        // el aspecto @Configurable que lo configura es uno para toda ella.
+        entityManager.createNativeQuery("update reservation set updated_by = 'almacen.responsable' where id = :id")
+                .setParameter("id", withoutOutput.getId())
+                .executeUpdate();
         String backfill = new ClassPathResource("db/migration/V11__backfill_outputs_of_consumed_reservations.sql")
                 .getContentAsString(StandardCharsets.UTF_8);
 
