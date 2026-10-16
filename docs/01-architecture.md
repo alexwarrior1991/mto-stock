@@ -64,6 +64,21 @@ The cost is paid knowingly: Envers cannot see a native write, which is why `Inve
 audited and why a `project` synchronized from an event leaves no revision. Both are recorded in
 `07-auditing.md`.
 
+## Threads
+
+Virtual threads (`spring.threads.virtual.enabled`, `SPRING_THREADS_VIRTUAL_ENABLED`, `true` by
+default) for Tomcat's requests (`tomcat-handler-N`), the `@Scheduled` jobs and the RabbitMQ consumer
+(`rabbit-simple-N`). The jobs run on Boot's `SimpleAsyncTaskScheduler`: the three fixed-delay outbox
+jobs still run one after another on its thread, and the daily idempotency purge, a cron with no cap on
+its batches, runs on its own instead of holding the outbox relay back while it lasts. The
+`outbox-dispatch` thread stays a single platform thread on purpose: `OutboxDispatchTrigger` coalesces
+wake-ups on it.
+
+A single request is no faster; what changes is how many can wait at once without an OS thread each.
+The limit is the connection pool (`DATABASE_POOL_MAX_SIZE`, 10 by default), and the pools of every
+service share the `max_connections` (100) of the PostgreSQL of `mto-platform`. A request keeps its
+connection while it waits on the material row lock or on the unique index of an idempotency key.
+
 ## Related documents
 
 `02-domain-model.md` for the entities and the stock rule, `03-database.md` for the schema,
