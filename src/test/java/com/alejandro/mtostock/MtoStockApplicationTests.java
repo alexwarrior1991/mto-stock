@@ -24,20 +24,24 @@ import com.alejandro.mtostock.application.service.SupplierService;
 import com.alejandro.mtostock.application.service.TransferService;
 import com.alejandro.mtostock.application.service.WarehouseService;
 import com.alejandro.mtostock.support.PostgreSQLTestContainer;
+import com.zaxxer.hikari.HikariDataSource;
 import io.micrometer.tracing.Tracer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.thread.Threading;
 import org.springframework.context.ApplicationContext;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
+import javax.sql.DataSource;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Monta el contexto ENTERO, con base de datos de verdad y sin sustituir ningún servicio por un
@@ -108,6 +112,17 @@ class MtoStockApplicationTests extends PostgreSQLTestContainer {
     @Test
     void contextLoads() {
         assertNotNull(masterDataEventHandler);
+    }
+
+    /**
+     * La configuración de la aplicación enciende los hilos virtuales (Tomcat, los {@code @Scheduled} y
+     * el consumidor los toman de esta misma condición), y el pool de conexiones, que pasa a ser el
+     * límite real, es el configurado: 10 por defecto.
+     */
+    @Test
+    void laAplicacionCorreEnHilosVirtualesConElPoolDeConexionesConfigurado() throws Exception {
+        assertTrue(Threading.VIRTUAL.isActive(context.getEnvironment()), "spring.threads.virtual.enabled");
+        assertEquals(10, context.getBean(DataSource.class).unwrap(HikariDataSource.class).getMaximumPoolSize());
     }
 
     /**

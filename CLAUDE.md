@@ -40,6 +40,7 @@ docker compose up -d --build
 - Flyway runs automatically on startup against `src/main/resources/db/migration`; Hibernate is `ddl-auto: validate` in every profile, so schema changes always go through a new Flyway migration, never through entity annotations alone. A migration that changes a column on one of the seven audited tables must change its `<table>_aud` twin in the same migration (nullable, no constraints) — see **Auditing** below.
 - Swagger UI: `http://localhost:8080/swagger-ui.html`; OpenAPI JSON: `/v3/api-docs`; Actuator health/info/metrics/prometheus under `/actuator/*`.
 - Profiles: `dev`, `test`, `prod` (`application-*.yml`), selected via `SPRING_PROFILES_ACTIVE`.
+- Virtual threads are on (`SPRING_THREADS_VIRTUAL_ENABLED`, see `docs/01-architecture.md`, Threads): the limit is the connection pool (`DATABASE_POOL_MAX_SIZE`, 10), not the threads; `outbox-dispatch` stays one platform thread on purpose.
 
 ## Architecture
 
