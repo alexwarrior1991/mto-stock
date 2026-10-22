@@ -42,6 +42,7 @@ import com.alejandro.mtostock.configuration.messaging.MessagePayloadSignatureVer
 import com.alejandro.mtostock.configuration.messaging.MessagingConfiguration;
 import com.alejandro.mtostock.configuration.messaging.MessageSignatureMode;
 import com.alejandro.mtostock.configuration.messaging.MessageSignatureProperties;
+import com.alejandro.mtostock.configuration.rabbitmq.ConsumerQueueProperties;
 import com.alejandro.mtostock.configuration.rabbitmq.MasterDataRabbitProperties;
 import com.alejandro.mtostock.configuration.rabbitmq.RabbitMqConfiguration;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.InboxMessageCommandFactory;
@@ -593,6 +594,48 @@ class MessagingLayerTest {
     }
 
     /**
+     * Sin decir nada, la cola y su DLQ se declaran exactamente como antes: clásicas, sin
+     * {@code x-queue-type} ni {@code x-delivery-limit}. Un argumento de más haría que el broker
+     * rechazase la redeclaración de una cola ya creada y se cayese toda la topología.
+     */
+    @Test
+    void byDefaultTheQueueAndItsDeadLetterAreClassicAndDeclaredAsBefore() {
+        contextRunner.run(context -> {
+            assertEquals(Map.of(
+                            MasterDataRabbitMqNames.ARG_DEAD_LETTER_EXCHANGE, MasterDataRabbitMqNames.STOCK_MASTER_DATA_DEAD_LETTER_EXCHANGE,
+                            MasterDataRabbitMqNames.ARG_DEAD_LETTER_ROUTING_KEY, MasterDataRabbitMqNames.STOCK_MASTER_DATA_DEAD_LETTER_ROUTING_KEY),
+                    context.getBean("masterDataQueue", Queue.class).getArguments());
+            assertEquals(Map.of(), context.getBean("masterDataDeadLetterQueue", Queue.class).getArguments());
+        });
+    }
+
+    /**
+     * Con {@code app.rabbitmq.queues.type=quorum}, que es como corre en OpenShift, la cola es quorum
+     * con su límite de entregas (5, o el que se diga) y su DLQ también es quorum, sin límite.
+     */
+    @Test
+    void withQuorumTheQueueCarriesItsDeliveryLimitAndItsDeadLetterIsQuorumToo() {
+        contextRunner.withPropertyValues("app.rabbitmq.queues.type=quorum").run(context -> {
+            Map<String, Object> arguments = context.getBean("masterDataQueue", Queue.class).getArguments();
+            assertEquals("quorum", arguments.get("x-queue-type"));
+            assertEquals(ConsumerQueueProperties.DEFAULT_DELIVERY_LIMIT, arguments.get("x-delivery-limit"));
+            assertEquals(MasterDataRabbitMqNames.STOCK_MASTER_DATA_DEAD_LETTER_EXCHANGE,
+                    arguments.get(MasterDataRabbitMqNames.ARG_DEAD_LETTER_EXCHANGE));
+            assertEquals(Map.of("x-queue-type", "quorum"),
+                    context.getBean("masterDataDeadLetterQueue", Queue.class).getArguments());
+        });
+        contextRunner.withPropertyValues("app.rabbitmq.queues.type=QUORUM", "app.rabbitmq.queues.delivery-limit=3")
+                .run(context -> assertEquals(3,
+                        context.getBean("masterDataQueue", Queue.class).getArguments().get("x-delivery-limit")));
+    }
+
+    @Test
+    void aDeliveryLimitBelowOneDoesNotStart() {
+        contextRunner.withPropertyValues("app.rabbitmq.queues.type=quorum", "app.rabbitmq.queues.delivery-limit=0")
+                .run(context -> assertNotNull(context.getStartupFailure()));
+    }
+
+    /**
      * Con el valor por defecto de Spring AMQP, un mensaje rechazado vuelve a la cabeza de la cola y
      * se reentrega sin fin: el consumidor gira en vacío y la DLQ nunca recibe nada.
      */
@@ -660,7 +703,8 @@ class MessagingLayerTest {
      */
     private static MasterDataChangedMessage convert(String json) {
         MessageConverter converter = new RabbitMqConfiguration(
-                new MasterDataRabbitProperties(null, null, null, null, null, null), new StockEventsProperties(null))
+                new MasterDataRabbitProperties(null, null, null, null, null, null), new StockEventsProperties(null),
+                new ConsumerQueueProperties(null, null))
                 .masterDataMessageConverter(JsonMapper.builder().build());
 
         MessageProperties properties = new MessageProperties();

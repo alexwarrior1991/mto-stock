@@ -3,7 +3,6 @@ package com.alejandro.mtostock.configuration.rabbitmq;
 import com.alejandro.mtostock.application.service.MasterDataEventProcessor;
 import com.alejandro.mtostock.configuration.messaging.MessagePayloadSignatureVerifier;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.MasterDataEventConsumer;
-import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.MasterDataRabbitMqNames;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.RabbitListenerContainerFactoryNames;
 import com.alejandro.mtostock.infrastructure.messaging.rabbitmq.StockRabbitMqNames;
 import lombok.RequiredArgsConstructor;
@@ -13,7 +12,6 @@ import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
-import org.springframework.amqp.core.QueueBuilder;
 import org.springframework.amqp.core.TopicExchange;
 import org.springframework.amqp.rabbit.config.SimpleRabbitListenerContainerFactory;
 import org.springframework.amqp.rabbit.connection.ConnectionFactory;
@@ -48,7 +46,7 @@ import tools.jackson.databind.json.JsonMapper;
  */
 @Configuration
 @RequiredArgsConstructor
-@EnableConfigurationProperties({MasterDataRabbitProperties.class, StockEventsProperties.class})
+@EnableConfigurationProperties({MasterDataRabbitProperties.class, StockEventsProperties.class, ConsumerQueueProperties.class})
 @ConditionalOnProperty(prefix = "app.rabbitmq", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class RabbitMqConfiguration {
 
@@ -56,6 +54,7 @@ public class RabbitMqConfiguration {
 
     private final MasterDataRabbitProperties properties;
     private final StockEventsProperties eventsProperties;
+    private final ConsumerQueueProperties queues;
 
     /**
      * Exchange propio: lo que este servicio cuenta de sí mismo, con la clave
@@ -80,14 +79,11 @@ public class RabbitMqConfiguration {
      *
      * <p>Los argumentos de una cola ya creada son inmutables, así que añadir aquí un TTL o un
      * límite obliga a borrarla y recrearla en cada entorno; para eso están las policies del
-     * broker.</p>
+     * broker. Clásica o quorum lo dice {@link ConsumerQueueProperties}.</p>
      */
     @Bean
     public Queue masterDataQueue() {
-        return QueueBuilder.durable(properties.queue())
-                .withArgument(MasterDataRabbitMqNames.ARG_DEAD_LETTER_EXCHANGE, properties.deadLetterExchange())
-                .withArgument(MasterDataRabbitMqNames.ARG_DEAD_LETTER_ROUTING_KEY, properties.deadLetterRoutingKey())
-                .build();
+        return queues.queue(properties.queue(), properties.deadLetterExchange(), properties.deadLetterRoutingKey());
     }
 
     @Bean
@@ -106,7 +102,7 @@ public class RabbitMqConfiguration {
 
     @Bean
     public Queue masterDataDeadLetterQueue() {
-        return QueueBuilder.durable(properties.deadLetterQueue()).build();
+        return queues.deadLetterQueue(properties.deadLetterQueue());
     }
 
     @Bean

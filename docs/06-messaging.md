@@ -63,9 +63,9 @@ verified — see *Integrity* below.
 | --- | --- | --- |
 | Exchange | `mto.master-data.exchange` (topic, durable) | `mto-configuration` |
 | Routing key | `mto.master-data.#` | `mto-configuration` |
-| Queue | `mto.stock.master-data.queue` (classic, durable) | `mto-stock` |
+| Queue | `mto.stock.master-data.queue` (durable; classic, or quorum with `APP_RABBITMQ_QUEUES_TYPE`) | `mto-stock` |
 | Dead letter exchange | `mto.stock.master-data.queue.dlx` (direct, durable) | `mto-stock` |
-| Dead letter queue | `mto.stock.master-data.queue.dlq` (durable) | `mto-stock` |
+| Dead letter queue | `mto.stock.master-data.queue.dlq` (durable, the type of its queue) | `mto-stock` |
 | Dead letter routing key | `mto.stock.master-data.queue.dlq` | `mto-stock` |
 
 Real routing keys are `mto.master-data.<entity>.<created|updated|deleted>`; this service binds the
@@ -82,6 +82,18 @@ Two rules matter when changing any of this:
 
 Queue arguments are immutable once the queue exists. To put limits on a live queue, use a broker
 policy instead of adding arguments here.
+
+**Classic or quorum.** `app.rabbitmq.queues.type` (`ConsumerQueueProperties`) says it for the queue
+and its DLQ at once: `classic` by default and locally (one broker node), `quorum` where RabbitMQ runs
+as a cluster, as on OpenShift (`APP_RABBITMQ_QUEUES_TYPE=quorum`), so that the queue survives the loss
+of a node. With `classic` the queue is declared exactly as before, without `x-queue-type`: adding the
+argument to a queue that already exists would be another declaration and the broker would refuse it.
+A quorum queue carries `x-delivery-limit` (`app.rabbitmq.queues.delivery-limit`, 5): this consumer never
+requeues (retries happen inside one delivery and then the message goes to the DLQ), so the broker's
+count only grows when a message comes back unacknowledged because the consumer died or lost its
+connection; five lets a couple of ordinary restarts through and stops the message that kills the
+consumer every time. Its DLQ is quorum too, without a limit. Changing the type of an existing queue
+means deleting it first (stop the consumer, let it drain, delete, redeploy).
 
 ## Configuration
 
@@ -100,6 +112,8 @@ policy instead of adding arguments here.
 | `APP_RABBITMQ_MASTER_DATA_QUEUE` | `mto.stock.master-data.queue` | This service's queue |
 | `APP_RABBITMQ_MASTER_DATA_ROUTING_KEY` | `mto.master-data.#` | Binding pattern |
 | `APP_RABBITMQ_MASTER_DATA_DEAD_LETTER_EXCHANGE` / `_QUEUE` / `_ROUTING_KEY` | `…queue.dlx` / `…queue.dlq` / `…queue.dlq` | Dead letter objects |
+| `APP_RABBITMQ_QUEUES_TYPE` | `classic` | `classic` or `quorum`, for the queue and its DLQ (see *Topology*) |
+| `APP_RABBITMQ_QUEUES_DELIVERY_LIMIT` | `5` | With `quorum`, unacknowledged deliveries after which a message goes to the DLQ |
 | `MANAGEMENT_HEALTH_RABBIT_ENABLED` | `false` | Include the broker in `/actuator/health`. Off by default so a missing broker does not report the API as down |
 | `MESSAGING_SIGNATURE_SECRET` | *(empty)* | Shared secret; **the same value** as in `mto-configuration`. Empty means plain SHA-256 |
 | `MESSAGING_SIGNATURE_MODE` | `OPTIONAL` | `DISABLED`, `OPTIONAL` or `REQUIRED` — see *Integrity* |

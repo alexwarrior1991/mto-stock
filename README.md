@@ -30,6 +30,7 @@ Main variables:
 - `SPRING_RABBITMQ_HOST`, `SPRING_RABBITMQ_PORT`, `SPRING_RABBITMQ_USERNAME`, `SPRING_RABBITMQ_PASSWORD`, `SPRING_RABBITMQ_VIRTUAL_HOST`: broker this API consumes master data events from. It must be **the same broker** `mto-configuration` publishes to — the one in `mto-platform`
 - `APP_RABBITMQ_ENABLED`: declare the messaging topology and wire the consumer; `false` starts the application without a broker
 - `APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED`: consume from the queue; `false` still declares it, so events accumulate
+- `APP_RABBITMQ_QUEUES_TYPE`, `APP_RABBITMQ_QUEUES_DELIVERY_LIMIT`: the queue and its DLQ `classic` (default, local) or `quorum` (a RabbitMQ cluster, as on OpenShift), and with `quorum` the unacknowledged deliveries before a message goes to the DLQ (`5`); an existing queue does not change type, it has to be deleted first ([`docs/06-messaging.md`](docs/06-messaging.md))
 - `RABBITMQ_DEFAULT_USER`, `RABBITMQ_DEFAULT_PASS`, `RABBITMQ_PORT`, `RABBITMQ_MANAGEMENT_PORT`: the RabbitMQ container of the local Compose stack
 - `SPRING_DATA_REDIS_HOST`, `SPRING_DATA_REDIS_PORT`, `SPRING_DATA_REDIS_PASSWORD`, `SPRING_DATA_REDIS_DATABASE`: Redis backing the master data cache
 - `APP_CACHE_ENABLED`: cache master data reads in Redis; `false` starts the application without Redis and serves everything from the database

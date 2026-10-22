@@ -123,7 +123,10 @@ with its own DLX/DLQ). Every message is logged and then routed by entity name; *
 entities has business logic behind it (`execution-package` → `project`, see below), and the other
 seven are logged and ignored on purpose.
 
-- `configuration/rabbitmq` — `MasterDataRabbitProperties` (`app.rabbitmq.master-data.*`) and
+- `configuration/rabbitmq` — `MasterDataRabbitProperties` (`app.rabbitmq.master-data.*`),
+  `ConsumerQueueProperties` (`app.rabbitmq.queues.*`: the queue and its DLQ `classic` by default or
+  `quorum`, as on OpenShift, with `x-delivery-limit` 5; with `classic` the declaration is exactly the old
+  one, because a new argument on an existing queue is refused by the broker) and
   `RabbitMqConfiguration` (topology, JSON converter, listener factory). The whole block is gated on
   `app.rabbitmq.enabled`, the consumer additionally on `app.rabbitmq.master-data.listener-enabled`;
   with the first off the application starts without a broker, which is what the tests rely on.
