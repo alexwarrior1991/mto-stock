@@ -219,6 +219,13 @@ app:
       # Permite declarar la topologia sin consumir: util para dejar la cola creada acumulando
       # eventos mientras el servicio todavia no sabe que hacer con ellos.
       listener-enabled: ${APP_RABBITMQ_MASTER_DATA_LISTENER_ENABLED:true}
+    # Tipo de las colas que consume este servicio (la de datos maestros y su DLQ): classic, por
+    # defecto y en local, o quorum, replicada entre los nodos de un RabbitMQ en cluster, como en
+    # OpenShift. El tipo de una cola que ya existe no cambia: hay que borrarla antes. delivery-limit
+    # solo cuenta con quorum (ver ConsumerQueueProperties).
+    queues:
+      type: ${APP_RABBITMQ_QUEUES_TYPE:classic}
+      delivery-limit: ${APP_RABBITMQ_QUEUES_DELIVERY_LIMIT:5}
     # Exchange propio: lo que este servicio cuenta de si mismo (un material por debajo de su minimo,
     # una reserva cancelada o liberada, un ajuste de inventario), con la clave
     # mto.stock.<entidad>.<evento>. Aqui solo se declara el exchange; la cola es de quien lo consume
