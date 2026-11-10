@@ -11,6 +11,7 @@ import com.alejandro.mtostock.application.dto.messaging.MasterDataEntityNames;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataEventContext;
 import com.alejandro.mtostock.application.dto.messaging.MasterDataOperation;
 import com.alejandro.mtostock.application.dto.messaging.InboxProcessingResult;
+import com.alejandro.mtostock.application.dto.reservation.ReservationUpdateRequest;
 import com.alejandro.mtostock.application.dto.reservation.ReservationRequest;
 import com.alejandro.mtostock.application.dto.reservation.ReservationResponse;
 import com.alejandro.mtostock.application.dto.reservation.ReservationStatusDto;
@@ -125,7 +126,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>La excepción a lo de las peticiones simultáneas es la carrera entre dos transiciones de una misma
  * reserva: ahí lo que se prueba es el bloqueo de su fila, que solo existe entre dos transacciones de
- * verdad, así que ese caso sale de la transacción del test y abre las suyas.</p>
+ * verdad, así que ese caso sale de la transacción del test y abre las suyas. Lo mismo la modificación
+ * de una reserva frente a una salida del mismo material: lo que se prueba es el orden de sus bloqueos.</p>
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
@@ -505,6 +507,71 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
             });
         } finally {
             commit.countDown();
+            executor.shutdownNow();
+            executor.awaitTermination(10, TimeUnit.SECONDS);
+            transaction.executeWithoutResult(status -> deleteCommitted(stock));
+        }
+    }
+
+    /**
+     * Una modificación de una reserva y una salida del mismo material a la vez, con dos transacciones
+     * de verdad. La salida tiene ya el material bloqueado y aún no ha tocado el saldo; la modificación
+     * llega y espera en el material <b>sin haber tocado el saldo</b>. Entonces la salida escribe el
+     * saldo y confirma, y la modificación sigue. Antes la modificación liberaba primero (bloqueando la
+     * fila del saldo) y pedía el material después: la salida esperaba el saldo, la modificación el
+     * material, y PostgreSQL abortaba una de las dos por interbloqueo.
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void anUpdateOfAReservationAndAnOutputOfTheSameMaterialAtOnceBothEndWithoutDeadlock() throws Exception {
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        Stock stock = transaction.execute(status -> {
+            Material material = persist(material("MAT-DLK-" + suffix));
+            Warehouse warehouse = persist(Warehouse.builder().code("WH-DLK-" + suffix).name("Warehouse DLK").build());
+            Project project = persist(Project.builder().code("PRJ-DLK-" + suffix).name("Project DLK").build());
+            entityManager.flush();
+            stockMovementService().registerEntry(new StockMovementEntryRequest(material.getId(), warehouse.getId(), null,
+                    new BigDecimal("10.000000"), null, "ALB-000001", null));
+            return new Stock(material, warehouse, project);
+        });
+        CountDownLatch materialLocked = new CountDownLatch(1);
+        CountDownLatch writeTheOutput = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            UUID reservationId = transaction.execute(status -> reserve(stock, "4.000000"));
+
+            Future<StockMovementResponse> output = executor.submit(() -> transaction.execute(status -> {
+                materialRepository.findByIdForUpdate(stock.material().getId()).orElseThrow();
+                materialLocked.countDown();
+                await(writeTheOutput);
+                StockMovementResponse response = stockMovementService().registerOutput(new StockMovementOutputRequest(
+                        stock.material().getId(), stock.warehouse().getId(), null, null, new BigDecimal("3.000000"), null, null, null), null);
+                entityManager.flush();
+                return response;
+            }));
+            assertTrue(materialLocked.await(10, TimeUnit.SECONDS));
+            Future<ReservationResponse> update = executor.submit(() -> transaction.execute(status -> reservationService().update(
+                    reservationId, new ReservationUpdateRequest(stock.warehouse().getId(), stock.project().getId(), new BigDecimal("5.000000")))));
+            Thread.sleep(300);
+            assertFalse(update.isDone(), "the update must wait on the material row while the output holds it");
+
+            writeTheOutput.countDown();
+
+            assertNotNull(output.get(10, TimeUnit.SECONDS));
+            assertEquals(0, new BigDecimal("5").compareTo(update.get(10, TimeUnit.SECONDS).quantity()));
+            transaction.executeWithoutResult(status -> {
+                UUID materialId = stock.material().getId();
+                UUID warehouseId = stock.warehouse().getId();
+                assertEquals(1, outputsOf(stock).size());
+                assertEquals(0, new BigDecimal("7").compareTo(ledgerTotal(stock)));
+                assertEquals(0, new BigDecimal("7").compareTo(inventoryBalanceRepository.calculatePhysicalQuantity(materialId, warehouseId, BigDecimal.ZERO)));
+                assertEquals(0, new BigDecimal("5").compareTo(inventoryBalanceRepository.calculateReservedQuantity(materialId, warehouseId, BigDecimal.ZERO)));
+                assertEquals(0, new BigDecimal("2").compareTo(inventoryBalanceRepository.calculateAvailableQuantity(materialId, warehouseId, BigDecimal.ZERO)));
+                assertEquals(0, new BigDecimal("5").compareTo(reservationRepository.calculateActiveReservedQuantity(materialId, warehouseId, BigDecimal.ZERO)));
+            });
+        } finally {
+            writeTheOutput.countDown();
             executor.shutdownNow();
             executor.awaitTermination(10, TimeUnit.SECONDS);
             transaction.executeWithoutResult(status -> deleteCommitted(stock));

@@ -613,7 +613,7 @@ so a rule reads them alike.
 
 | Event (`entity.event`) | When | `values` (besides the common ones) |
 |---|---|---|
-| `material.below-minimum` | the **total** available of the material (the sum over its warehouses, the same view as `GET /materials/{id}/stock` without a warehouse and as the `belowMinimum` filter) crosses below `minimumStockLevel`: it was at or above it before the operation and below after. Only at the crossing: a second output while already below does not publish again, and a material with no minimum (zero) never does. The operations that can cross are an output, a negative adjustment (`operation = OUTPUT`) and a reservation (`RESERVATION`); a transfer never changes the total, so it never publishes | material + `minimumStockLevel`, `availableBefore`, `availableAfter`, `quantity`, `operation`, `warehouseId` (where the operation happened) |
+| `material.below-minimum` | the **total** available of the material (the sum over its warehouses, the same view as `GET /materials/{id}/stock` without a warehouse and as the `belowMinimum` filter) crosses below `minimumStockLevel`: it was at or above it before the operation and below after. Only at the crossing: a second output while already below does not publish again, and a material with no minimum (zero) never does. The operations that can cross are an output, a negative adjustment (`operation = OUTPUT`) and a reservation, new or updated with a larger quantity or another material (`RESERVATION`, with `quantity` what the available went down by); a transfer never changes the total, so it never publishes | material + `minimumStockLevel`, `availableBefore`, `availableAfter`, `quantity`, `operation`, `warehouseId` (where the operation happened) |
 | `reservation.cancelled` | `DELETE /reservations/{id}` | material, warehouse, project + `quantity`, `status`, `reservedAt`, `releasedAt`, `createdBy` (who created it: `service-account-mto-maintenance-svc` for the ones `mto-maintenance` makes, so a rule can tell one touched by somebody else), `createdAt` |
 | `reservation.released` | `POST /reservations/{id}/release` | the same as `cancelled` |
 | `adjustment.registered` | `POST /movements/adjustments`, positive or negative | material, warehouse + `direction` (`POSITIVE`/`NEGATIVE`), `movementType`, `quantity`, `signedQuantity`, `occurredAt`, `externalReference`, `notes` (what the operator wrote) |
@@ -634,9 +634,16 @@ the minimum: with the lock, two concurrent outputs of the same material are seri
 of them sees the crossing; without it both could read the sum at the same instant and publish twice,
 or neither. The lock order is always material and then `inventory_balance`, also in a transfer
 (`InventoryBalanceService.transfer`, one lock for the two rows), which is why a transfer is one
-operation of the balance service and not an output followed by an entry. Updating a reservation is a
-release followed by a new reservation, so the check runs on the second half against the total after
-the release.
+operation of the balance service and not an output followed by an entry. Updating a reservation is
+one operation too (`InventoryBalanceService.moveReserved`), for both reasons. It locks the material
+before touching any balance — the old and the new one, in id order, when the material changes —
+where a release followed by a new reservation took the balance row first and the material second, the
+opposite order of an output, and PostgreSQL aborted one of the two as a deadlock. And the check
+compares the total before and after the whole update, not after its second half: what lowers the
+available is the difference when the material stays (nothing when only the warehouse changes or the
+quantity does not rise) and the whole quantity for a new material, each material with its own before
+and after. Released and reserved again, an update that lowered the quantity of a material already
+below its minimum "crossed" it from the intermediate state and published.
 
 ### The outbox
 

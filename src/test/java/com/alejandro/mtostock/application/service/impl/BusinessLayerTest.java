@@ -301,8 +301,10 @@ class BusinessLayerTest {
 
         assertSame(newWarehouse, updatedReservation.getWarehouse());
         assertEquals(new BigDecimal("5.000000"), updatedReservation.getQuantity());
-        verify(inventoryBalanceService).releaseReserved(material.getId(), oldWarehouse.getId(), new BigDecimal("2.000000"));
-        verify(inventoryBalanceService).reserve(material.getId(), newWarehouse.getId(), new BigDecimal("5.000000"));
+        verify(inventoryBalanceService).moveReserved(material.getId(), oldWarehouse.getId(), new BigDecimal("2.000000"),
+                material.getId(), newWarehouse.getId(), new BigDecimal("5.000000"));
+        verify(inventoryBalanceService, never()).releaseReserved(any(), any(), any());
+        verify(inventoryBalanceService, never()).reserve(any(), any(), any());
     }
 
     @Test
@@ -1429,8 +1431,8 @@ class BusinessLayerTest {
         Reservation updatedReservation = service.update(existingReservation.getId(), requestedReservation);
 
         assertSame(newMaterial, updatedReservation.getMaterial());
-        verify(inventoryBalanceService).releaseReserved(previousMaterial.getId(), warehouse.getId(), new BigDecimal("2.000000"));
-        verify(inventoryBalanceService).reserve(newMaterial.getId(), warehouse.getId(), new BigDecimal("3.000000"));
+        verify(inventoryBalanceService).moveReserved(previousMaterial.getId(), warehouse.getId(), new BigDecimal("2.000000"),
+                newMaterial.getId(), warehouse.getId(), new BigDecimal("3.000000"));
     }
 
     @Test
@@ -2523,6 +2525,173 @@ class BusinessLayerTest {
         verify(materialRepository, times(2)).findByIdForUpdate(material.getId());
         verify(inventoryBalanceRepository).insertZeroBalanceIfMissing(material.getId(), otherWarehouseId, "system");
         verify(inventoryBalanceRepository, times(1)).calculateAvailableQuantity(material.getId(), null, BigDecimal.ZERO);
+    }
+
+    /**
+     * Modificar una reserva de un material que ya esta bajo minimo sin subir la cantidad no cruza nada:
+     * liberar y volver a reservar por separado si lo "cruzaba", porque miraba el estado intermedio.
+     */
+    @Test
+    void updatingAReservationWithTheSameQuantityWhileBelowTheMinimumPublishesNothing() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        RecordingEventPublisher events = new RecordingEventPublisher();
+        Material material = material("MAT-UPD-SAME");
+        material.setMinimumStockLevel(new BigDecimal("10.000000"));
+        UUID warehouseId = UUID.randomUUID();
+        when(materialRepository.findByIdForUpdate(material.getId())).thenReturn(Optional.of(material));
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, materialRepository, events, Optional::empty);
+
+        service.moveReserved(material.getId(), warehouseId, new BigDecimal("4.000000"),
+                material.getId(), warehouseId, new BigDecimal("4.000000"));
+
+        assertEquals(List.of(), events.names());
+        verify(materialRepository).findByIdForUpdate(material.getId());
+        verify(inventoryBalanceRepository, never()).releaseReserved(any(), any(), any(), any());
+        verify(inventoryBalanceRepository, never()).reserve(any(), any(), any(), any());
+    }
+
+    @Test
+    void loweringTheQuantityOfAReservationReleasesTheDifferenceAndPublishesNothing() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        RecordingEventPublisher events = new RecordingEventPublisher();
+        Material material = material("MAT-UPD-LOWER");
+        material.setMinimumStockLevel(new BigDecimal("10.000000"));
+        UUID warehouseId = UUID.randomUUID();
+        when(materialRepository.findByIdForUpdate(material.getId())).thenReturn(Optional.of(material));
+        when(inventoryBalanceRepository.releaseReserved(material.getId(), warehouseId, new BigDecimal("3.000000"), "system")).thenReturn(1);
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, materialRepository, events, Optional::empty);
+
+        service.moveReserved(material.getId(), warehouseId, new BigDecimal("5.000000"),
+                material.getId(), warehouseId, new BigDecimal("2.000000"));
+
+        assertEquals(List.of(), events.names(), "bajar la cantidad sube el disponible");
+        verify(inventoryBalanceRepository, never()).reserve(any(), any(), any(), any());
+        verify(inventoryBalanceRepository, never()).calculateAvailableQuantity(any(), any(), any());
+        InOrder order = inOrder(materialRepository, inventoryBalanceRepository);
+        order.verify(materialRepository).findByIdForUpdate(material.getId());
+        order.verify(inventoryBalanceRepository).releaseReserved(material.getId(), warehouseId, new BigDecimal("3.000000"), "system");
+    }
+
+    @Test
+    void raisingTheQuantityOfAReservationAcrossTheMinimumPublishesOnceWithTheNetChange() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        RecordingEventPublisher events = new RecordingEventPublisher();
+        Material material = material("MAT-UPD-RAISE");
+        material.setMinimumStockLevel(new BigDecimal("10.000000"));
+        UUID warehouseId = UUID.randomUUID();
+        when(materialRepository.findByIdForUpdate(material.getId())).thenReturn(Optional.of(material));
+        when(inventoryBalanceRepository.reserve(eq(material.getId()), eq(warehouseId), any(), eq("system"))).thenReturn(1);
+        // El disponible total tras cada subida: 11 -> 8 cruza; 8 -> 7 ya estaba por debajo.
+        when(inventoryBalanceRepository.calculateAvailableQuantity(material.getId(), null, BigDecimal.ZERO))
+                .thenReturn(new BigDecimal("8.000000"), new BigDecimal("7.000000"));
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, materialRepository, events, Optional::empty);
+
+        service.moveReserved(material.getId(), warehouseId, new BigDecimal("2.000000"),
+                material.getId(), warehouseId, new BigDecimal("5.000000"));
+        service.moveReserved(material.getId(), warehouseId, new BigDecimal("5.000000"),
+                material.getId(), warehouseId, new BigDecimal("6.000000"));
+
+        assertEquals(List.of("material.below-minimum"), events.names());
+        DomainEvent event = events.published.getFirst();
+        assertEquals("RESERVATION", event.values().get("operation"));
+        assertEquals(new BigDecimal("3.000000"), event.values().get("quantity"), "lo que baja el disponible, no la reserva entera");
+        assertEquals(new BigDecimal("11.000000"), event.values().get("availableBefore"));
+        assertEquals(new BigDecimal("8.000000"), event.values().get("availableAfter"));
+        verify(inventoryBalanceRepository).reserve(material.getId(), warehouseId, new BigDecimal("3.000000"), "system");
+        verify(inventoryBalanceRepository, never()).releaseReserved(any(), any(), any(), any());
+    }
+
+    @Test
+    void raisingTheQuantityOfAReservationBeyondWhatIsAvailableIsInsufficientStock() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        RecordingEventPublisher events = new RecordingEventPublisher();
+        Material material = material("MAT-UPD-SHORT");
+        UUID warehouseId = UUID.randomUUID();
+        when(materialRepository.findByIdForUpdate(material.getId())).thenReturn(Optional.of(material));
+        when(inventoryBalanceRepository.reserve(material.getId(), warehouseId, new BigDecimal("3.000000"), "system")).thenReturn(0);
+        when(inventoryBalanceRepository.calculateAvailableQuantity(material.getId(), warehouseId, BigDecimal.ZERO))
+                .thenReturn(new BigDecimal("1.000000"));
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, materialRepository, events, Optional::empty);
+
+        InsufficientStockException refused = assertThrows(InsufficientStockException.class,
+                () -> service.moveReserved(material.getId(), warehouseId, new BigDecimal("2.000000"),
+                        material.getId(), warehouseId, new BigDecimal("5.000000")));
+
+        assertTrue(refused.getMessage().contains("requested 5.000000, available 3.000000"), refused.getMessage());
+        assertEquals(List.of(), events.names());
+    }
+
+    @Test
+    void movingAReservationToAnotherWarehouseNeverPublishesBecauseTheTotalDoesNotChange() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        RecordingEventPublisher events = new RecordingEventPublisher();
+        Material material = material("MAT-UPD-WH");
+        material.setMinimumStockLevel(new BigDecimal("10.000000"));
+        UUID oldWarehouseId = UUID.randomUUID();
+        UUID newWarehouseId = UUID.randomUUID();
+        when(materialRepository.findByIdForUpdate(material.getId())).thenReturn(Optional.of(material));
+        when(inventoryBalanceRepository.releaseReserved(material.getId(), oldWarehouseId, new BigDecimal("4.000000"), "system")).thenReturn(1);
+        when(inventoryBalanceRepository.reserve(material.getId(), newWarehouseId, new BigDecimal("4.000000"), "system")).thenReturn(1);
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, materialRepository, events, Optional::empty);
+
+        service.moveReserved(material.getId(), oldWarehouseId, new BigDecimal("4.000000"),
+                material.getId(), newWarehouseId, new BigDecimal("4.000000"));
+
+        assertEquals(List.of(), events.names());
+        verify(inventoryBalanceRepository, never()).calculateAvailableQuantity(any(), any(), any());
+        InOrder order = inOrder(materialRepository, inventoryBalanceRepository);
+        order.verify(materialRepository).findByIdForUpdate(material.getId());
+        order.verify(inventoryBalanceRepository).releaseReserved(material.getId(), oldWarehouseId, new BigDecimal("4.000000"), "system");
+        order.verify(inventoryBalanceRepository).reserve(material.getId(), newWarehouseId, new BigDecimal("4.000000"), "system");
+    }
+
+    /**
+     * Cada material con su propio antes y despues: el que se deja solo sube, y el que se toma baja en
+     * la cantidad entera. Los dos se bloquean antes de tocar ningun saldo, por orden de id.
+     */
+    @Test
+    void movingAReservationToAnotherMaterialLocksBothInIdOrderAndPublishesOnlyForTheOneThatCrosses() {
+        InventoryBalanceRepository inventoryBalanceRepository = mock(InventoryBalanceRepository.class);
+        MaterialRepository materialRepository = mock(MaterialRepository.class);
+        RecordingEventPublisher events = new RecordingEventPublisher();
+        Material first = material("MAT-UPD-A");
+        Material second = material("MAT-UPD-B");
+        Material lower = first.getId().compareTo(second.getId()) < 0 ? first : second;
+        Material higher = lower == first ? second : first;
+        lower.setMinimumStockLevel(new BigDecimal("10.000000"));
+        higher.setMinimumStockLevel(new BigDecimal("10.000000"));
+        UUID warehouseId = UUID.randomUUID();
+        when(materialRepository.findByIdForUpdate(lower.getId())).thenReturn(Optional.of(lower));
+        when(materialRepository.findByIdForUpdate(higher.getId())).thenReturn(Optional.of(higher));
+        when(inventoryBalanceRepository.releaseReserved(any(), eq(warehouseId), eq(new BigDecimal("4.000000")), eq("system"))).thenReturn(1);
+        when(inventoryBalanceRepository.reserve(any(), eq(warehouseId), eq(new BigDecimal("4.000000")), eq("system"))).thenReturn(1);
+        // El que se toma: lower pasa de 12 a 8 y cruza; higher, despues, de 16 a 12 y no.
+        when(inventoryBalanceRepository.calculateAvailableQuantity(lower.getId(), null, BigDecimal.ZERO)).thenReturn(new BigDecimal("8.000000"));
+        when(inventoryBalanceRepository.calculateAvailableQuantity(higher.getId(), null, BigDecimal.ZERO)).thenReturn(new BigDecimal("12.000000"));
+        InventoryBalanceServiceImpl service = new InventoryBalanceServiceImpl(inventoryBalanceRepository, materialRepository, events, Optional::empty);
+
+        service.moveReserved(higher.getId(), warehouseId, new BigDecimal("4.000000"),
+                lower.getId(), warehouseId, new BigDecimal("4.000000"));
+        service.moveReserved(lower.getId(), warehouseId, new BigDecimal("4.000000"),
+                higher.getId(), warehouseId, new BigDecimal("4.000000"));
+
+        assertEquals(List.of("material.below-minimum"), events.names());
+        assertEquals(lower.getId().toString(), events.published.getFirst().entityId());
+        assertEquals(new BigDecimal("4.000000"), events.published.getFirst().values().get("quantity"));
+        InOrder order = inOrder(materialRepository, inventoryBalanceRepository);
+        order.verify(materialRepository).findByIdForUpdate(lower.getId());
+        order.verify(materialRepository).findByIdForUpdate(higher.getId());
+        order.verify(inventoryBalanceRepository).releaseReserved(higher.getId(), warehouseId, new BigDecimal("4.000000"), "system");
+        order.verify(inventoryBalanceRepository).reserve(lower.getId(), warehouseId, new BigDecimal("4.000000"), "system");
+        order.verify(materialRepository).findByIdForUpdate(lower.getId());
+        order.verify(materialRepository).findByIdForUpdate(higher.getId());
+        order.verify(inventoryBalanceRepository).releaseReserved(lower.getId(), warehouseId, new BigDecimal("4.000000"), "system");
+        order.verify(inventoryBalanceRepository).reserve(higher.getId(), warehouseId, new BigDecimal("4.000000"), "system");
     }
 
     @Test

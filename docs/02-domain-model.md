@@ -41,7 +41,13 @@ without the row, so the sum above stopped adding up; the migration wrote the mis
 A reservation leaves `ACTIVE` once. Every transition (update, cancel, release, consume, and an output
 registered against it) locks the reservation row before reading it (`select ... for update`), so two
 of them at the same time run one after the other and the second is a 422 `RES-001` instead of a second
-subtraction from `reserved`. Lock order: reservation, then material, then `inventory_balance`.
+subtraction from `reserved`. Lock order: reservation, then material, then `inventory_balance`. An
+update follows it as one balance operation (`InventoryBalanceService.moveReserved`): it locks the
+material first (the old and the new one, in id order, if it changes) and only then writes the
+balance — the difference on the same row, or a release on the old row and a reservation on the new
+one, which is still refused with 409 `STK-001` when the destination has no available. It publishes
+`material.below-minimum` only if the whole update takes the material's total available across its
+minimum: the same or a lower quantity, or another warehouse, never does.
 
 **That sum is not recomputed on every read.** `inventory_balance` holds it per material/warehouse
 pair, and every movement or reservation updates it in the same transaction that writes the row. It is
