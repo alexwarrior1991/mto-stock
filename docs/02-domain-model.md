@@ -38,6 +38,11 @@ registered against the reservation is that row. `ReservationEngine.consume` only
 whoever calls it writes the row in the same transaction. Until V11 `/consume` lowered the balance
 without the row, so the sum above stopped adding up; the migration wrote the missing outputs.
 
+A reservation leaves `ACTIVE` once. Every transition (update, cancel, release, consume, and an output
+registered against it) locks the reservation row before reading it (`select ... for update`), so two
+of them at the same time run one after the other and the second is a 422 `RES-001` instead of a second
+subtraction from `reserved`. Lock order: reservation, then material, then `inventory_balance`.
+
 **That sum is not recomputed on every read.** `inventory_balance` holds it per material/warehouse
 pair, and every movement or reservation updates it in the same transaction that writes the row. It is
 a cache with a check constraint, not a second truth: the migration that created it rebuilt it from

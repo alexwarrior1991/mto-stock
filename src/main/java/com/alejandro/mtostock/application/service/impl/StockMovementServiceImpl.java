@@ -95,7 +95,9 @@ class StockMovementServiceImpl implements StockMovementService {
                     .orElseThrow(() -> new NotFoundException("Project", request.projectId()));
             movement.setProject(project);
         }
-        Reservation reservation = request.reservationId() == null ? null : reservationRepository.findById(request.reservationId())
+        // Bloqueada desde esta primera lectura (reserva -> saldo): dos salidas, o una salida y una
+        // liberacion, de la misma reserva van una detras de otra, y la segunda la ve ya consumida.
+        Reservation reservation = request.reservationId() == null ? null : reservationRepository.findByIdForUpdate(request.reservationId())
                 .orElseThrow(() -> new NotFoundException("Reservation", request.reservationId()));
         validateOutputStock(request, reservation);
         if (reservation == null) {
@@ -135,7 +137,9 @@ class StockMovementServiceImpl implements StockMovementService {
     @Override
     @Transactional
     public StockMovementResponse registerReservationConsumption(UUID reservationId) {
-        Reservation reservation = reservationRepository.findById(reservationId)
+        // Bloqueada antes de validarla y de escribir la salida: un segundo consumo simultaneo espera
+        // aqui y encuentra la reserva ya consumida, en vez de escribir otra salida.
+        Reservation reservation = reservationRepository.findByIdForUpdate(reservationId)
                 .orElseThrow(() -> new NotFoundException("Reservation", reservationId));
         inventoryValidationService.validateReservationCanChange(reservation);
         StockMovement movement = StockMovement.builder()

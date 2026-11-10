@@ -222,7 +222,7 @@ class BusinessLayerTest {
         InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
         InventoryValidationService validationService = mock(InventoryValidationService.class);
         Reservation reservation = reservation();
-        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservation.getId())).thenReturn(Optional.of(reservation));
         ReservationEngineImpl service = new ReservationEngineImpl(
                 reservationRepository,
                 mock(MaterialRepository.class),
@@ -247,7 +247,7 @@ class BusinessLayerTest {
         InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
         InventoryValidationService validationService = mock(InventoryValidationService.class);
         Reservation reservation = reservation();
-        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservation.getId())).thenReturn(Optional.of(reservation));
         ReservationEngineImpl service = new ReservationEngineImpl(
                 reservationRepository,
                 mock(MaterialRepository.class),
@@ -283,7 +283,7 @@ class BusinessLayerTest {
                 .project(project)
                 .quantity(new BigDecimal("5.000000"))
                 .build();
-        when(reservationRepository.findById(existingReservation.getId())).thenReturn(Optional.of(existingReservation));
+        when(reservationRepository.findByIdForUpdate(existingReservation.getId())).thenReturn(Optional.of(existingReservation));
         when(materialRepository.findById(material.getId())).thenReturn(Optional.of(material));
         when(warehouseRepository.findById(newWarehouse.getId())).thenReturn(Optional.of(newWarehouse));
         when(projectRepository.findById(project.getId())).thenReturn(Optional.of(project));
@@ -491,7 +491,7 @@ class BusinessLayerTest {
         InventoryValidationService validationService = mock(InventoryValidationService.class);
         Reservation reservation = reservation();
         reservation.cancel(java.time.Instant.parse("2026-08-01T10:00:00Z"));
-        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservation.getId())).thenReturn(Optional.of(reservation));
         org.mockito.Mockito.doThrow(new ReservationException("Reservation is not active."))
                 .when(validationService).validateReservationCanChange(reservation);
         ReservationEngineImpl service = new ReservationEngineImpl(
@@ -723,7 +723,7 @@ class BusinessLayerTest {
         when(stockMovementMapper.toOutputEntity(request)).thenReturn(movement);
         when(materialRepository.findById(material.getId())).thenReturn(Optional.of(material));
         when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
-        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservation.getId())).thenReturn(Optional.of(reservation));
         when(stockMovementRepository.save(movement)).thenReturn(movement);
         StockMovementServiceImpl service = new StockMovementServiceImpl(
                 stockMovementRepository,
@@ -771,7 +771,7 @@ class BusinessLayerTest {
         when(stockMovementMapper.toOutputEntity(request)).thenReturn(movement(StockMovementType.OUTPUT, request.quantity()));
         when(materialRepository.findById(otherMaterial.getId())).thenReturn(Optional.of(otherMaterial));
         when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
-        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservation.getId())).thenReturn(Optional.of(reservation));
         StockMovementServiceImpl service = new StockMovementServiceImpl(
                 stockMovementRepository,
                 materialRepository,
@@ -814,7 +814,7 @@ class BusinessLayerTest {
         when(stockMovementMapper.toOutputEntity(request)).thenReturn(movement(StockMovementType.OUTPUT, request.quantity()));
         when(materialRepository.findById(material.getId())).thenReturn(Optional.of(material));
         when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
-        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservation.getId())).thenReturn(Optional.of(reservation));
         StockMovementServiceImpl service = new StockMovementServiceImpl(
                 stockMovementRepository,
                 materialRepository,
@@ -952,7 +952,7 @@ class BusinessLayerTest {
         IdempotentRequestService idempotentRequestService = mock(IdempotentRequestService.class);
         RecordingEventPublisher events = new RecordingEventPublisher();
         Reservation reservation = reservation();
-        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservation.getId())).thenReturn(Optional.of(reservation));
         when(stockMovementRepository.save(any(StockMovement.class))).thenAnswer(invocation -> invocation.getArgument(0));
         StockMovementServiceImpl service = new StockMovementServiceImpl(stockMovementRepository, mock(MaterialRepository.class),
                 mock(WarehouseRepository.class), mock(SupplierRepository.class), mock(ProjectRepository.class), reservationRepository,
@@ -992,8 +992,8 @@ class BusinessLayerTest {
         Reservation reservation = reservation();
         reservation.consume(Instant.now());
         UUID missingId = UUID.randomUUID();
-        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
-        when(reservationRepository.findById(missingId)).thenReturn(Optional.empty());
+        when(reservationRepository.findByIdForUpdate(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(missingId)).thenReturn(Optional.empty());
         InventoryValidationServiceImpl validationService = new InventoryValidationServiceImpl(mock(MaterialRepository.class),
                 mock(AssemblyRepository.class), mock(WarehouseRepository.class), mock(SupplierRepository.class),
                 mock(ProjectRepository.class));
@@ -1376,7 +1376,7 @@ class BusinessLayerTest {
         ReservationRepository reservationRepository = mock(ReservationRepository.class);
         InventoryBalanceService inventoryBalanceService = mock(InventoryBalanceService.class);
         Reservation reservation = reservation();
-        when(reservationRepository.findById(reservation.getId())).thenReturn(Optional.of(reservation));
+        when(reservationRepository.findByIdForUpdate(reservation.getId())).thenReturn(Optional.of(reservation));
         ReservationEngineImpl service = new ReservationEngineImpl(
                 reservationRepository,
                 mock(MaterialRepository.class),
@@ -1412,7 +1412,7 @@ class BusinessLayerTest {
                 .project(project)
                 .quantity(new BigDecimal("3.000000"))
                 .build();
-        when(reservationRepository.findById(existingReservation.getId())).thenReturn(Optional.of(existingReservation));
+        when(reservationRepository.findByIdForUpdate(existingReservation.getId())).thenReturn(Optional.of(existingReservation));
         when(materialRepository.findById(newMaterial.getId())).thenReturn(Optional.of(newMaterial));
         when(warehouseRepository.findById(warehouse.getId())).thenReturn(Optional.of(warehouse));
         when(projectRepository.findById(project.getId())).thenReturn(Optional.of(project));
@@ -2573,8 +2573,8 @@ class BusinessLayerTest {
         cancelled.setCreatedBy("service-account-mto-maintenance-svc");
         Reservation released = reservation();
         released.setCreatedBy("almacen.operario");
-        when(reservationRepository.findById(cancelled.getId())).thenReturn(Optional.of(cancelled));
-        when(reservationRepository.findById(released.getId())).thenReturn(Optional.of(released));
+        when(reservationRepository.findByIdForUpdate(cancelled.getId())).thenReturn(Optional.of(cancelled));
+        when(reservationRepository.findByIdForUpdate(released.getId())).thenReturn(Optional.of(released));
         ReservationEngineImpl service = new ReservationEngineImpl(reservationRepository, mock(MaterialRepository.class),
                 mock(WarehouseRepository.class), mock(ProjectRepository.class), inventoryBalanceService, validationService, events);
 

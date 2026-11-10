@@ -69,6 +69,10 @@ import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabas
 import org.springframework.context.annotation.Import;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.Duration;
@@ -78,10 +82,18 @@ import java.util.Map;
 import java.util.stream.Collectors;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.mockito.Mockito.mock;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -110,6 +122,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>Por la misma razón están aquí otras dos cosas que solo decide el SQL de verdad: que consumir una
  * reserva deja el libro y el saldo cuadrando, y que modificar un conjunto sustituye su lista de
  * materiales sin chocar con la restricción única de sus líneas.</p>
+ *
+ * <p>La excepción a lo de las peticiones simultáneas es la carrera entre dos transiciones de una misma
+ * reserva: ahí lo que se prueba es el bloqueo de su fila, que solo existe entre dos transacciones de
+ * verdad, así que ese caso sale de la transacción del test y abre las suyas.</p>
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
@@ -160,6 +176,9 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
 
     @Autowired
     private IdempotentRequestRepository idempotentRequestRepository;
+
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     @Test
     void theWorkRunsOnceAcrossTwoDeliveriesOfTheSameMessage() {
@@ -423,6 +442,102 @@ class InboxIdempotencyDataJpaTest extends PostgreSQLTestContainer {
         assertEquals(0, new BigDecimal("6").compareTo(ledgerTotal(stock)));
         assertEquals(0, new BigDecimal("6").compareTo(inventoryBalanceRepository.calculatePhysicalQuantity(
                 stock.material().getId(), stock.warehouse().getId(), BigDecimal.ZERO)));
+    }
+
+    /**
+     * Dos transiciones de la misma reserva a la vez, con dos transacciones de verdad: una liberación
+     * que aún no ha confirmado y un consumo que llega mientras tanto. El consumo espera en la fila de
+     * la reserva y, cuando la liberación confirma, la lee ya liberada: 422, sin salida y sin descontar
+     * nada. Hay otra reserva activa, y mayor, del mismo material y almacén a propósito: sin el bloqueo, el
+     * consumo leía la reserva todavía activa, y lo reservado por la otra dejaba pasar su descuento
+     * (el saldo solo exige {@code reserved_quantity >= cantidad}), así que lo reservado bajaba dos
+     * veces y el físico una, con su salida.
+     */
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void twoTransitionsOfTheSameReservationAtOnceLetOnlyTheFirstOneThrough() throws Exception {
+        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
+        String suffix = UUID.randomUUID().toString().substring(0, 8);
+        Stock stock = transaction.execute(status -> {
+            Material material = persist(material("MAT-RACE-" + suffix));
+            Warehouse warehouse = persist(Warehouse.builder().code("WH-RACE-" + suffix).name("Warehouse RACE").build());
+            Project project = persist(Project.builder().code("PRJ-RACE-" + suffix).name("Project RACE").build());
+            entityManager.flush();
+            stockMovementService().registerEntry(new StockMovementEntryRequest(material.getId(), warehouse.getId(), null,
+                    new BigDecimal("10.000000"), null, "ALB-000001", null));
+            return new Stock(material, warehouse, project);
+        });
+        CountDownLatch released = new CountDownLatch(1);
+        CountDownLatch commit = new CountDownLatch(1);
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            UUID contended = transaction.execute(status -> reserve(stock, "4.000000"));
+            transaction.execute(status -> reserve(stock, "5.000000"));
+
+            Future<ReservationResponse> release = executor.submit(() -> transaction.execute(status -> {
+                ReservationResponse response = reservationService().release(contended);
+                entityManager.flush();
+                released.countDown();
+                await(commit);
+                return response;
+            }));
+            assertTrue(released.await(10, TimeUnit.SECONDS));
+            Future<ReservationResponse> consume = executor.submit(
+                    () -> transaction.execute(status -> reservationService().consume(contended)));
+            Thread.sleep(300);
+            assertFalse(consume.isDone(), "the consume must wait on the reservation row while the release is open");
+
+            commit.countDown();
+
+            assertEquals(ReservationStatusDto.RELEASED, release.get(10, TimeUnit.SECONDS).status());
+            ExecutionException refused = assertThrows(ExecutionException.class, () -> consume.get(10, TimeUnit.SECONDS));
+            assertInstanceOf(ReservationException.class, refused.getCause());
+            transaction.executeWithoutResult(status -> {
+                assertEquals(ReservationStatusDto.RELEASED, reservationService().findById(contended).status());
+                assertEquals(0, outputsOf(stock).size());
+                assertEquals(0, new BigDecimal("10").compareTo(ledgerTotal(stock)));
+                assertEquals(0, new BigDecimal("10").compareTo(inventoryBalanceRepository.calculatePhysicalQuantity(
+                        stock.material().getId(), stock.warehouse().getId(), BigDecimal.ZERO)));
+                assertEquals(0, new BigDecimal("5").compareTo(inventoryBalanceRepository.calculateReservedQuantity(
+                        stock.material().getId(), stock.warehouse().getId(), BigDecimal.ZERO)));
+                assertEquals(0, new BigDecimal("5").compareTo(reservationRepository.calculateActiveReservedQuantity(
+                        stock.material().getId(), stock.warehouse().getId(), BigDecimal.ZERO)));
+            });
+        } finally {
+            commit.countDown();
+            executor.shutdownNow();
+            executor.awaitTermination(10, TimeUnit.SECONDS);
+            transaction.executeWithoutResult(status -> deleteCommitted(stock));
+        }
+    }
+
+    private UUID reserve(Stock stock, String quantity) {
+        return reservationService().create(new ReservationRequest(stock.material().getId(), stock.warehouse().getId(),
+                stock.project().getId(), new BigDecimal(quantity), null), null).id();
+    }
+
+    private static void await(CountDownLatch latch) {
+        try {
+            latch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /** Lo que confirmó el test con transacciones de verdad no se queda en la base que comparten todas las clases. */
+    private void deleteCommitted(Stock stock) {
+        UUID materialId = stock.material().getId();
+        List.of("delete from stock_movement where material_id = :id",
+                        "delete from reservation_aud where material_id = :id",
+                        "delete from reservation where material_id = :id",
+                        "delete from inventory_balance where material_id = :id",
+                        "delete from material_aud where id = :id",
+                        "delete from material where id = :id")
+                .forEach(sql -> entityManager.createNativeQuery(sql).setParameter("id", materialId).executeUpdate());
+        Map.of("warehouse", stock.warehouse().getId(), "project", stock.project().getId()).forEach((table, id) -> {
+            entityManager.createNativeQuery("delete from " + table + "_aud where id = :id").setParameter("id", id).executeUpdate();
+            entityManager.createNativeQuery("delete from " + table + " where id = :id").setParameter("id", id).executeUpdate();
+        });
     }
 
     /**
