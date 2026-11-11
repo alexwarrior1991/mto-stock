@@ -17,23 +17,37 @@ import jakarta.validation.ConstraintViolation;
 import jakarta.validation.ConstraintViolationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.hibernate.query.PathException;
+import org.hibernate.query.sqm.PathElementException;
+import org.springframework.dao.InvalidDataAccessApiUsageException;
+import org.springframework.data.core.PropertyReferenceException;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.validation.ObjectError;
+import org.springframework.web.ErrorResponse;
+import org.springframework.web.HttpMediaTypeNotAcceptableException;
 import org.springframework.web.HttpMediaTypeNotSupportedException;
+import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.HandlerMethodValidationException;
 import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.server.UnsupportedMediaTypeStatusException;
+import org.springframework.web.servlet.NoHandlerFoundException;
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Converts every application exception into the standard API error response contract.
@@ -213,6 +227,121 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Returns 400 and names every controller parameter (query, path, header) that failed its own
+     * constraint annotations.
+     */
+    @ExceptionHandler(HandlerMethodValidationException.class)
+    public ResponseEntity<ApiErrorResponse> handleHandlerMethodValidation(HandlerMethodValidationException exception, HttpServletRequest request) {
+        List<ValidationError> errors = exception.getParameterValidationResults().stream()
+                .flatMap(result -> result.getResolvableErrors().stream()
+                        .map(error -> new ValidationError(
+                                result.getMethodParameter().getParameterName(),
+                                error.getDefaultMessage() == null ? "Validation error" : error.getDefaultMessage())))
+                .toList();
+        return clientErrorResponse(
+                HttpStatus.BAD_REQUEST,
+                "Request validation failed.",
+                "REQ-VALIDATION",
+                errors,
+                request
+        );
+    }
+
+    /**
+     * Returns 400 because a required query parameter is missing. It used to fall into the catch-all
+     * and answer 500.
+     */
+    @ExceptionHandler(MissingServletRequestParameterException.class)
+    public ResponseEntity<ApiErrorResponse> handleMissingRequestParameter(MissingServletRequestParameterException exception, HttpServletRequest request) {
+        return clientErrorResponse(
+                HttpStatus.BAD_REQUEST,
+                "Missing request parameter.",
+                "REQ-400",
+                List.of(new ValidationError(exception.getParameterName(), "is required")),
+                request
+        );
+    }
+
+    /**
+     * Returns 400 because a required request header is missing.
+     */
+    @ExceptionHandler(MissingRequestHeaderException.class)
+    public ResponseEntity<ApiErrorResponse> handleMissingRequestHeader(MissingRequestHeaderException exception, HttpServletRequest request) {
+        return clientErrorResponse(
+                HttpStatus.BAD_REQUEST,
+                "Missing request header.",
+                "REQ-400",
+                List.of(new ValidationError(exception.getHeaderName(), "is required")),
+                request
+        );
+    }
+
+    /**
+     * Returns 400 because {@code sort} names a property the entity does not have. Spring Data throws
+     * it while building the query and nobody translates it, so it used to answer 500.
+     */
+    @ExceptionHandler(PropertyReferenceException.class)
+    public ResponseEntity<ApiErrorResponse> handleUnknownSortProperty(PropertyReferenceException exception, HttpServletRequest request) {
+        LOGGER.warn("Unknown property in {} {}: {}", request.getMethod(), request.getRequestURI(), exception.getMessage());
+        return clientErrorResponse(
+                HttpStatus.BAD_REQUEST,
+                "Invalid sort property.",
+                "REQ-400",
+                List.of(new ValidationError("sort", "unknown property '" + exception.getPropertyName() + "'")),
+                request
+        );
+    }
+
+    /**
+     * Returns 400 when the query could not resolve a path: a {@code sort} on something the Java class
+     * has but the table does not (a derived getter such as {@code active} of a reservation) passes
+     * Spring Data's check and is refused by Hibernate while building the criteria. Any other misuse
+     * of the data access API is a fault of this service and stays a 500.
+     */
+    @ExceptionHandler(InvalidDataAccessApiUsageException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidDataAccessApiUsage(InvalidDataAccessApiUsageException exception, HttpServletRequest request) {
+        if (!isUnresolvedQueryPath(exception)) {
+            return handleException(exception, request);
+        }
+        LOGGER.warn("Property that cannot be sorted by in {} {}: {}", request.getMethod(), request.getRequestURI(), exception.getMessage());
+        return clientErrorResponse(
+                HttpStatus.BAD_REQUEST,
+                "Invalid sort property.",
+                "REQ-400",
+                List.of(new ValidationError("sort", "names a property the list cannot be sorted by")),
+                request
+        );
+    }
+
+    /**
+     * Returns 405 with the {@code Allow} header: the resource exists, but not for that method. It
+     * used to fall into the catch-all and answer 500.
+     */
+    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+    public ResponseEntity<ApiErrorResponse> handleMethodNotSupported(HttpRequestMethodNotSupportedException exception, HttpServletRequest request) {
+        LOGGER.warn("Unsupported method {} {}", request.getMethod(), request.getRequestURI());
+        ApiErrorResponse body = errorResponse(HttpStatus.METHOD_NOT_ALLOWED, "HTTP method not supported for this resource.", "REQ-405",
+                List.of(), request);
+        Set<HttpMethod> allowed = exception.getSupportedHttpMethods();
+        return allowed == null || allowed.isEmpty()
+                ? ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).body(body)
+                : ResponseEntity.status(HttpStatus.METHOD_NOT_ALLOWED).allow(allowed.toArray(HttpMethod[]::new)).body(body);
+    }
+
+    /**
+     * Returns 406 because the {@code Accept} header admits nothing the API produces. The error goes
+     * out as JSON all the same, with its content type fixed: negotiating it against that same header
+     * would fail again and leave the answer without a body.
+     */
+    @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+    public ResponseEntity<ApiErrorResponse> handleNotAcceptable(HttpServletRequest request) {
+        LOGGER.warn("Not acceptable {} {}: Accept {}", request.getMethod(), request.getRequestURI(), request.getHeader("Accept"));
+        return ResponseEntity.status(HttpStatus.NOT_ACCEPTABLE)
+                .contentType(MediaType.APPLICATION_JSON)
+                .body(errorResponse(HttpStatus.NOT_ACCEPTABLE, "The API only produces application/json.", "REQ-406", List.of(), request));
+    }
+
+    /**
      * Returns 401 for every authentication failure, including the ones the security filter chain
      * delegates here through {@code RestAuthenticationEntryPoint} before any controller is reached.
      * Handling the whole {@link AuthenticationException} hierarchy matters: a request with no token
@@ -250,7 +379,7 @@ public class GlobalExceptionHandler {
     /**
      * Returns 404 because Spring MVC could not resolve a static or endpoint resource for the URL.
      */
-    @ExceptionHandler(NoResourceFoundException.class)
+    @ExceptionHandler({NoResourceFoundException.class, NoHandlerFoundException.class})
     public ResponseEntity<ApiErrorResponse> handleNoResourceFound(HttpServletRequest request) {
         LOGGER.warn("No resource found for {} {}", request.getMethod(), request.getRequestURI());
         return clientErrorResponse(
@@ -264,9 +393,23 @@ public class GlobalExceptionHandler {
 
     /**
      * Returns 500 for unexpected failures while hiding implementation details from clients.
+     *
+     * <p>The one exception is a Spring MVC exception that says itself that the request is at fault
+     * (an {@link ErrorResponse} with a 4xx status) and has no handler of its own above: it keeps its
+     * status, with the generic code {@code REQ-<status>} and without its message, instead of being
+     * reported as a fault of this service.
      */
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiErrorResponse> handleException(Exception exception, HttpServletRequest request) {
+        if (exception instanceof ErrorResponse errorResponse) {
+            HttpStatus status = HttpStatus.resolve(errorResponse.getStatusCode().value());
+            if (status != null && status.is4xxClientError()) {
+                LOGGER.warn("Request error {} for {} {}: {}", status.value(), request.getMethod(), request.getRequestURI(), exception.getMessage());
+                return ResponseEntity.status(status)
+                        .headers(errorResponse.getHeaders())
+                        .body(errorResponse(status, "The request cannot be processed.", "REQ-" + status.value(), List.of(), request));
+            }
+        }
         LOGGER.error("Unexpected exception while processing {} {}", request.getMethod(), request.getRequestURI(), exception);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(errorResponse(
                 HttpStatus.INTERNAL_SERVER_ERROR,
@@ -275,6 +418,15 @@ public class GlobalExceptionHandler {
                 List.of(),
                 request
         ));
+    }
+
+    private static boolean isUnresolvedQueryPath(Throwable exception) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (cause instanceof PathElementException || cause instanceof PathException) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private ResponseEntity<ApiErrorResponse> businessResponse(BusinessException exception, HttpStatus status, HttpServletRequest request) {

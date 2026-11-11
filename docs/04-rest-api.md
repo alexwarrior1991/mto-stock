@@ -14,13 +14,37 @@ Swagger UI at `/swagger-ui.html`.
   **or** the name, combined (AND) with the other filters of the list. A blank `search` is ignored.
 - **Time.** All timestamps are ISO-8601 instants in UTC (`2026-08-01T00:00:00Z`). The `dateFrom` and
   `dateTo` filters are inclusive.
-- **Errors.** Every failure is an `ApiErrorResponse` from `GlobalExceptionHandler`: `400` the request
-  is malformed or fails Bean Validation, `401` no valid token, `403` the token lacks the role, `404`
-  not found, `409` duplicate business code, insufficient stock or an `Idempotency-Key` reused with
-  another body, `415` wrong content type, `422` a
-  domain rule was violated (reservation, assembly, warehouse, movement or project), `500` anything else. `409`
-  and `422` are kept apart on purpose: `409` says the warehouse cannot give you what you asked for,
-  `422` says the operation itself does not make sense.
+- **Paging errors.** `sort` takes attributes of the listed entity (`code`, `occurredAt`,
+  `material.code`...). Anything else — a name the entity does not have, something only the response
+  computes (`signedQuantity`), a derived flag that is not a column (`active` of a reservation) — is
+  `400 REQ-400` with a `validationErrors` entry on `sort`, never a `500`. A `page` or `size` that is
+  not a number is not an error: the default is used.
+- **Blank text.** A blank `externalReference` (`""`, only spaces) on any movement request means "no
+  reference" and is stored as `null`; a non-blank one is stored as sent.
+- **Errors.** Every failure is an `ApiErrorResponse` from `GlobalExceptionHandler`
+  (`timestamp`, `status`, `error`, `message`, `path`, `method`, `errorCode`, `correlationId`,
+  `validationErrors[{field, message}]`), always JSON. `409` and `422` are kept apart on purpose:
+  `409` says the warehouse cannot give you what you asked for, `422` says the operation itself does
+  not make sense. A `500` is only a fault of the service, and its message never says what failed.
+
+  | Status | `errorCode` | When |
+  |---|---|---|
+  | `400` | `REQ-VALIDATION` | The body or a parameter fails Bean Validation; one `validationErrors` entry per field. |
+  | `400` | `REQ-400` | The body is missing or cannot be read; a path or query parameter is of the wrong type (an id that is not a UUID, an unknown enum value, a date that is not ISO-8601); a required parameter or header is missing; `sort` names something the list cannot be sorted by. `validationErrors` names the parameter. |
+  | `400` | `VAL-001` | A value the service itself refuses (a malformed `Idempotency-Key`). |
+  | `401` | `AUTH-401` | No valid token. |
+  | `403` | `AUTH-403` | The token lacks the role. |
+  | `404` | `MAT-404`, `WH-404`, `SUP-404`, `PRJ-404`, `ASM-404`, `RES-404`, `STK-404` | The resource does not exist. |
+  | `404` | `HTTP-404` | The route does not exist. |
+  | `405` | `REQ-405` | The resource exists but not for that method (a `DELETE` on a catalogue, a `PATCH` where only `PUT` exists); the `Allow` header lists the ones it has. |
+  | `406` | `REQ-406` | The `Accept` header admits nothing but something other than JSON. |
+  | `409` | `MAT-409`, `WH-409`, `SUP-409`, `PRJ-409`, `ASM-409` | Duplicate business code. |
+  | `409` | `STK-001` | Insufficient stock. |
+  | `409` | `IDEM-001` | An `Idempotency-Key` reused with another body. |
+  | `415` | `REQ-415` | The body is not `application/json`. |
+  | `422` | `RES-001`, `ASM-001`, `WH-001`, `STK-002`, `PRJ-001`, `BUS-001` | A domain rule was violated (reservation, assembly, warehouse, movement, project). |
+  | other `4xx` | `REQ-<status>` | Any other request error Spring MVC reports by itself (for instance `413`). |
+  | `500` | `APP-500` | Anything else. |
 - **Idempotent writes.** `POST /reservations` and `POST /movements/outputs` take an optional
   `Idempotency-Key` header: 1 to 255 visible ASCII characters, chosen by the client (a UUID, or a key
   built from the client's own ids). A request that comes back with the same key and the same body

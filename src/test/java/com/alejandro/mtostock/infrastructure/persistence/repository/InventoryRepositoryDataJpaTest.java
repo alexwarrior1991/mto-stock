@@ -25,6 +25,7 @@ import com.alejandro.mtostock.support.PostgreSQLTestContainer;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceException;
 import org.hibernate.Session;
+import org.hibernate.query.sqm.PathElementException;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.ImportAutoConfiguration;
@@ -32,6 +33,10 @@ import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.dao.InvalidDataAccessApiUsageException;
+import org.springframework.data.core.PropertyReferenceException;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -99,6 +104,51 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
 
     @Autowired
     private PlatformTransactionManager transactionManager;
+
+    /**
+     * Lo que lanza de verdad una lista con un {@code sort} que no puede ordenar, que es lo que
+     * {@code GlobalExceptionHandler} convierte en 400: lo que la entidad no tiene (tampoco lo que solo
+     * calcula la respuesta, como {@code signedQuantity}, ni un tramo de una ruta anidada) lo rechaza
+     * Spring Data con {@link PropertyReferenceException}; lo que es un metodo de la clase y no una
+     * columna ({@code active} de una reserva) pasa ese filtro y lo rechaza Hibernate, envuelto en
+     * {@link InvalidDataAccessApiUsageException}. Si una actualizacion cambia estas excepciones, el
+     * 400 volveria a ser un 500 sin que el test del manejador lo notara.
+     */
+    @Test
+    void aSortTheListCannotOrderByFailsWithTheTwoExceptionsTheHandlerTurnsIntoABadRequest() {
+        assertThrows(PropertyReferenceException.class, () -> reservationRepository.findAll(
+                ReservationSpecification.statusEquals(ReservationStatus.ACTIVE), PageRequest.of(0, 5, Sort.by("nope"))));
+        assertThrows(PropertyReferenceException.class, () -> reservationRepository.findAll(
+                ReservationSpecification.statusEquals(ReservationStatus.ACTIVE), PageRequest.of(0, 5, Sort.by("material.nope"))));
+        assertThrows(PropertyReferenceException.class, () -> stockMovementRepository.findAll(
+                StockMovementSpecification.typeEquals(StockMovementType.OUTPUT), PageRequest.of(0, 5, Sort.by("signedQuantity"))));
+
+        InvalidDataAccessApiUsageException derived = assertThrows(InvalidDataAccessApiUsageException.class,
+                () -> reservationRepository.findAll(
+                        ReservationSpecification.statusEquals(ReservationStatus.ACTIVE), PageRequest.of(0, 5, Sort.by("active"))));
+        assertTrue(derived.getCause() instanceof PathElementException);
+
+        assertTrue(reservationRepository.findAll(ReservationSpecification.statusEquals(ReservationStatus.ACTIVE),
+                PageRequest.of(0, 5, Sort.by("material.code", "id"))).getTotalElements() >= 0);
+    }
+
+    /**
+     * Por que una referencia externa en blanco se lee como "sin referencia" en la peticion: la
+     * columna admite {@code null} y rechaza el blanco, y esa restriccion llegaba como un 500.
+     */
+    @Test
+    void aBlankExternalReferenceIsRefusedByTheColumnAndNoReferenceIsNot() {
+        Material material = persist(material("MAT-BLANK-REF", "Material with a blank reference"));
+        Warehouse warehouse = persist(warehouse("WH-BLANK-REF"));
+        StockMovement without = movement(material, warehouse, null, StockMovementType.ENTRY, "1.000000", Instant.parse("2026-08-01T10:00:00Z"));
+        persist(without);
+        entityManager.flush();
+
+        StockMovement blank = movement(material, warehouse, null, StockMovementType.ENTRY, "1.000000", Instant.parse("2026-08-01T10:00:00Z"));
+        blank.setExternalReference("   ");
+        entityManager.persist(blank);
+        assertThrows(PersistenceException.class, () -> entityManager.flush());
+    }
 
     @Test
     void specificationsFilterMaterialsAssembliesReservationsAndMovements() {

@@ -52,6 +52,22 @@ The code is organized as three layers, each with its own package root under `com
 
 DTOs only cross the API boundary; JPA entities are never exposed directly. MapStruct (`application/mapper`) generates all entity↔DTO and entity↔domain mappings; `EntityReferenceFactory` supplies MapStruct with lightweight entity references (id-only) for relationship fields instead of loading full associations.
 
+### Request errors
+
+`GlobalExceptionHandler` answers every failure with the same `ApiErrorResponse` (the web apps read
+`error`, `message` and `errorCode`), and a `500` `APP-500` is only a fault of this service: every
+Spring MVC and Spring Data exception that blames the request has a handler (`REQ-400` unreadable body,
+wrong type, missing parameter or header; `REQ-405` with `Allow`; `REQ-406`, with the JSON content type
+fixed; `REQ-415`; `REQ-VALIDATION`; `HTTP-404`), and one that Spring reports with a 4xx of its own and
+has no handler keeps its status as `REQ-<status>`. A `sort` the list cannot order by is `400 REQ-400`
+on `sort`, once for every list: `PropertyReferenceException` (not an attribute of the entity) and an
+`InvalidDataAccessApiUsageException` caused by Hibernate's path resolution (a derived getter such as
+`Reservation.isActive()`); any other `InvalidDataAccessApiUsageException` stays a 500. An optional text
+a column refuses blank (`externalReference` of the four movement requests) is read as `null` in the
+record's compact constructor (`BlankText.toNull`), before Bean Validation and the idempotency
+fingerprint. `GlobalExceptionHandlerTest.everyStandardRequestExceptionHasItsOwnHandler` guards the
+list, and `InventoryRepositoryDataJpaTest` what the lists really throw.
+
 ### Stock model
 
 Stock is never stored directly on `material`/`warehouse`. It is derived from an append-only ledger (`stock_movement`) plus reservations, and is kept fast to read via a materialized projection:
