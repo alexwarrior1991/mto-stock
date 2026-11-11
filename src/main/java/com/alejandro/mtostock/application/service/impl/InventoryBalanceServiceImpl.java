@@ -22,7 +22,7 @@ import java.util.UUID;
  *
  * <p>Es tambien quien sabe cuando un material cae por debajo de su minimo, porque es el unico sitio
  * por el que pasa toda escritura del disponible. Cada operacion que lo reduce (una salida, un
- * ajuste negativo, una reserva) bloquea antes la fila del material ({@code select ... for update}),
+ * ajuste negativo, una reserva, la modificacion de una reserva) bloquea antes la fila del material ({@code select ... for update}),
  * actualiza el saldo y compara el disponible total del material -la suma de sus almacenes- con
  * {@code minimum_stock_level}: si estaba por encima o igual antes y por debajo despues, publica
  * {@code material.below-minimum}. Con el material bloqueado, dos salidas concurrentes del mismo
@@ -94,6 +94,47 @@ class InventoryBalanceServiceImpl implements InventoryBalanceService {
         }
     }
 
+    /**
+     * La modificacion de una reserva. Con los materiales ya bloqueados, en la misma fila de saldo solo
+     * se escribe la diferencia (reservar lo que sube, con la condicion de disponible de siempre, o
+     * liberar lo que baja); si cambia de almacen o de material se libera la fila antigua y se reserva
+     * en la nueva. Lo que baja el disponible total del material de destino es la diferencia si el
+     * material es el mismo (nada si solo cambia de almacen o la cantidad no sube) y la cantidad entera
+     * si es otro; el material que se deja solo sube, asi que nunca cruza.
+     */
+    @Override
+    @Transactional
+    public void moveReserved(UUID fromMaterialId, UUID fromWarehouseId, BigDecimal fromQuantity,
+                             UUID toMaterialId, UUID toWarehouseId, BigDecimal toQuantity) {
+        validatePositiveQuantity(fromQuantity);
+        validatePositiveQuantity(toQuantity);
+        boolean sameMaterial = fromMaterialId.equals(toMaterialId);
+        Material target = lockMaterials(fromMaterialId, toMaterialId);
+        String actor = currentActor();
+        BigDecimal increase = toQuantity.subtract(fromQuantity);
+        if (sameMaterial && fromWarehouseId.equals(toWarehouseId)) {
+            if (increase.signum() > 0 && inventoryBalanceRepository.reserve(toMaterialId, toWarehouseId, increase, actor) == 0) {
+                BigDecimal available = inventoryBalanceRepository.calculateAvailableQuantity(toMaterialId, toWarehouseId, BigDecimal.ZERO);
+                throw new InsufficientStockException(toMaterialId, toWarehouseId, toQuantity, available.add(fromQuantity));
+            }
+            if (increase.signum() < 0
+                    && inventoryBalanceRepository.releaseReserved(toMaterialId, toWarehouseId, increase.negate(), actor) == 0) {
+                throw new ReservationException("Reserved stock could not be released");
+            }
+        } else {
+            if (inventoryBalanceRepository.releaseReserved(fromMaterialId, fromWarehouseId, fromQuantity, actor) == 0) {
+                throw new ReservationException("Reserved stock could not be released");
+            }
+            if (inventoryBalanceRepository.reserve(toMaterialId, toWarehouseId, toQuantity, actor) == 0) {
+                throw insufficientStock(toMaterialId, toWarehouseId, toQuantity);
+            }
+        }
+        BigDecimal reduction = sameMaterial ? increase : toQuantity;
+        if (reduction.signum() > 0) {
+            publishIfCrossedBelowMinimum(target, toWarehouseId, reduction, StockEvents.OPERATION_RESERVATION);
+        }
+    }
+
     @Override
     @Transactional
     public void releaseReserved(UUID materialId, UUID warehouseId, BigDecimal quantity) {
@@ -122,6 +163,24 @@ class InventoryBalanceServiceImpl implements InventoryBalanceService {
     private Material lockMaterial(UUID materialId) {
         return materialRepository.findByIdForUpdate(materialId)
                 .orElseThrow(() -> new NotFoundException("Material", materialId));
+    }
+
+    /**
+     * Los dos materiales de una reserva que cambia de material, bloqueados por orden de id para que
+     * dos modificaciones cruzadas no se esperen la una a la otra; si es el mismo, una vez. Devuelve
+     * el de destino.
+     */
+    private Material lockMaterials(UUID fromMaterialId, UUID toMaterialId) {
+        if (fromMaterialId.equals(toMaterialId)) {
+            return lockMaterial(toMaterialId);
+        }
+        if (fromMaterialId.compareTo(toMaterialId) < 0) {
+            lockMaterial(fromMaterialId);
+            return lockMaterial(toMaterialId);
+        }
+        Material target = lockMaterial(toMaterialId);
+        lockMaterial(fromMaterialId);
+        return target;
     }
 
     /**

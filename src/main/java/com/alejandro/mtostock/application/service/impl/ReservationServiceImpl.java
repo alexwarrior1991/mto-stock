@@ -60,7 +60,8 @@ class ReservationServiceImpl implements ReservationService {
     @Override
     @Transactional
     public ReservationResponse update(UUID id, ReservationUpdateRequest request) {
-        Reservation currentReservation = reservationRepository.findById(id).orElseThrow(() -> new NotFoundException("Reservation", id));
+        // Bloqueada desde la primera lectura, como en el motor: el material del que se parte es el de la reserva tal como queda.
+        Reservation currentReservation = reservationRepository.findByIdForUpdate(id).orElseThrow(() -> new NotFoundException("Reservation", id));
         Reservation requestedReservation = Reservation.builder()
                 .material(currentReservation.getMaterial())
                 .warehouse(entityReferenceFactory.toWarehouse(request.warehouseId()))

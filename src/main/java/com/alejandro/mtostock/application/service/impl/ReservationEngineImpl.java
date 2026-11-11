@@ -63,12 +63,11 @@ class ReservationEngineImpl implements ReservationEngine {
         inventoryValidationService.validatePositiveQuantity(reservation.getQuantity());
         inventoryValidationService.validateActive(reservation.getMaterial());
         inventoryValidationService.validateActive(reservation.getWarehouse());
-        inventoryBalanceService.releaseReserved(
+        // Una sola operacion de saldo: bloquea el material antes de tocar ningun saldo y mira el minimo con el neto.
+        inventoryBalanceService.moveReserved(
                 existingReservation.getMaterial().getId(),
                 existingReservation.getWarehouse().getId(),
-                existingReservation.getQuantity()
-        );
-        inventoryBalanceService.reserve(
+                existingReservation.getQuantity(),
                 reservation.getMaterial().getId(),
                 reservation.getWarehouse().getId(),
                 reservation.getQuantity()
@@ -116,8 +115,18 @@ class ReservationEngineImpl implements ReservationEngine {
         return reservation;
     }
 
+    /**
+     * The reservation row, locked until the transaction ends: two transitions of the same reservation
+     * (update, cancel, release, consume) run one after the other, and the second one reads what the
+     * first one left, so it fails the "active" check instead of taking the reserved quantity off the
+     * balance twice. Lock order: reservation, then material (only {@code update}, through
+     * {@code moveReserved}, which locks it before any balance), then {@code inventory_balance}. No path locks a reservation while holding a
+     * material or a balance, so the reservation going first closes no cycle. Callers that read the
+     * reservation before reaching the engine ({@code ReservationServiceImpl.update},
+     * {@code StockMovementServiceImpl}) take this same lock on that first read.
+     */
     private Reservation findReservation(UUID id) {
-        return reservationRepository.findById(id).orElseThrow(() -> new NotFoundException("Reservation", id));
+        return reservationRepository.findByIdForUpdate(id).orElseThrow(() -> new NotFoundException("Reservation", id));
     }
 
     private void attachManagedReferences(Reservation reservation) {

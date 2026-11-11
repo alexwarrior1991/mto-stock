@@ -21,6 +21,16 @@ public interface InventoryBalanceService {
      */
     void transfer(UUID materialId, UUID sourceWarehouseId, UUID targetWarehouseId, BigDecimal quantity);
 
+    /**
+     * Lleva lo reservado por una reserva activa de lo que tenia (material, almacen, cantidad) a lo que
+     * pasa a tener, en una sola operacion. Bloquea primero el material -los dos, por orden de id, si
+     * cambia- y solo despues toca los saldos, como toda operacion que reduce el disponible; y compara
+     * con el minimo el disponible total del material antes y despues de la operacion entera, no de
+     * cada mitad: liberar y volver a reservar por separado avisaba de un cruce que no habia.
+     */
+    void moveReserved(UUID fromMaterialId, UUID fromWarehouseId, BigDecimal fromQuantity,
+                      UUID toMaterialId, UUID toWarehouseId, BigDecimal toQuantity);
+
     void releaseReserved(UUID materialId, UUID warehouseId, BigDecimal quantity);
 
     void consumeReserved(UUID materialId, UUID warehouseId, BigDecimal quantity);
