@@ -68,11 +68,17 @@ audited and why a `project` synchronized from an event leaves no revision. Both 
 
 Virtual threads (`spring.threads.virtual.enabled`, `SPRING_THREADS_VIRTUAL_ENABLED`, `true` by
 default) for Tomcat's requests (`tomcat-handler-N`), the `@Scheduled` jobs and the RabbitMQ consumer
-(`rabbit-simple-N`). The jobs run on Boot's `SimpleAsyncTaskScheduler`: the three fixed-delay outbox
-jobs still run one after another on its thread, and the daily idempotency purge, a cron with no cap on
-its batches, runs on its own instead of holding the outbox relay back while it lasts. The
-`outbox-dispatch` thread stays a single platform thread on purpose: `OutboxDispatchTrigger` coalesces
-wake-ups on it.
+(`rabbit-simple-N`). The `outbox-dispatch` thread stays a single platform thread on purpose:
+`OutboxDispatchTrigger` coalesces wake-ups on it.
+
+The `@Scheduled` jobs (the outbox relay tick, its metrics and its purge, all fixed-delay, and the
+daily idempotency purge, a cron) run on a pool of their own, `SchedulingConfiguration`:
+`spring.task.scheduling.pool.size` threads (`SPRING_TASK_SCHEDULING_POOL_SIZE`, 4 by default),
+virtual or not. Boot's own scheduler puts them in a queue: with virtual threads its
+`SimpleAsyncTaskScheduler` runs every fixed-delay job on its single scheduling thread, and without
+them its pool has one thread unless a size is set, so a relay waiting for the database or the broker
+held the purge and the metrics back, and a long purge held the relay. A job still never overlaps
+itself (the next delay counts from the end of the previous run); the others no longer wait for it.
 
 A single request is no faster; what changes is how many can wait at once without an OS thread each.
 The limit is the connection pool (`DATABASE_POOL_MAX_SIZE`, 10 by default), and the pools of every
