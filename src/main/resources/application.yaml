@@ -268,6 +268,7 @@ app:
     enabled: ${APP_OUTBOX_ENABLED:true}
     # Intentos antes de dar el mensaje por perdido (FAILED). Con backoff exponencial acotado, 20
     # intentos cubren mas de una hora de broker caido; un FAILED se reencola desde /actuator/outbox.
+    # El intento se cuenta al reclamar el mensaje: tambien lo gasta el que tumba al relay.
     max-attempts: ${APP_OUTBOX_MAX_ATTEMPTS:20}
     # Retardo del primer reintento; se duplica en cada intento hasta max-retry-delay.
     initial-retry-delay: ${APP_OUTBOX_INITIAL_RETRY_DELAY:5s}
@@ -278,13 +279,19 @@ app:
     # Sondeo de la tabla; es la red de seguridad, porque normalmente se publica al confirmar
     # (immediate-dispatch).
     publisher-fixed-delay: ${APP_OUTBOX_PUBLISHER_FIXED_DELAY:5s}
-    # Mensajes que reclama cada pasada del relay.
+    # Mensajes que reclama cada lote; una pasada reclama lotes mientras haya trabajo.
     batch-size: 50
     # Tiempo que un mensaje reclamado queda invisible para el resto de replicas: la red de seguridad
-    # si el proceso muere entre reclamar y publicar.
+    # si el proceso muere entre reclamar y publicar. El relay renueva el reclamo de cada mensaje antes
+    # de publicarlo, asi que no tiene que cubrir el lote entero, pero al arrancar se exige que sea al
+    # menos el doble de confirm-timeout y al menos pass-time-budget + confirm-timeout.
     claim-visibility-timeout: 5m
     # Espera maxima por el publisher confirm antes de dar el envio por fallido.
     confirm-timeout: 10s
+    # Tiempo que una pasada sigue reclamando lotes mientras haya trabajo. Con el orden por agregado un
+    # lote lleva un mensaje por agregado: sin vaciar, N eventos de un agregado salian uno cada
+    # publisher-fixed-delay. Cumplido el plazo, lo reclamado sin empezar se suelta.
+    pass-time-budget: 30s
     # Cada cuanto se refresca la foto del outbox que publican las metricas (los gauges no consultan
     # la base de datos en cada scrape).
     metrics-refresh-delay: 30s

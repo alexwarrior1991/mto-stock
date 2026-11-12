@@ -659,9 +659,39 @@ A copy of `core/outbox` of `mto-configuration` (the same one `mto-maintenance` c
   broker outage), then the row is `FAILED` and stays for someone to look at; `POST /actuator/outbox`
   (`ops-write`) redrives them, `GET /actuator/outbox` (`ops-metrics`) shows the counts.
   `app.outbox.enabled=false` stops the relay only (the outbox keeps writing).
+- **The relay publishes only what is still its own.** A batch is claimed at once (`IN_PROGRESS`,
+  invisible for `claim-visibility-timeout`, 5 m), but each message the broker does not confirm costs
+  `confirm-timeout` (10 s): a batch of 50 could outlast its visibility, and another replica, or the
+  next pass, claimed and published the tail while the first relay was still on it — duplicates and,
+  within an aggregate, disorder. The claim token is the `next_attempt_at` of the `IN_PROGRESS` row
+  (every claim writes a strictly later instant, truncated to microseconds, the precision of the
+  column); before each publish the relay renews it with a conditional `UPDATE` (`renewClaim`, the
+  row count is the answer) and does not publish with 0 rows (`outbox.claim.lost.total`).
+  Rescheduling, failing and releasing carry the same condition; `markPublished` does not, on
+  purpose: a confirmed message is published whoever holds the claim.
+- **The attempt is counted when the message is claimed**, not when its failure is recorded, so a
+  message that kills the process, or whose failure can never be written, also runs out: a row that
+  reaches a claim with its attempts spent goes `FAILED` in that transaction and is not handed out.
+  Until then it holds its aggregate; once `FAILED` the next ones leave, as before.
+- **A pass drains.** With the order per aggregate a batch carries one message per aggregate, so N
+  events of one entity used to leave one per `publisher-fixed-delay`. A pass now claims batches
+  until there is no work, until `pass-time-budget` (30 s) is spent or until a whole batch publishes
+  nothing (the broker is not there); at the deadline what was claimed and not started is released
+  (`PENDING`, due now, without the attempt it did not make). A pass lasts at most
+  `pass-time-budget + confirm-timeout`.
+- **Timeouts that contradict each other stop the startup** (`OutboxProperties.validate()`), naming
+  the property: `max-attempts` and `batch-size` at least 1, the three durations positive,
+  `claim-visibility-timeout >= 2 × confirm-timeout` and `pass-time-budget + confirm-timeout <=
+  claim-visibility-timeout`. The defaults pass; an override that breaks them no longer starts.
+- Not covered, by design: a single publish that takes longer than the whole visibility after
+  renewing can still be duplicated (delivery is at-least-once; consumers discard by
+  `sequenceNumber`), and a claim is judged expired with each replica's clock — a skewed clock turns
+  into a skipped publish, not a duplicate. No migration came with this: no column or index is new.
 - Metrics `outbox.messages.pending`, `outbox.messages.in.progress`, `outbox.messages.failed`,
-  `outbox.pending.oldest.age.seconds` (the useful alarm: if it ages, the relay is broken) and
-  `outbox.publish.total{result=success|failure}`.
+  `outbox.pending.oldest.age.seconds` (the useful alarm: if it ages, the relay is broken),
+  `outbox.publish.total{result=success|failure}` and `outbox.claim.lost.total` (a message this relay
+  did not publish because its claim was no longer its own: passes or publishes slower than the
+  visibility).
 - Published rows are purged after `app.outbox.purge.retention` (7 days), in batches.
 - The trace context of the operation is stored in the row and restored when publishing, so the
   publication span hangs from the request that caused it and not from the scheduler.
@@ -676,5 +706,6 @@ The tests of the relay (`OutboxRelayDataJpaTest`, against a real PostgreSQL), th
 | `APP_OUTBOX_ENABLED` | `true` | `false` keeps writing the events and stops publishing them |
 | `APP_OUTBOX_MAX_ATTEMPTS`, `APP_OUTBOX_INITIAL_RETRY_DELAY`, `APP_OUTBOX_MAX_RETRY_DELAY` | `20`, `5s`, `5m` | The retries of the relay |
 | `APP_OUTBOX_PUBLISHER_FIXED_DELAY` | `5s` | The safety-net poll |
+| `app.outbox.claim-visibility-timeout`, `app.outbox.confirm-timeout`, `app.outbox.pass-time-budget` | `5m`, `10s`, `30s` | The claim, the wait for the confirm and how long a pass keeps draining (no environment variable: `APP_OUTBOX_PASS_TIME_BUDGET`... through relaxed binding); checked against each other at startup |
 | `APP_OUTBOX_IMMEDIATE_DISPATCH` | `true` | Publish as soon as the transaction commits |
 | `APP_OUTBOX_PURGE_ENABLED`, `APP_OUTBOX_PURGE_RETENTION` | `true`, `7d` | The purge of the published rows |

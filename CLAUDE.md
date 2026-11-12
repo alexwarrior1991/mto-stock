@@ -201,7 +201,13 @@ change and the relay publishes it afterwards with publisher confirms (`OutboxRab
 refuses to start without them). The outbox is the copy of `mto-configuration`'s `core/outbox` that
 `mto-maintenance` carries too (`infrastructure/messaging/outbox`, every piece a `@Bean` of
 `configuration/outbox/OutboxConfiguration`, all gone with `app.rabbitmq.enabled=false`, when the
-publisher is the `NoOpDomainEventPublisher`). The hooks: `InventoryBalanceServiceImpl` publishes
+publisher is the `NoOpDomainEventPublisher`). The relay renews the claim of each message before
+publishing it (the token is the `next_attempt_at` of the `IN_PROGRESS` row; 0 rows, it is not
+published, `outbox.claim.lost.total`), counts the attempt at claim time (a message that kills the
+relay ends `FAILED` too), drains batches within `app.outbox.pass-time-budget` (30 s) and refuses to
+start with timeouts that contradict each other (`OutboxProperties.validate()`); a change to
+`core/outbox` there is ported here, same names and same tests (`docs/06-messaging.md`, *The
+outbox*). The hooks: `InventoryBalanceServiceImpl` publishes
 `material.below-minimum` when the **total** available of a material (the sum over warehouses, the
 same view as `GET /materials/{id}/stock` without a warehouse) crosses below `minimumStockLevel` —
 only at the crossing, never while already below, never for a material with no minimum; every
