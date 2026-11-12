@@ -223,6 +223,7 @@ class GlobalExceptionHandlerTest {
                 org.springframework.web.servlet.NoHandlerFoundException.class,
                 org.springframework.data.core.PropertyReferenceException.class,
                 org.springframework.dao.InvalidDataAccessApiUsageException.class,
+                org.springframework.dao.DataIntegrityViolationException.class,
                 MethodArgumentNotValidException.class,
                 ConstraintViolationException.class)) {
             assertTrue(handled.contains(expected), expected.getSimpleName() + " has no handler");

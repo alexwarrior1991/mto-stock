@@ -21,6 +21,8 @@ import com.alejandro.mtostock.infrastructure.persistence.specification.Reservati
 import com.alejandro.mtostock.infrastructure.persistence.specification.StockMovementSpecification;
 import com.alejandro.mtostock.infrastructure.persistence.specification.SupplierSpecification;
 import com.alejandro.mtostock.infrastructure.persistence.specification.WarehouseSpecification;
+import com.alejandro.mtostock.application.dto.error.ApiErrorResponse;
+import com.alejandro.mtostock.infrastructure.web.exception.GlobalExceptionHandler;
 import com.alejandro.mtostock.support.PostgreSQLTestContainer;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceException;
@@ -33,7 +35,11 @@ import org.springframework.boot.flyway.autoconfigure.FlywayAutoConfiguration;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.InvalidDataAccessApiUsageException;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.data.core.PropertyReferenceException;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -148,6 +154,89 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
         blank.setExternalReference("   ");
         entityManager.persist(blank);
         assertThrows(PersistenceException.class, () -> entityManager.flush());
+    }
+
+    /**
+     * Dos altas a la vez del mismo codigo pasan las dos la comprobacion previa
+     * ({@code existsByCodeIgnoreCase}) y la segunda choca con la clave unica: es un conflicto de
+     * quien llama, no un fallo del servicio. El manejador lo dice con el codigo de codigo repetido
+     * de su recurso, que saca del NOMBRE de la restriccion violada, y con el generico para una
+     * clave unica que no es de un codigo. Una violacion que no es de clave unica (aqui un CHECK)
+     * sigue siendo un 500: es un fallo de verdad y no se esconde.
+     */
+    @Test
+    void aDuplicateInsertOnAUniqueKeyIsAConflictWithTheCodeOfItsResourceAndAnyOtherViolationStaysAServerError() {
+        GlobalExceptionHandler handler = new GlobalExceptionHandler();
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/v1/inventory/materials");
+        // Codigos al azar y cada escritura confirmada: la base es compartida, y un duplicado contra
+        // una fila sin confirmar esperaria a su transaccion en vez de fallar.
+        String suffix = UUID.randomUUID().toString();
+        try {
+            Material component = inNewTransaction(() -> materialRepository.saveAndFlush(audited(material("MAT-DUP-" + suffix, "First"))));
+            Warehouse warehouse = inNewTransaction(() -> warehouseRepository.saveAndFlush(audited(warehouse("WH-DUP-" + suffix))));
+            inNewTransaction(() -> supplierRepository.saveAndFlush(audited(Supplier.builder().code("SUP-DUP-" + suffix).name("First").build())));
+            inNewTransaction(() -> projectRepository.saveAndFlush(audited(project("PRJ-DUP-" + suffix))));
+            inNewTransaction(() -> assemblyRepository.saveAndFlush(audited(assembly("ASM-DUP-" + suffix, component))));
+
+            assertEquals("MAT-409", conflictCode(handler, request, () -> materialRepository.saveAndFlush(audited(material("MAT-DUP-" + suffix, "Second")))));
+            assertEquals("WH-409", conflictCode(handler, request, () -> warehouseRepository.saveAndFlush(audited(warehouse("WH-DUP-" + suffix)))));
+            assertEquals("SUP-409", conflictCode(handler, request,
+                    () -> supplierRepository.saveAndFlush(audited(Supplier.builder().code("SUP-DUP-" + suffix).name("Second").build()))));
+            assertEquals("PRJ-409", conflictCode(handler, request, () -> projectRepository.saveAndFlush(audited(project("PRJ-DUP-" + suffix)))));
+            assertEquals("ASM-409", conflictCode(handler, request, () -> assemblyRepository.saveAndFlush(audited(assembly("ASM-DUP-" + suffix, component)))));
+
+            // Una clave unica que no es la de un codigo (un material dos veces en un conjunto): el generico.
+            assertEquals("APP-409", conflictCode(handler, request, () -> {
+                Assembly repeated = assembly("ASM-DUP-BOM-" + suffix, component);
+                AssemblyComponent again = AssemblyComponent.builder().material(component).quantity(BigDecimal.ONE).build();
+                audit(again);
+                repeated.addComponent(again);
+                assemblyRepository.saveAndFlush(audited(repeated));
+            }));
+
+            // Un CHECK (la referencia externa en blanco) no es un conflicto de quien llama.
+            DataIntegrityViolationException check = assertThrows(DataIntegrityViolationException.class,
+                    () -> inNewTransaction(() -> {
+                        StockMovement blank = movement(component, warehouse, null, StockMovementType.ENTRY, "1.000000", Instant.parse("2026-08-01T10:00:00Z"));
+                        blank.setExternalReference("   ");
+                        return stockMovementRepository.saveAndFlush(audited(blank));
+                    }));
+            ResponseEntity<ApiErrorResponse> fault = handler.handleDataIntegrityViolation(check, request);
+            assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, fault.getStatusCode());
+            assertEquals("APP-500", fault.getBody().errorCode());
+            assertFalse(fault.getBody().message().contains("chk_"));
+        } finally {
+            // Las demas pruebas de la clase cuentan filas: lo confirmado aqui se quita.
+            inNewTransaction(() -> {
+                for (String table : List.of("assembly_component", "assembly", "supplier", "project", "warehouse", "material")) {
+                    String column = table.equals("assembly_component") ? "assembly_id in (select id from assembly where code like :code)" : "code like :code";
+                    entityManager.createNativeQuery("delete from " + table + " where " + column)
+                            .setParameter("code", "%-" + suffix)
+                            .executeUpdate();
+                }
+                return null;
+            });
+        }
+    }
+
+    /** Cada intento en su transaccion: una sentencia que falla deja abortada la de PostgreSQL. */
+    private String conflictCode(GlobalExceptionHandler handler, MockHttpServletRequest request, Runnable duplicate) {
+        DataIntegrityViolationException violation = assertThrows(DataIntegrityViolationException.class,
+                () -> inNewTransaction(() -> {
+                    duplicate.run();
+                    return null;
+                }));
+        ResponseEntity<ApiErrorResponse> response = handler.handleDataIntegrityViolation(violation, request);
+        assertEquals(HttpStatus.CONFLICT, response.getStatusCode());
+        assertEquals("CONFLICT", response.getBody().error());
+        assertFalse(response.getBody().message().contains("uq_"), "el nombre de la restriccion no sale");
+        return response.getBody().errorCode();
+    }
+
+    private <T> T inNewTransaction(java.util.function.Supplier<T> work) {
+        TransactionTemplate template = new TransactionTemplate(transactionManager);
+        template.setPropagationBehavior(DefaultTransactionDefinition.PROPAGATION_REQUIRES_NEW);
+        return template.execute(status -> work.get());
     }
 
     @Test
@@ -656,6 +745,11 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
     private void flushAndClear() {
         entityManager.flush();
         entityManager.clear();
+    }
+
+    private static <T extends AuditableEntity> T audited(T entity) {
+        audit(entity);
+        return entity;
     }
 
     private static void audit(AuditableEntity entity) {

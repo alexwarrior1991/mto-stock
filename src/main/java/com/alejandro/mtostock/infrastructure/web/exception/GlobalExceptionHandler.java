@@ -19,6 +19,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.hibernate.query.PathException;
 import org.hibernate.query.sqm.PathElementException;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.InvalidDataAccessApiUsageException;
 import org.springframework.data.core.PropertyReferenceException;
 import org.springframework.http.HttpMethod;
@@ -57,6 +58,7 @@ public class GlobalExceptionHandler {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(GlobalExceptionHandler.class);
     private static final String CORRELATION_ID_HEADER = "X-Correlation-Id";
+    private static final String UNIQUE_VIOLATION_SQL_STATE = "23505";
 
     /**
      * Returns 404 because the requested business aggregate does not exist.
@@ -293,6 +295,32 @@ public class GlobalExceptionHandler {
     }
 
     /**
+     * Returns 409 when a write hits a <b>unique</b> key: two creates of the same catalogue code at
+     * once both pass the service's own check and the second one reaches the constraint. The code is
+     * the duplicate-code one of the resource ({@code MAT-409}...), decided by the name of the violated
+     * constraint and never by the message, or {@code APP-409} for any other unique key. Any other
+     * integrity violation (a NOT NULL, a CHECK, a foreign key) is a fault of this service and stays
+     * a 500: the request was validated before, so the database refusing it means a rule is missing.
+     */
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiErrorResponse> handleDataIntegrityViolation(DataIntegrityViolationException exception, HttpServletRequest request) {
+        org.hibernate.exception.ConstraintViolationException violation = uniqueViolation(exception);
+        if (violation == null) {
+            return handleException(exception, request);
+        }
+        String aggregate = BusinessErrorCodeResolver.aggregateOfCodeConstraint(violation.getConstraintName());
+        String errorCode = BusinessErrorCodeResolver.duplicateCode(aggregate);
+        LOGGER.warn("Unique constraint {} violated for {} {}: {}", violation.getConstraintName(), request.getMethod(), request.getRequestURI(), errorCode);
+        return clientErrorResponse(
+                HttpStatus.CONFLICT,
+                aggregate == null ? "The change conflicts with the stored data." : aggregate + " code is already in use",
+                errorCode,
+                List.of(),
+                request
+        );
+    }
+
+    /**
      * Returns 400 when the query could not resolve a path: a {@code sort} on something the Java class
      * has but the table does not (a derived getter such as {@code active} of a reservation) passes
      * Spring Data's check and is refused by Hibernate while building the criteria. Any other misuse
@@ -418,6 +446,21 @@ public class GlobalExceptionHandler {
                 List.of(),
                 request
         ));
+    }
+
+    /**
+     * The Hibernate violation behind the exception when it is of a unique key: its kind when
+     * Hibernate knows it, and PostgreSQL's SQLSTATE 23505 ({@code unique_violation}) otherwise.
+     */
+    private static org.hibernate.exception.ConstraintViolationException uniqueViolation(Throwable exception) {
+        for (Throwable cause = exception; cause != null; cause = cause.getCause()) {
+            if (cause instanceof org.hibernate.exception.ConstraintViolationException violation) {
+                boolean unique = violation.getKind() == org.hibernate.exception.ConstraintViolationException.ConstraintKind.UNIQUE
+                        || UNIQUE_VIOLATION_SQL_STATE.equals(violation.getSQLState());
+                return unique ? violation : null;
+            }
+        }
+        return null;
     }
 
     private static boolean isUnresolvedQueryPath(Throwable exception) {

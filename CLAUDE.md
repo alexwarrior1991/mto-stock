@@ -65,7 +65,12 @@ on `sort`, once for every list: `PropertyReferenceException` (not an attribute o
 `Reservation.isActive()`); any other `InvalidDataAccessApiUsageException` stays a 500. An optional text
 a column refuses blank (`externalReference` of the four movement requests) is read as `null` in the
 record's compact constructor (`BlankText.toNull`), before Bean Validation and the idempotency
-fingerprint. `GlobalExceptionHandlerTest.everyStandardRequestExceptionHasItsOwnHandler` guards the
+fingerprint. A `DataIntegrityViolationException` of a **unique** key (two creates of one code at once pass
+`existsByCodeIgnoreCase` and the second hits the constraint) is a 409 with the duplicate-code code of
+its resource, read from the constraint **name** (`uq_material_code` → `MAT-409`...,
+`BusinessErrorCodeResolver`), or `APP-409` for another unique key; any other integrity violation
+stays a 500, so a missing rule is not hidden. A new catalogue adds its constraint there.
+`GlobalExceptionHandlerTest.everyStandardRequestExceptionHasItsOwnHandler` guards the
 list, and `InventoryRepositoryDataJpaTest` what the lists really throw.
 
 ### Stock model

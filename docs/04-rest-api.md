@@ -38,7 +38,8 @@ Swagger UI at `/swagger-ui.html`.
   | `404` | `HTTP-404` | The route does not exist. |
   | `405` | `REQ-405` | The resource exists but not for that method (a `DELETE` on a catalogue, a `PATCH` where only `PUT` exists); the `Allow` header lists the ones it has. |
   | `406` | `REQ-406` | The `Accept` header admits nothing but something other than JSON. |
-  | `409` | `MAT-409`, `WH-409`, `SUP-409`, `PRJ-409`, `ASM-409` | Duplicate business code. |
+  | `409` | `MAT-409`, `WH-409`, `SUP-409`, `PRJ-409`, `ASM-409` | Duplicate business code, also when two creates of the same code arrive at once and the second one is stopped by the unique key. |
+  | `409` | `APP-409` | Any other unique key hit by a concurrent write. A violation that is not of a unique key stays a `500`. |
   | `409` | `STK-001` | Insufficient stock. |
   | `409` | `IDEM-001` | An `Idempotency-Key` reused with another body. |
   | `415` | `REQ-415` | The body is not `application/json`. |
