@@ -6,13 +6,20 @@ spring:
 
   # Hilos virtuales: las peticiones de Tomcat, los @Scheduled y el consumidor de RabbitMQ esperan a la
   # base, a Redis o al broker sin ocupar un hilo del sistema operativo cada uno. Una peticion suelta no
-  # va mas rapida: lo que cambia es cuantas pueden esperar a la vez. El cron de la purga de claves de
-  # idempotencia corre ademas en su propio hilo y deja de retrasar el relay del outbox. El hilo de
-  # outbox-dispatch sigue siendo uno solo a proposito (OutboxConfiguration). Con false, todo vuelve a
-  # hilos de plataforma.
+  # va mas rapida: lo que cambia es cuantas pueden esperar a la vez. El hilo de outbox-dispatch sigue
+  # siendo uno solo a proposito (OutboxConfiguration). Con false, todo vuelve a hilos de plataforma.
   threads:
     virtual:
       enabled: ${SPRING_THREADS_VIRTUAL_ENABLED:true}
+
+  # El pool de los @Scheduled (SchedulingConfiguration): el relay del outbox, sus metricas, su purga y
+  # la purga de claves de idempotencia no se esperan unos a otros. Vale con hilos virtuales y sin
+  # ellos: el planificador de Boot con hilos virtuales corre todas las tareas fixedDelay en un mismo
+  # hilo, y el de plataforma, sin este tamano, tiene uno solo.
+  task:
+    scheduling:
+      pool:
+        size: ${SPRING_TASK_SCHEDULING_POOL_SIZE:4}
 
   # El limite real de concurrencia: sin el tope de 200 hilos de Tomcat, lo que espera es la conexion.
   # El PostgreSQL de mto-platform es uno para todos los servicios (max_connections 100 por defecto),
@@ -261,6 +268,7 @@ app:
     enabled: ${APP_OUTBOX_ENABLED:true}
     # Intentos antes de dar el mensaje por perdido (FAILED). Con backoff exponencial acotado, 20
     # intentos cubren mas de una hora de broker caido; un FAILED se reencola desde /actuator/outbox.
+    # El intento se cuenta al reclamar el mensaje: tambien lo gasta el que tumba al relay.
     max-attempts: ${APP_OUTBOX_MAX_ATTEMPTS:20}
     # Retardo del primer reintento; se duplica en cada intento hasta max-retry-delay.
     initial-retry-delay: ${APP_OUTBOX_INITIAL_RETRY_DELAY:5s}
@@ -271,13 +279,19 @@ app:
     # Sondeo de la tabla; es la red de seguridad, porque normalmente se publica al confirmar
     # (immediate-dispatch).
     publisher-fixed-delay: ${APP_OUTBOX_PUBLISHER_FIXED_DELAY:5s}
-    # Mensajes que reclama cada pasada del relay.
+    # Mensajes que reclama cada lote; una pasada reclama lotes mientras haya trabajo.
     batch-size: 50
     # Tiempo que un mensaje reclamado queda invisible para el resto de replicas: la red de seguridad
-    # si el proceso muere entre reclamar y publicar.
+    # si el proceso muere entre reclamar y publicar. El relay renueva el reclamo de cada mensaje antes
+    # de publicarlo, asi que no tiene que cubrir el lote entero, pero al arrancar se exige que sea al
+    # menos el doble de confirm-timeout y al menos pass-time-budget + confirm-timeout.
     claim-visibility-timeout: 5m
     # Espera maxima por el publisher confirm antes de dar el envio por fallido.
     confirm-timeout: 10s
+    # Tiempo que una pasada sigue reclamando lotes mientras haya trabajo. Con el orden por agregado un
+    # lote lleva un mensaje por agregado: sin vaciar, N eventos de un agregado salian uno cada
+    # publisher-fixed-delay. Cumplido el plazo, lo reclamado sin empezar se suelta.
+    pass-time-budget: 30s
     # Cada cuanto se refresca la foto del outbox que publican las metricas (los gauges no consultan
     # la base de datos en cada scrape).
     metrics-refresh-delay: 30s

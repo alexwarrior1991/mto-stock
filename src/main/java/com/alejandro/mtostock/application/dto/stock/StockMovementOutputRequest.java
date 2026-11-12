@@ -1,5 +1,6 @@
 package com.alejandro.mtostock.application.dto.stock;
 
+import com.alejandro.mtostock.application.dto.common.BlankText;
 import com.alejandro.mtostock.application.dto.common.IdempotencyIgnored;
 import jakarta.validation.constraints.Digits;
 import jakarta.validation.constraints.NotNull;
@@ -37,4 +38,11 @@ public record StockMovementOutputRequest(
 
         String notes
 ) {
+    /**
+     * A blank external reference means "no reference": it becomes {@code null} here, at the API
+     * boundary, instead of reaching the column's not-blank check as a server error.
+     */
+    public StockMovementOutputRequest {
+        externalReference = BlankText.toNull(externalReference);
+    }
 }

@@ -6,6 +6,10 @@ import com.alejandro.mtostock.application.dto.assembly.AssemblyUpdateRequest;
 import com.alejandro.mtostock.application.dto.material.MaterialRequest;
 import com.alejandro.mtostock.application.dto.reservation.ReservationStatusDto;
 import com.alejandro.mtostock.application.dto.reservation.ReservationStatusUpdateRequest;
+import com.alejandro.mtostock.application.dto.stock.StockAdjustmentDirection;
+import com.alejandro.mtostock.application.dto.stock.StockMovementAdjustmentRequest;
+import com.alejandro.mtostock.application.dto.stock.StockMovementEntryRequest;
+import com.alejandro.mtostock.application.dto.stock.StockMovementOutputRequest;
 import com.alejandro.mtostock.application.dto.stock.StockMovementTransferRequest;
 import jakarta.validation.Validation;
 import jakarta.validation.Validator;
@@ -16,6 +20,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DtoValidationTest {
@@ -84,6 +89,37 @@ class DtoValidationTest {
         var violations = validator.validate(request);
 
         assertTrue(violations.stream().anyMatch(violation -> "differentWarehouses".contentEquals(violation.getPropertyPath().toString())));
+    }
+
+    /**
+     * Una referencia externa en blanco es "sin referencia" en las cuatro peticiones de movimiento:
+     * se lee como {@code null} al construir la peticion, asi que es valida y no llega a la
+     * restriccion de la columna. Una con texto queda como se escribio, y sigue teniendo su tope.
+     */
+    @Test
+    void movementRequestsReadABlankExternalReferenceAsNoReference() {
+        UUID id = UUID.randomUUID();
+        BigDecimal one = new BigDecimal("1.000000");
+        for (String blank : List.of("", "   ", "\t\n")) {
+            var entry = new StockMovementEntryRequest(id, id, null, one, null, blank, "notes");
+            var output = new StockMovementOutputRequest(id, id, null, null, one, null, blank, "notes");
+            var adjustment = new StockMovementAdjustmentRequest(id, id, StockAdjustmentDirection.POSITIVE, one, null, blank, "notes");
+            var transfer = new StockMovementTransferRequest(id, id, UUID.randomUUID(), one, null, blank, "notes");
+
+            assertNull(entry.externalReference());
+            assertNull(output.externalReference());
+            assertNull(adjustment.externalReference());
+            assertNull(transfer.externalReference());
+            assertEquals(new StockMovementOutputRequest(id, id, null, null, one, null, null, "notes"), output);
+            assertTrue(validator.validate(entry).isEmpty());
+            assertTrue(validator.validate(output).isEmpty());
+            assertTrue(validator.validate(adjustment).isEmpty());
+            assertTrue(validator.validate(transfer).isEmpty());
+        }
+
+        assertEquals(" PO-1 ", new StockMovementEntryRequest(id, id, null, one, null, " PO-1 ", null).externalReference());
+        assertTrue(validator.validate(new StockMovementEntryRequest(id, id, null, one, null, "x".repeat(129), null)).stream()
+                .anyMatch(violation -> "externalReference".contentEquals(violation.getPropertyPath().toString())));
     }
 
     @Test

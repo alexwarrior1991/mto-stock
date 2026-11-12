@@ -40,7 +40,7 @@ docker compose up -d --build
 - Flyway runs automatically on startup against `src/main/resources/db/migration`; Hibernate is `ddl-auto: validate` in every profile, so schema changes always go through a new Flyway migration, never through entity annotations alone. A migration that changes a column on one of the seven audited tables must change its `<table>_aud` twin in the same migration (nullable, no constraints) — see **Auditing** below.
 - Swagger UI: `http://localhost:8080/swagger-ui.html`; OpenAPI JSON: `/v3/api-docs`; Actuator health/info/metrics/prometheus under `/actuator/*`.
 - Profiles: `dev`, `test`, `prod` (`application-*.yml`), selected via `SPRING_PROFILES_ACTIVE`.
-- Virtual threads are on (`SPRING_THREADS_VIRTUAL_ENABLED`, see `docs/01-architecture.md`, Threads): the limit is the connection pool (`DATABASE_POOL_MAX_SIZE`, 10), not the threads; `outbox-dispatch` stays one platform thread on purpose.
+- Virtual threads are on (`SPRING_THREADS_VIRTUAL_ENABLED`, see `docs/01-architecture.md`, Threads): the limit is the connection pool (`DATABASE_POOL_MAX_SIZE`, 10), not the threads; `outbox-dispatch` stays one platform thread on purpose. The `@Scheduled` jobs (the outbox relay tick, its metrics, its purge and the idempotency purge) run on a pool of 4 (`configuration/scheduling/SchedulingConfiguration`, `SPRING_TASK_SCHEDULING_POOL_SIZE`), virtual threads or not, because Boot's scheduler runs every `fixedDelay` on a single thread and one job that waited stopped the others; `MtoStockApplicationTests` proves both halves.
 
 ## Architecture
 
@@ -51,6 +51,27 @@ The code is organized as three layers, each with its own package root under `com
 - `infrastructure` — `persistence.entity` (JPA `@Entity` classes — **note these share class names with `domain.model`**, e.g. both `domain.model.Material` and `infrastructure.persistence.entity.Material` exist; always check the import when touching a `Material`/`Warehouse`/`Assembly`/etc. reference), `persistence.repository` (Spring Data repositories + JPA Specifications for filtering), `persistence.specification`, and `web.controller` / `web.exception` (REST layer).
 
 DTOs only cross the API boundary; JPA entities are never exposed directly. MapStruct (`application/mapper`) generates all entity↔DTO and entity↔domain mappings; `EntityReferenceFactory` supplies MapStruct with lightweight entity references (id-only) for relationship fields instead of loading full associations.
+
+### Request errors
+
+`GlobalExceptionHandler` answers every failure with the same `ApiErrorResponse` (the web apps read
+`error`, `message` and `errorCode`), and a `500` `APP-500` is only a fault of this service: every
+Spring MVC and Spring Data exception that blames the request has a handler (`REQ-400` unreadable body,
+wrong type, missing parameter or header; `REQ-405` with `Allow`; `REQ-406`, with the JSON content type
+fixed; `REQ-415`; `REQ-VALIDATION`; `HTTP-404`), and one that Spring reports with a 4xx of its own and
+has no handler keeps its status as `REQ-<status>`. A `sort` the list cannot order by is `400 REQ-400`
+on `sort`, once for every list: `PropertyReferenceException` (not an attribute of the entity) and an
+`InvalidDataAccessApiUsageException` caused by Hibernate's path resolution (a derived getter such as
+`Reservation.isActive()`); any other `InvalidDataAccessApiUsageException` stays a 500. An optional text
+a column refuses blank (`externalReference` of the four movement requests) is read as `null` in the
+record's compact constructor (`BlankText.toNull`), before Bean Validation and the idempotency
+fingerprint. A `DataIntegrityViolationException` of a **unique** key (two creates of one code at once pass
+`existsByCodeIgnoreCase` and the second hits the constraint) is a 409 with the duplicate-code code of
+its resource, read from the constraint **name** (`uq_material_code` → `MAT-409`...,
+`BusinessErrorCodeResolver`), or `APP-409` for another unique key; any other integrity violation
+stays a 500, so a missing rule is not hidden. A new catalogue adds its constraint there.
+`GlobalExceptionHandlerTest.everyStandardRequestExceptionHasItsOwnHandler` guards the
+list, and `InventoryRepositoryDataJpaTest` what the lists really throw.
 
 ### Stock model
 
@@ -185,7 +206,13 @@ change and the relay publishes it afterwards with publisher confirms (`OutboxRab
 refuses to start without them). The outbox is the copy of `mto-configuration`'s `core/outbox` that
 `mto-maintenance` carries too (`infrastructure/messaging/outbox`, every piece a `@Bean` of
 `configuration/outbox/OutboxConfiguration`, all gone with `app.rabbitmq.enabled=false`, when the
-publisher is the `NoOpDomainEventPublisher`). The hooks: `InventoryBalanceServiceImpl` publishes
+publisher is the `NoOpDomainEventPublisher`). The relay renews the claim of each message before
+publishing it (the token is the `next_attempt_at` of the `IN_PROGRESS` row; 0 rows, it is not
+published, `outbox.claim.lost.total`), counts the attempt at claim time (a message that kills the
+relay ends `FAILED` too), drains batches within `app.outbox.pass-time-budget` (30 s) and refuses to
+start with timeouts that contradict each other (`OutboxProperties.validate()`); a change to
+`core/outbox` there is ported here, same names and same tests (`docs/06-messaging.md`, *The
+outbox*). The hooks: `InventoryBalanceServiceImpl` publishes
 `material.below-minimum` when the **total** available of a material (the sum over warehouses, the
 same view as `GET /materials/{id}/stock` without a warehouse) crosses below `minimumStockLevel` —
 only at the crossing, never while already below, never for a material with no minimum; every

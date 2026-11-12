@@ -32,7 +32,33 @@ final class BusinessErrorCodeResolver {
             Map.entry("Target warehouse", "WH")
     );
 
+    /**
+     * The unique constraint of each catalogue code and the aggregate it belongs to. A duplicate that
+     * slips past the service's own check (two creates at once) is told with the same code as the one
+     * the check finds.
+     */
+    private static final Map<String, String> CODE_CONSTRAINT_AGGREGATES = Map.of(
+            "uq_material_code", "Material",
+            "uq_supplier_code", "Supplier",
+            "uq_warehouse_code", "Warehouse",
+            "uq_project_code", "Project",
+            "uq_assembly_code", "Assembly"
+    );
+
     private BusinessErrorCodeResolver() {
+    }
+
+    /**
+     * @param constraintName the name of the violated unique constraint, as the database reports it
+     * @return the aggregate whose business code that constraint keeps unique, or {@code null} when
+     *         it is the unique key of something else
+     */
+    static String aggregateOfCodeConstraint(String constraintName) {
+        return constraintName == null ? null : CODE_CONSTRAINT_AGGREGATES.get(constraintName.toLowerCase(java.util.Locale.ROOT));
+    }
+
+    static String duplicateCode(String aggregate) {
+        return aggregate == null ? "APP-409" : aggregateCode(aggregate, "409", "APP-409");
     }
 
     static String resolve(BusinessException exception) {

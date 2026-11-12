@@ -19,6 +19,8 @@ import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingRequestHeaderException;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.lang.reflect.Method;
 import java.util.UUID;
@@ -143,6 +145,89 @@ class GlobalExceptionHandlerTest {
         assertEquals("INTERNAL_SERVER_ERROR", body.error());
         assertNotEquals(exception.getMessage(), body.message());
         assertFalse(body.message().contains("database password"));
+    }
+
+    /**
+     * Una excepcion de Spring MVC que dice ella misma que la peticion esta mal (un
+     * {@code ErrorResponse} con un 4xx) y no tiene manejador propio conserva su estado, con el codigo
+     * generico y sin su mensaje; una que dice 5xx sigue siendo el 500 de siempre.
+     */
+    @Test
+    void aSpringErrorThatBlamesTheRequestKeepsItsStatusAndOneThatDoesNotStaysAServerError() {
+        MockHttpServletRequest request = request("POST", "/api/v1/inventory/materials");
+
+        ResponseEntity<ApiErrorResponse> tooLarge = handler.handleException(
+                new ResponseStatusException(HttpStatus.CONTENT_TOO_LARGE, "internal detail"), request);
+        ResponseEntity<ApiErrorResponse> serverSide = handler.handleException(
+                new ResponseStatusException(HttpStatus.BAD_GATEWAY, "internal detail"), request);
+
+        assertEquals(HttpStatus.CONTENT_TOO_LARGE, tooLarge.getStatusCode());
+        assertNotNull(tooLarge.getBody());
+        assertEquals("REQ-413", tooLarge.getBody().errorCode());
+        assertEquals(413, tooLarge.getBody().status());
+        assertFalse(tooLarge.getBody().message().contains("internal detail"));
+        assertEquals(HttpStatus.INTERNAL_SERVER_ERROR, serverSide.getStatusCode());
+        assertNotNull(serverSide.getBody());
+        assertEquals("APP-500", serverSide.getBody().errorCode());
+        assertFalse(serverSide.getBody().message().contains("internal detail"));
+    }
+
+    @Test
+    void aMissingRequiredHeaderIsABadRequestThatNamesIt() throws NoSuchMethodException {
+        MockHttpServletRequest request = request("POST", "/api/v1/inventory/materials");
+        Method method = GlobalExceptionHandlerTest.class.getDeclaredMethod("validatedEndpoint", SampleRequest.class);
+
+        ResponseEntity<ApiErrorResponse> response = handler.handleMissingRequestHeader(
+                new MissingRequestHeaderException("X-Required", new MethodParameter(method, 0)), request);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals("REQ-400", response.getBody().errorCode());
+        assertEquals("X-Required", response.getBody().validationErrors().getFirst().field());
+    }
+
+    @Test
+    void aRequestNoHandlerAnswersIsNotFound() {
+        MockHttpServletRequest request = request("GET", "/api/v1/inventory/nothing");
+
+        ResponseEntity<ApiErrorResponse> response = handler.handleNoResourceFound(request);
+
+        assertEquals(HttpStatus.NOT_FOUND, response.getStatusCode());
+        assertNotNull(response.getBody());
+        assertEquals("HTTP-404", response.getBody().errorCode());
+    }
+
+    /**
+     * Cada excepcion estandar de Spring MVC y de Spring Data que es culpa de la peticion tiene su
+     * manejador: sin el caeria en el de {@code Exception}, que para las que no dicen su estado es
+     * un 500.
+     */
+    @Test
+    void everyStandardRequestExceptionHasItsOwnHandler() {
+        java.util.Set<Class<?>> handled = java.util.Arrays.stream(GlobalExceptionHandler.class.getDeclaredMethods())
+                .map(method -> method.getAnnotation(org.springframework.web.bind.annotation.ExceptionHandler.class))
+                .filter(java.util.Objects::nonNull)
+                .flatMap(annotation -> java.util.Arrays.stream(annotation.value()))
+                .collect(java.util.stream.Collectors.toSet());
+
+        for (Class<?> expected : java.util.List.of(
+                org.springframework.web.HttpRequestMethodNotSupportedException.class,
+                org.springframework.web.bind.MissingServletRequestParameterException.class,
+                MissingRequestHeaderException.class,
+                org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class,
+                org.springframework.web.method.annotation.HandlerMethodValidationException.class,
+                org.springframework.http.converter.HttpMessageNotReadableException.class,
+                org.springframework.web.HttpMediaTypeNotSupportedException.class,
+                org.springframework.web.HttpMediaTypeNotAcceptableException.class,
+                org.springframework.web.servlet.resource.NoResourceFoundException.class,
+                org.springframework.web.servlet.NoHandlerFoundException.class,
+                org.springframework.data.core.PropertyReferenceException.class,
+                org.springframework.dao.InvalidDataAccessApiUsageException.class,
+                org.springframework.dao.DataIntegrityViolationException.class,
+                MethodArgumentNotValidException.class,
+                ConstraintViolationException.class)) {
+            assertTrue(handled.contains(expected), expected.getSimpleName() + " has no handler");
+        }
     }
 
     @SuppressWarnings("unused")

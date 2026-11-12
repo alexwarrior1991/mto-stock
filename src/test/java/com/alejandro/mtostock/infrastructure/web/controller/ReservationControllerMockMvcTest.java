@@ -8,7 +8,17 @@ import com.alejandro.mtostock.application.dto.reservation.ReservationStatusDto;
 import com.alejandro.mtostock.application.dto.reservation.ReservationUpdateRequest;
 import com.alejandro.mtostock.application.exception.IdempotencyKeyConflictException;
 import com.alejandro.mtostock.application.exception.InsufficientStockException;
+import com.alejandro.mtostock.application.dto.stock.StockMovementOutputRequest;
+import com.alejandro.mtostock.application.service.AssemblyService;
 import com.alejandro.mtostock.application.service.ReservationService;
+import com.alejandro.mtostock.application.service.StockMovementService;
+import com.alejandro.mtostock.application.service.WarehouseService;
+import com.alejandro.mtostock.infrastructure.persistence.entity.Reservation;
+import org.hibernate.query.sqm.PathElementException;
+import org.mockito.ArgumentCaptor;
+import org.springframework.dao.InvalidDataAccessApiUsageException;
+import org.springframework.data.core.PropertyPath;
+import org.springframework.data.core.PropertyReferenceException;
 import com.alejandro.mtostock.infrastructure.persistence.entity.ReservationStatus;
 import com.alejandro.mtostock.infrastructure.web.exception.GlobalExceptionHandler;
 import org.junit.jupiter.api.Test;
@@ -29,7 +39,13 @@ import java.util.UUID;
 import static org.hamcrest.Matchers.hasSize;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -38,7 +54,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
-@WebMvcTest(ReservationController.class)
+// Los otros dos controladores estan para lo que el de reservas no tiene: un parametro obligatorio
+// (la disponibilidad de un conjunto) y una referencia externa (los movimientos).
+@WebMvcTest({ReservationController.class, AssemblyController.class, StockMovementController.class})
 @Import(GlobalExceptionHandler.class)
 // Sin la cadena de filtros: lo que se prueba aqui es el contrato HTTP del controlador. Quien decide
 // que rol necesita cada verbo es ApiAuthorizationRulesTest, contra controladores sonda.
@@ -50,6 +68,15 @@ class ReservationControllerMockMvcTest {
 
     @MockitoBean
     private ReservationService reservationService;
+
+    @MockitoBean
+    private AssemblyService assemblyService;
+
+    @MockitoBean
+    private StockMovementService stockMovementService;
+
+    @MockitoBean
+    private WarehouseService warehouseService;
 
     @Test
     void createReturnsCreatedLocationAndJsonBody() throws Exception {
@@ -189,6 +216,183 @@ class ReservationControllerMockMvcTest {
         mockMvc.perform(post("/api/v1/inventory/reservations/{id}/release", id))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.status").value("RELEASED"));
+    }
+
+    /**
+     * Un {@code sort} que la entidad no tiene lo rechaza Spring Data al montar la consulta
+     * ({@link PropertyReferenceException}), y uno que es propiedad de la clase pero no atributo
+     * persistente ({@code active} de una reserva, que es un metodo) lo rechaza Hibernate. Los dos son
+     * un error de quien llama: 400 y el campo {@code sort}, no el 500 de antes. Que las listas lanzan
+     * justo esas dos excepciones lo fija {@code InventoryRepositoryDataJpaTest}.
+     */
+    @Test
+    void aSortTheListCannotOrderByIsABadRequest() throws Exception {
+        PropertyReferenceException unknown = assertThrows(PropertyReferenceException.class,
+                () -> PropertyPath.from("nope", Reservation.class));
+        when(reservationService.search(any(), any(), any(), any(), any()))
+                .thenThrow(unknown)
+                .thenThrow(new InvalidDataAccessApiUsageException("Could not resolve attribute 'active' of 'Reservation'",
+                        new PathElementException("Could not resolve attribute 'active' of 'Reservation'")));
+
+        mockMvc.perform(get("/api/v1/inventory/reservations").param("sort", "nope,asc"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("REQ-400"))
+                .andExpect(jsonPath("$.error").value("BAD_REQUEST"))
+                .andExpect(jsonPath("$.message").value("Invalid sort property."))
+                .andExpect(jsonPath("$.validationErrors[0].field").value("sort"))
+                .andExpect(jsonPath("$.validationErrors[0].message").value("unknown property 'nope'"));
+        mockMvc.perform(get("/api/v1/inventory/reservations").param("sort", "active,desc"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("REQ-400"))
+                .andExpect(jsonPath("$.message").value("Invalid sort property."))
+                .andExpect(jsonPath("$.validationErrors[0].field").value("sort"));
+    }
+
+    /**
+     * Un mal uso de la API de datos que no viene de un {@code sort} sigue siendo un fallo del
+     * servidor, y su mensaje no sale.
+     */
+    @Test
+    void aDataAccessMisuseThatIsNotASortStaysAServerError() throws Exception {
+        when(reservationService.search(any(), any(), any(), any(), any()))
+                .thenThrow(new InvalidDataAccessApiUsageException("detached entity passed to persist: Reservation"));
+
+        mockMvc.perform(get("/api/v1/inventory/reservations"))
+                .andExpect(status().isInternalServerError())
+                .andExpect(jsonPath("$.errorCode").value("APP-500"))
+                .andExpect(jsonPath("$.message").value("An unexpected error occurred. Please contact support."));
+    }
+
+    /** Un verbo que el recurso no tiene es 405 con {@code Allow}, no 500. */
+    @Test
+    void aMethodTheResourceDoesNotHaveIsMethodNotAllowedWithItsAllowHeader() throws Exception {
+        UUID id = UUID.randomUUID();
+
+        mockMvc.perform(patch("/api/v1/inventory/reservations/{id}", id)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{}"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(header().string("Allow", org.hamcrest.Matchers.allOf(
+                        org.hamcrest.Matchers.containsString("GET"),
+                        org.hamcrest.Matchers.containsString("PUT"),
+                        org.hamcrest.Matchers.containsString("DELETE"))))
+                .andExpect(jsonPath("$.status").value(405))
+                .andExpect(jsonPath("$.error").value("METHOD_NOT_ALLOWED"))
+                .andExpect(jsonPath("$.errorCode").value("REQ-405"))
+                .andExpect(jsonPath("$.method").value("PATCH"));
+        mockMvc.perform(delete("/api/v1/inventory/assemblies/{id}", id))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(header().exists("Allow"))
+                .andExpect(jsonPath("$.errorCode").value("REQ-405"));
+        verifyNoInteractions(reservationService, assemblyService);
+    }
+
+    /** Sin un parametro obligatorio: 400 con su nombre. */
+    @Test
+    void aMissingRequiredParameterIsABadRequestThatNamesIt() throws Exception {
+        mockMvc.perform(get("/api/v1/inventory/assemblies/{id}/availability", UUID.randomUUID()))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("REQ-400"))
+                .andExpect(jsonPath("$.message").value("Missing request parameter."))
+                .andExpect(jsonPath("$.validationErrors[0].field").value("warehouseId"))
+                .andExpect(jsonPath("$.validationErrors[0].message").value("is required"));
+    }
+
+    /**
+     * Un id que no es un UUID, un enumerado que no existe y una fecha que no lo es son 400 con el
+     * nombre del parametro. Una pagina que no es un numero no es un error: Spring Data usa la de por
+     * defecto.
+     */
+    @Test
+    void aParameterOfTheWrongTypeIsABadRequestAndAPageThatIsNotANumberIsTheDefaultOne() throws Exception {
+        when(reservationService.search(any(), any(), any(), any(), any()))
+                .thenReturn(new PageResponse<>(List.of(), new PageMetadataResponse(0, 20, 0, 0, true, true)));
+
+        mockMvc.perform(get("/api/v1/inventory/reservations/{id}", "not-a-uuid"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("REQ-400"))
+                .andExpect(jsonPath("$.validationErrors[0].field").value("id"));
+        mockMvc.perform(get("/api/v1/inventory/reservations").param("status", "NOPE"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("REQ-400"))
+                .andExpect(jsonPath("$.validationErrors[0].field").value("status"));
+        mockMvc.perform(get("/api/v1/inventory/movements").param("dateFrom", "yesterday"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("REQ-400"))
+                .andExpect(jsonPath("$.validationErrors[0].field").value("dateFrom"));
+        mockMvc.perform(get("/api/v1/inventory/reservations").param("page", "abc").param("size", "-3"))
+                .andExpect(status().isOk());
+    }
+
+    /** Un cuerpo que no se puede leer es 400, y uno que no es JSON, 415. */
+    @Test
+    void anUnreadableBodyIsABadRequestAndAnotherMediaTypeIsUnsupported() throws Exception {
+        mockMvc.perform(post("/api/v1/inventory/reservations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"materialId\": "))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("REQ-400"));
+        mockMvc.perform(post("/api/v1/inventory/reservations")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"materialId\": \"not-a-uuid\"}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("REQ-400"));
+        mockMvc.perform(post("/api/v1/inventory/reservations")
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.errorCode").value("REQ-400"));
+        mockMvc.perform(post("/api/v1/inventory/reservations")
+                        .contentType(MediaType.TEXT_PLAIN)
+                        .content("hello"))
+                .andExpect(status().isUnsupportedMediaType())
+                .andExpect(jsonPath("$.errorCode").value("REQ-415"));
+        verifyNoInteractions(reservationService);
+    }
+
+    /**
+     * Quien solo acepta un formato que la API no da recibe 406, y el error va en JSON igualmente: es
+     * el unico cuerpo que hay.
+     */
+    @Test
+    void anAcceptHeaderTheApiCannotServeIsNotAcceptableWithTheJsonError() throws Exception {
+        UUID id = UUID.randomUUID();
+        when(reservationService.findById(id)).thenReturn(response(id, UUID.randomUUID(), UUID.randomUUID(), UUID.randomUUID(), ReservationStatus.ACTIVE));
+
+        mockMvc.perform(get("/api/v1/inventory/reservations/{id}", id).accept(MediaType.APPLICATION_PDF))
+                .andExpect(status().isNotAcceptable())
+                .andExpect(header().string("Content-Type", org.hamcrest.Matchers.startsWith("application/json")))
+                .andExpect(jsonPath("$.status").value(406))
+                .andExpect(jsonPath("$.errorCode").value("REQ-406"));
+    }
+
+    /** Una ruta que no existe bajo la API es 404, con el cuerpo de siempre. */
+    @Test
+    void aRouteThatDoesNotExistIsNotFound() throws Exception {
+        mockMvc.perform(get("/api/v1/inventory/nothing-here"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.errorCode").value("HTTP-404"));
+    }
+
+    /**
+     * Una referencia externa en blanco es "sin referencia": llega al servicio como {@code null}, y no
+     * a la restriccion {@code chk_stock_movement_external_reference_not_blank} (500).
+     */
+    @Test
+    void aBlankExternalReferenceReachesTheServiceAsNoReference() throws Exception {
+        UUID materialId = UUID.randomUUID();
+        UUID warehouseId = UUID.randomUUID();
+        when(stockMovementService.registerOutput(any(), any())).thenReturn(null);
+
+        mockMvc.perform(post("/api/v1/inventory/movements/outputs")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("""
+                        {"materialId": "%s", "warehouseId": "%s", "quantity": 1, "externalReference": "   ", "notes": "kept"}
+                        """.formatted(materialId, warehouseId)));
+
+        ArgumentCaptor<StockMovementOutputRequest> request = ArgumentCaptor.forClass(StockMovementOutputRequest.class);
+        verify(stockMovementService).registerOutput(request.capture(), any());
+        assertNull(request.getValue().externalReference());
+        assertEquals("kept", request.getValue().notes());
     }
 
     private static ReservationResponse response(UUID reservationId,

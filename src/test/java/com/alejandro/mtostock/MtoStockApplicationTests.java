@@ -23,19 +23,32 @@ import com.alejandro.mtostock.application.service.StockMovementService;
 import com.alejandro.mtostock.application.service.SupplierService;
 import com.alejandro.mtostock.application.service.TransferService;
 import com.alejandro.mtostock.application.service.WarehouseService;
+import com.alejandro.mtostock.configuration.scheduling.SchedulingConfiguration;
 import com.alejandro.mtostock.support.PostgreSQLTestContainer;
 import com.zaxxer.hikari.HikariDataSource;
 import io.micrometer.tracing.Tracer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.autoconfigure.AutoConfigurations;
+import org.springframework.boot.autoconfigure.task.TaskSchedulingAutoConfiguration;
+import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.thread.Threading;
 import org.springframework.context.ApplicationContext;
+import org.springframework.core.env.StandardEnvironment;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.scheduling.annotation.EnableScheduling;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
 import javax.sql.DataSource;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -123,6 +136,95 @@ class MtoStockApplicationTests extends PostgreSQLTestContainer {
     void laAplicacionCorreEnHilosVirtualesConElPoolDeConexionesConfigurado() throws Exception {
         assertTrue(Threading.VIRTUAL.isActive(context.getEnvironment()), "spring.threads.virtual.enabled");
         assertEquals(10, context.getBean(DataSource.class).unwrap(HikariDataSource.class).getMaximumPoolSize());
+    }
+
+    /**
+     * Con el planificador de Boot, una pasada {@code @Scheduled} que espera para a las demas: con
+     * hilos virtuales corre todas las {@code fixedDelay} en su unico hilo de planificacion, y sin
+     * ellos su pool es de un hilo si nadie fija el tamano. Aqui eso es el relay del outbox esperando a
+     * la base o al broker con la purga y las metricas detras, o al reves. Cada pasada espera a que la
+     * otra haya empezado, asi que con un solo hilo la segunda no empieza.
+     *
+     * <p>Es el motivo de {@link SchedulingConfiguration}: si este caso dejara de cumplirse, Boot ya
+     * no las pondria en fila y esa configuracion sobraria.</p>
+     */
+    @Test
+    void conElPlanificadorDeBootUnaPasadaQueEsperaParaALasDemas() {
+        for (boolean virtual : List.of(true, false)) {
+            new ApplicationContextRunner()
+                    .withConfiguration(AutoConfigurations.of(TaskSchedulingAutoConfiguration.class))
+                    .withUserConfiguration(TwoWaitingPasses.class)
+                    .withPropertyValues("spring.threads.virtual.enabled=" + virtual)
+                    .run(started -> {
+                        TwoWaitingPasses passes = started.getBean(TwoWaitingPasses.class);
+                        try {
+                            assertFalse(passes.bothStarted.await(2, TimeUnit.SECONDS),
+                                    "la segunda pasada espera a la primera, con spring.threads.virtual.enabled=" + virtual);
+                            assertEquals(1, passes.bothStarted.getCount(), "solo empezo una");
+                        } finally {
+                            passes.release.countDown();
+                        }
+                    });
+        }
+    }
+
+    /**
+     * Con {@link SchedulingConfiguration} las dos pasadas corren a la vez, con hilos virtuales y sin
+     * ellos, y el tamano del pool es el de {@code application.yaml}: 4 por defecto.
+     */
+    @Test
+    void lasPasadasProgramadasCorrenALaVezConHilosVirtualesYSinEllos() throws Exception {
+        for (boolean virtual : List.of(true, false)) {
+            new ApplicationContextRunner()
+                    .withConfiguration(AutoConfigurations.of(TaskSchedulingAutoConfiguration.class))
+                    .withUserConfiguration(SchedulingConfiguration.class, TwoWaitingPasses.class)
+                    .withPropertyValues("spring.threads.virtual.enabled=" + virtual, "spring.task.scheduling.pool.size=4")
+                    .run(started -> {
+                        TwoWaitingPasses passes = started.getBean(TwoWaitingPasses.class);
+                        try {
+                            assertTrue(passes.bothStarted.await(10, TimeUnit.SECONDS),
+                                    "las dos pasadas a la vez, con spring.threads.virtual.enabled=" + virtual);
+                            assertEquals(Set.of(virtual), passes.onVirtualThreads, "hilos virtuales solo con la bandera");
+                        } finally {
+                            passes.release.countDown();
+                        }
+                    });
+        }
+
+        StandardEnvironment defaults = new StandardEnvironment();
+        new YamlPropertySourceLoader().load("application", new ClassPathResource("application.yaml"))
+                .forEach(defaults.getPropertySources()::addLast);
+        assertEquals(4, defaults.getProperty("spring.task.scheduling.pool.size", Integer.class),
+                "el valor por defecto de SPRING_TASK_SCHEDULING_POOL_SIZE");
+        assertNotNull(context.getBean(SchedulingConfiguration.class), "la aplicacion planifica en ese pool");
+    }
+
+    /**
+     * Sin {@code @Configuration} a proposito: una clase anidada con ella sustituiria la configuracion
+     * de este {@code @SpringBootTest}. {@code @EnableScheduling} basta para que el runner la procese.
+     */
+    @EnableScheduling
+    static class TwoWaitingPasses {
+
+        final CountDownLatch bothStarted = new CountDownLatch(2);
+        final CountDownLatch release = new CountDownLatch(1);
+        final Set<Boolean> onVirtualThreads = ConcurrentHashMap.newKeySet();
+
+        @Scheduled(fixedDelay = 60_000)
+        void first() throws InterruptedException {
+            pass();
+        }
+
+        @Scheduled(fixedDelay = 60_000)
+        void second() throws InterruptedException {
+            pass();
+        }
+
+        private void pass() throws InterruptedException {
+            onVirtualThreads.add(Thread.currentThread().isVirtual());
+            bothStarted.countDown();
+            release.await(30, TimeUnit.SECONDS);
+        }
     }
 
     /**
