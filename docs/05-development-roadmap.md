@@ -54,9 +54,9 @@ them as bugs:
   checked inside the writing statement, and Envers cannot see native SQL. `project_aud` covers the
   REST path only. Closing it would mean giving up the atomic check, which is the worse trade.
   (`07-auditing.md`)
-- **Seven of the eight published entities have no handler.** Stations, tracks, profiles, cantilevers,
-  steady arms, disconnectors and section insulators describe catenary geometry and have no equivalent
-  in a warehouse. Their events are recorded in the inbox with their payload and skipped, so a handler
+- **Eight of the nine published entities have no handler.** Stations, tracks, profiles, cantilevers,
+  steady arms, disconnectors, section insulators and track access points describe the railway
+  infrastructure and have no equivalent in a warehouse. Their events are recorded in the inbox with their payload and skipped, so a handler
   written later can reprocess what was stored. (`06-messaging.md`)
 - **Historical stock is not exposed.** `StockMovementRepository.calculateSignedQuantity` answers "how
   much was there on day X" and is tested against a real Postgres, but no service or endpoint wraps it.

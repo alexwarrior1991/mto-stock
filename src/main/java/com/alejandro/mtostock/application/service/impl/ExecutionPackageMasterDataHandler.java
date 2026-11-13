@@ -21,10 +21,10 @@ import java.util.Map;
  * Keeps a {@code project} in step with the execution package it comes from.
  *
  * <p>Un paquete de ejecución es la unidad de obra en {@code mto-configuration}, y un proyecto es
- * aquello contra lo que se reservan y se consumen materiales aquí: es la única de las ocho
- * entidades que publica el emisor con una correspondencia real en este dominio. Las otras siete
- * —estaciones, vías, perfiles, ménsulas, brazos, seccionadores, aisladores— describen la geometría
- * de la catenaria y no tienen equivalente en un almacén.</p>
+ * aquello contra lo que se reservan y se consumen materiales aquí: es la única de las nueve
+ * entidades que publica el emisor con una correspondencia real en este dominio. Las otras ocho
+ * —estaciones, vías, perfiles, ménsulas, brazos, seccionadores, aisladores, puntos de acceso a la
+ * vía— describen la infraestructura de la catenaria y no tienen equivalente en un almacén.</p>
  *
  * <h2>Qué se copia y qué no</h2>
  *

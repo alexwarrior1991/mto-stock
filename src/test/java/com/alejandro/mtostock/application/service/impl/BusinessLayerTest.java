@@ -112,6 +112,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Pattern;
@@ -2008,7 +2009,7 @@ class BusinessLayerTest {
 
     /**
      * La cola esta enlazada a mto.master-data.# y llega todo lo que publica mto-configuration, que
-     * hoy son ocho tipos de entidad y manana pueden ser mas. Tratar como error lo que no se atiende
+     * hoy son nueve tipos de entidad y manana pueden ser mas. Tratar como error lo que no se atiende
      * mandaria a la DLQ la mayor parte del trafico normal y convertiria cada entidad nueva del
      * emisor en una averia aqui.
      */
@@ -2021,6 +2022,29 @@ class BusinessLayerTest {
                 masterDataMessage(MasterDataEntityNames.CANTILEVER, MasterDataOperation.CREATED), CONTEXT));
 
         assertTrue(stations.calls.isEmpty());
+    }
+
+    /**
+     * La lista es la del emisor: sus nueve @PublishMasterDataEvent, con el punto de acceso a la via
+     * de su V28. De las nueve solo el paquete de ejecucion tiene manejador; las otras ocho, tambien
+     * la nueva, pasan por el despachador sin fallar y sin llegar a el.
+     */
+    @Test
+    void theNinePublishedEntitiesAreKnownAndOnlyTheExecutionPackageIsHandled() {
+        assertEquals(
+                Set.of("execution-package", "station", "track", "profile", "cantilever", "steady-arm",
+                        "disconnector", "section-insulator", "track-access-point"),
+                MasterDataEntityNames.PUBLISHED_TODAY);
+
+        RecordingEntityHandler executionPackages = new RecordingEntityHandler(MasterDataEntityNames.EXECUTION_PACKAGE);
+        MasterDataEventHandler dispatcher = new DispatchingMasterDataEventHandler(List.of(executionPackages));
+
+        for (String entityName : MasterDataEntityNames.PUBLISHED_TODAY) {
+            assertDoesNotThrow(() -> dispatcher.handle(
+                    masterDataMessage(entityName, MasterDataOperation.UPDATED), CONTEXT));
+        }
+
+        assertEquals(List.of("onUpdated"), executionPackages.calls);
     }
 
     /** Sin ningun manejador registrado el consumo sigue funcionando: se registra y no se hace nada. */
