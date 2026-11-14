@@ -10,10 +10,10 @@ separate: the master-data contract is owned by `mto-configuration` and mirrored 
 ## Consumed: master data from `mto-configuration`
 
 Every message is logged, recorded in the inbox and then routed by entity name to the
-`MasterDataEntityHandler` that claims it. Of the eight entities the publisher sends today, **one has
+`MasterDataEntityHandler` that claims it. Of the nine entities the publisher sends today, **one has
 a handler**: `execution-package`, which keeps a `project` in step with it — see
-[`execution-package` → `project`](#execution-package--project). The other seven describe catenary
-geometry, have no equivalent in a warehouse, and are logged and skipped on purpose; adding a handler
+[`execution-package` → `project`](#execution-package--project). The other eight describe the railway
+infrastructure, have no equivalent in a warehouse, and are logged and skipped on purpose; adding a handler
 for one of them is [a `@Service` and nothing else](#adding-another-handler).
 
 ## The contract
@@ -312,7 +312,7 @@ what is stored.
 
 ## Routing, and where the business logic goes
 
-`mto-configuration` publishes eight kinds of infrastructure master data, and this queue is bound to
+`mto-configuration` publishes nine kinds of infrastructure master data, and this queue is bound to
 `mto.master-data.#`, so all of them arrive:
 
 | Entity name | What it is |
@@ -325,6 +325,7 @@ what is stored.
 | `steady-arm` | Steady arm |
 | `disconnector` | Disconnector |
 | `section-insulator` | Section insulator, with its kp, the two tracks it connects and the turnouts it sits on (`switches[]`) |
+| `track-access-point` | Track access point (since `V28` of `mto-configuration`): where a vehicle gets onto a track, with its kp, kind, side and weight limits |
 
 They describe the catenary being built, not materials or warehouses — there is no one-to-one
 correspondence with anything in `mto-stock`. `DispatchingMasterDataEventHandler` therefore does not
@@ -335,7 +336,7 @@ decide anything: it looks at which entity changed and hands the message to the
 
 One handler is registered today, `ExecutionPackageMasterDataHandler`. An execution package is the
 unit of work in `mto-configuration`, and a project is what materials are reserved and consumed
-against here — the one entity of the eight with a real counterpart in this domain.
+against here — the one entity of the nine with a real counterpart in this domain.
 
 | Event | What happens |
 | --- | --- |
@@ -362,7 +363,7 @@ Deletion deactivates because `reservation` and `stock_movement` reference `proje
 would take the record of why it existed with it. A deletion that matches no project is not an
 error — the package may have been created and removed before this consumer existed.
 
-**The other seven entities have no handler**, so their events are logged and ignored. What
+**The other eight entities have no handler**, so their events are logged and ignored. What
 `mto-stock` should do with a cantilever or a profile is a domain decision that has not been made
 yet.
 
@@ -511,7 +512,7 @@ guessed byte by byte from that.
 | `application/service` | `MasterDataEventHandler` | Boundary between transport and application; one implementation |
 | `application/service/impl` | `DispatchingMasterDataEventHandler` | Logs every change and routes it to the handler of its entity |
 | `application/service` | `MasterDataEntityHandler` | **Extension point for the business logic**, one per entity |
-| `application/dto/messaging` | `MasterDataEntityNames` | The eight entity names the publisher emits today |
+| `application/dto/messaging` | `MasterDataEntityNames` | The nine entity names the publisher emits today |
 | `application/dto/messaging` | `MasterDataEventContext` | Transport metadata beside the payload: the sequence number |
 | `application/dto/messaging` | `InboxMessageCommand`, `InboxProcessingResult` | Transport-free input and outcome of the inbox |
 | `application/service` | `InboxMessageService` | Runs a piece of work at most once per message |

@@ -142,9 +142,9 @@ Full detail in `docs/07-auditing.md`.
 
 `mto-stock` consumes the master data change events that `mto-configuration` publishes to RabbitMQ
 (`mto.master-data.exchange`, routing key `mto.master-data.#`, own queue `mto.stock.master-data.queue`
-with its own DLX/DLQ). Every message is logged and then routed by entity name; **one** of the eight
+with its own DLX/DLQ). Every message is logged and then routed by entity name; **one** of the nine
 entities has business logic behind it (`execution-package` → `project`, see below), and the other
-seven are logged and ignored on purpose.
+eight are logged and ignored on purpose.
 
 - `configuration/rabbitmq` — `MasterDataRabbitProperties` (`app.rabbitmq.master-data.*`),
   `ConsumerQueueProperties` (`app.rabbitmq.queues.*`: the queue and its DLQ `classic` by default or
@@ -154,7 +154,7 @@ seven are logged and ignored on purpose.
   `app.rabbitmq.enabled`, the consumer additionally on `app.rabbitmq.master-data.listener-enabled`;
   with the first off the application starts without a broker, which is what the tests rely on.
 - `infrastructure/messaging/rabbitmq` — contract names/headers and the thin `MasterDataEventConsumer`.
-- `application/dto/messaging` — the message contract, plus `MasterDataEntityNames` (the eight entity
+- `application/dto/messaging` — the message contract, plus `MasterDataEntityNames` (the nine entity
   names `mto-configuration` publishes: all railway infrastructure, none matching a `mto-stock`
   entity one to one).
 - `MasterDataEventHandler` is the transport/application boundary and has a single implementation,
@@ -167,7 +167,7 @@ seven are logged and ignored on purpose.
   the API) with the code derived as `EP-<sourceId>`. Late events are discarded against the
   `project.source_sequence_number` watermark (`V6`) from the `sequenceNumber` header, compared
   inside the writing statement's `where` — never read-then-write; a missing sequence still applies
-  and keeps the stored watermark, and a deletion advances it even when the row is already inactive. The other seven entities have no handler and
+  and keeps the stored watermark, and a deletion advances it even when the row is already inactive. The other eight entities have no handler and
   an unknown entity is never an error (the queue is bound to `mto.master-data.#` and gets
   everything), while a message with no `data`, `entityName` or `operation` is rejected to the DLQ by
   the consumer. An entity handler runs inside the inbox transaction, so it must not open its own.

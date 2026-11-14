@@ -25,9 +25,9 @@ import java.util.TreeSet;
  *
  * <h2>Lo que no se reconoce se ignora, no falla</h2>
  *
- * <p>{@code mto-configuration} publica hoy ocho tipos de entidad —paquetes de ejecución,
- * estaciones, vías, perfiles, ménsulas, brazos, seccionadores y aisladores— y puede añadir más sin
- * avisar a nadie: la cola de este servicio está enlazada a {@code mto.master-data.#}, así que llega
+ * <p>{@code mto-configuration} publica hoy nueve tipos de entidad —paquetes de ejecución,
+ * estaciones, vías, perfiles, ménsulas, brazos, seccionadores, aisladores y puntos de acceso a la
+ * vía— y puede añadir más sin avisar a nadie: la cola de este servicio está enlazada a {@code mto.master-data.#}, así que llega
  * todo. Tratar como error lo que no se atiende mandaría a la DLQ la mayor parte del tráfico normal
  * y convertiría cada entidad nueva del emisor en una avería aquí.</p>
  *
