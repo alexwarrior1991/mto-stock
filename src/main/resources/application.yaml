@@ -41,6 +41,17 @@ spring:
   # con el format_sql que anade el perfil dev.
   jpa:
     properties:
+      hibernate:
+        # Las listas pintan de cada fila sus asociaciones perezosas (el material, el almacen, el
+        # proveedor, el proyecto, la reserva y el apunte relacionado de un movimiento; el material, el
+        # almacen y el proyecto de una reserva; las lineas de un conjunto y el material de cada una), y
+        # sin esto cada una era una consulta por fila: una pagina de 50 movimientos, mas de cien. Con
+        # esto se piden por lotes, `where id = any (?)`: una consulta por tipo de asociacion. Y no un
+        # @EntityGraph en las listas: la consulta paginada sigue siendo la de siempre (sin seis joins
+        # antes de ordenar el libro, dos de ellos contra las tablas grandes), y las lineas de un
+        # conjunto son una coleccion, que con un fetch join y paginacion Hibernate pagina en memoria.
+        # Lo fija InventoryRepositoryDataJpaTest.
+        default_batch_fetch_size: 100
       org.hibernate.envers:
         # En minusculas a proposito. El sufijo por defecto es _AUD y el nombre final depende de como
         # trate la estrategia de nombres a los identificadores de Envers; fijarlo aqui hace que la

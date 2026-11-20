@@ -266,6 +266,99 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
     }
 
     /**
+     * Las tres listas que pintan asociaciones perezosas de cada fila no hacen una consulta por fila.
+     * Cada fila lleva aqui su propio material, almacen, proveedor, proyecto, reserva y apunte
+     * relacionado, que es el peor caso, y las respuestas las arman los mappers de verdad, que son los
+     * que recorren las asociaciones. Con {@code default_batch_fetch_size} es una consulta por tipo de
+     * asociacion; sin el, los movimientos de esta pagina eran mas de setenta.
+     */
+    @Test
+    void aPageOfMovementsReservationsOrAssembliesDoesNotTakeAStatementPerRow() {
+        int rows = 12;
+        Instant first = Instant.parse("2099-03-01T00:00:00Z");
+        String suffix = UUID.randomUUID().toString().substring(0, 8).toUpperCase();
+        StockMovement previous = null;
+        for (int i = 0; i < rows; i++) {
+            Material material = persist(material("NP1-" + suffix + "-" + i, "N+1 material " + i));
+            Material second = persist(material("NP1-" + suffix + "-B" + i, "N+1 second material " + i));
+            Warehouse warehouse = persist(warehouse("NP1-" + suffix + "-" + i));
+            Project project = persist(project("NP1-" + suffix + "-" + i));
+            Supplier supplier = persist(Supplier.builder().code("NP1-" + suffix + "-" + i).name("N+1 supplier " + i).build());
+            Reservation reservation = persist(reservation(material, warehouse, project, "1.000000", ReservationStatus.ACTIVE));
+            StockMovement movement = movement(material, warehouse, project, StockMovementType.OUTPUT, "1.000000", first.plusSeconds(i));
+            movement.setSupplier(supplier);
+            movement.setReservation(reservation);
+            movement.setRelatedMovement(previous);
+            previous = persist(movement);
+            Assembly assembly = assembly("NP1-" + suffix + "-" + i, material);
+            AssemblyComponent other = AssemblyComponent.builder().material(second).quantity(new BigDecimal("1.000000")).build();
+            audit(other);
+            assembly.addComponent(other);
+            persist(assembly);
+        }
+        flushAndClear();
+
+        org.hibernate.stat.Statistics statistics = entityManager.getEntityManagerFactory()
+                .unwrap(org.hibernate.SessionFactory.class).getStatistics();
+        boolean statisticsWereEnabled = statistics.isStatisticsEnabled();
+        try (var mappers = new org.springframework.context.annotation.AnnotationConfigApplicationContext(
+                com.alejandro.mtostock.infrastructure.persistence.entity.EntityReferenceFactory.class,
+                com.alejandro.mtostock.application.mapper.AuditableMapperImpl.class,
+                com.alejandro.mtostock.application.mapper.MaterialMapperImpl.class,
+                com.alejandro.mtostock.application.mapper.WarehouseMapperImpl.class,
+                com.alejandro.mtostock.application.mapper.SupplierMapperImpl.class,
+                com.alejandro.mtostock.application.mapper.ProjectMapperImpl.class,
+                com.alejandro.mtostock.application.mapper.ReservationStatusMapperImpl.class,
+                com.alejandro.mtostock.application.mapper.StockMovementTypeMapperImpl.class,
+                com.alejandro.mtostock.application.mapper.ReservationMapperImpl.class,
+                com.alejandro.mtostock.application.mapper.StockMovementMapperImpl.class,
+                com.alejandro.mtostock.application.mapper.AssemblyMapperImpl.class)) {
+            PageRequest page = PageRequest.of(0, 50, Sort.by(Sort.Order.desc("occurredAt"), Sort.Order.asc("id")));
+            statistics.setStatisticsEnabled(true);
+
+            statistics.clear();
+            var movements = mappers.getBean(com.alejandro.mtostock.application.mapper.StockMovementMapper.class).toPageResponse(
+                    stockMovementRepository.findAll(StockMovementSpecification.occurredAtFrom(first)
+                            .and(StockMovementSpecification.occurredAtTo(first.plusSeconds(rows))), page));
+            long forTheMovements = statistics.getPrepareStatementCount();
+            assertEquals(rows, movements.content().size());
+            assertEquals(rows, movements.content().stream().map(movement -> movement.material().code()).distinct().count());
+            assertEquals(rows, movements.content().stream().map(movement -> movement.warehouse().code()).distinct().count());
+            assertEquals(rows, movements.content().stream().map(movement -> movement.supplier().code()).distinct().count());
+            assertEquals(rows, movements.content().stream().map(movement -> movement.project().code()).distinct().count());
+            assertEquals(rows, movements.content().stream().map(movement -> movement.reservation().id()).distinct().count());
+            assertEquals(rows - 1, movements.content().stream().filter(movement -> movement.relatedMovement() != null).count());
+
+            entityManager.clear();
+            statistics.clear();
+            var reservations = mappers.getBean(com.alejandro.mtostock.application.mapper.ReservationMapper.class).toPageResponse(
+                    reservationRepository.findAll((root, query, builder) -> builder.like(root.get("project").get("code"), "NP1-" + suffix + "-%"),
+                            PageRequest.of(0, 50, Sort.by(Sort.Order.desc("reservedAt"), Sort.Order.asc("id")))));
+            long forTheReservations = statistics.getPrepareStatementCount();
+            assertEquals(rows, reservations.content().size());
+            assertEquals(rows, reservations.content().stream().map(reservation -> reservation.material().code()).distinct().count());
+            assertEquals(rows, reservations.content().stream().map(reservation -> reservation.warehouse().code()).distinct().count());
+
+            entityManager.clear();
+            statistics.clear();
+            var assemblies = mappers.getBean(com.alejandro.mtostock.application.mapper.AssemblyMapper.class).toPageResponse(
+                    assemblyRepository.findAll(AssemblySpecification.codeContains("NP1-" + suffix + "-"),
+                            PageRequest.of(0, 50, Sort.by("code", "id"))));
+            long forTheAssemblies = statistics.getPrepareStatementCount();
+            assertEquals(rows, assemblies.content().size());
+            assertEquals(2 * rows, assemblies.content().stream()
+                    .flatMap(assembly -> assembly.components().stream()).map(component -> component.material().code()).distinct().count());
+
+            assertTrue(forTheMovements > 0 && forTheReservations > 0 && forTheAssemblies > 0, "The statistics counted the statements");
+            assertTrue(forTheMovements <= 8, "A page of " + rows + " movements took " + forTheMovements + " statements: one per row is an N+1");
+            assertTrue(forTheReservations <= 5, "A page of " + rows + " reservations took " + forTheReservations + " statements: one per row is an N+1");
+            assertTrue(forTheAssemblies <= 4, "A page of " + rows + " assemblies took " + forTheAssemblies + " statements: one per row is an N+1");
+        } finally {
+            statistics.setStatisticsEnabled(statisticsWereEnabled);
+        }
+    }
+
+    /**
      * La busqueda por texto de los catalogos: codigo o nombre, sin distinguir mayusculas, y en
      * blanco no filtra nada. Un solo helper para los cinco, asi que se prueban los cinco.
      */

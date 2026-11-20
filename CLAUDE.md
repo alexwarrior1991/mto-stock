@@ -52,6 +52,14 @@ The code is organized as three layers, each with its own package root under `com
 
 DTOs only cross the API boundary; JPA entities are never exposed directly. MapStruct (`application/mapper`) generates all entity↔DTO and entity↔domain mappings; `EntityReferenceFactory` supplies MapStruct with lightweight entity references (id-only) for relationship fields instead of loading full associations.
 
+The lists paint lazy associations of every row (a movement's material, warehouse, supplier, project,
+reservation and related movement; a reservation's three; an assembly's components and their materials).
+They are loaded in batches, one statement per kind of association (`hibernate.default_batch_fetch_size`,
+100, in `application.yaml`), never one per row, and not with an `@EntityGraph` on the list: the paged
+query stays without joins, and the components are a collection, which a fetch join would paginate in
+memory. `InventoryRepositoryDataJpaTest.aPageOfMovementsReservationsOrAssembliesDoesNotTakeAStatementPerRow`
+counts the statements.
+
 ### Request errors
 
 `GlobalExceptionHandler` answers every failure with the same `ApiErrorResponse` (the web apps read
