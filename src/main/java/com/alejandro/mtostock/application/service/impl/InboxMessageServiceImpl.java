@@ -48,19 +48,14 @@ class InboxMessageServiceImpl implements InboxMessageService {
     public InboxProcessingResult process(InboxMessageCommand command, Runnable processing) {
         validate(command);
 
-        inboxMessageRepository.insertIfMissing(
-                command.messageId(),
-                command.sourceService(),
-                command.eventType(),
-                command.aggregateType(),
-                command.aggregateId(),
-                command.exchangeName(),
-                command.routingKey(),
-                command.queueName(),
-                command.payloadHash(),
-                command.payload());
-
-        int claimed = inboxMessageRepository.claimForProcessing(command.messageId(), command.sourceService());
+        int claimed = insertAndClaim(command);
+        if (claimed == 0 && insertIfMissing(command) == 1) {
+            // No se pudo reclamar y, sin embargo, ahora se inserta: la purga borro la fila entre las dos
+            // sentencias (la reclamacion espero a su bloqueo y ya no encontro nada). Un mensaje purgado es
+            // un mensaje olvidado, asi que esta entrega es la primera; darla por duplicada perderia el
+            // evento de una fallida que alguien reencola justo entonces.
+            claimed = inboxMessageRepository.claimForProcessing(command.messageId(), command.sourceService());
+        }
 
         if (claimed == 0) {
             LOGGER.info("Duplicate message already applied, handler skipped: messageId={}, sourceService={}, "
@@ -85,6 +80,25 @@ class InboxMessageServiceImpl implements InboxMessageService {
                 command.messageId(), command.sourceService());
 
         return InboxProcessingResult.PROCESSED;
+    }
+
+    private int insertAndClaim(InboxMessageCommand command) {
+        insertIfMissing(command);
+        return inboxMessageRepository.claimForProcessing(command.messageId(), command.sourceService());
+    }
+
+    private int insertIfMissing(InboxMessageCommand command) {
+        return inboxMessageRepository.insertIfMissing(
+                command.messageId(),
+                command.sourceService(),
+                command.eventType(),
+                command.aggregateType(),
+                command.aggregateId(),
+                command.exchangeName(),
+                command.routingKey(),
+                command.queueName(),
+                command.payloadHash(),
+                command.payload());
     }
 
     @Override

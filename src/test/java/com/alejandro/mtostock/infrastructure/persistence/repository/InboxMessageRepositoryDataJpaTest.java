@@ -13,6 +13,9 @@ import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabas
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 
+import java.time.Duration;
+import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -148,9 +151,88 @@ class InboxMessageRepositoryDataJpaTest extends PostgreSQLTestContainer {
         assertEquals(InboxMessageStatus.RECEIVED, reload().getStatus());
     }
 
+    /**
+     * La purga borra por lotes los aplicados hace mas del plazo, contado desde que se aplicaron: el que
+     * llego hace meses pero se aplico ayer (fallo, y alguien lo reencolo) se recuerda. Lo reciente, lo
+     * fallido y lo que no llego a aplicarse no se tocan.
+     */
+    @Test
+    void thePurgeForgetsInBatchesWhatWasAppliedLongAgoAndNothingElse() {
+        for (int i = 0; i < 5; i++) {
+            processed("old-" + i, "100 days", "100 days");
+        }
+        processed("late", "100 days", "1 day");
+        processed("recent", "1 day", "1 day");
+        failed("failed-old", "100 days", "100 days");
+        insert("received-old");
+        age("received-old", "100 days");
+        Instant before = Instant.now().minus(Duration.ofDays(30));
+
+        assertEquals(2, inboxMessageRepository.purgeProcessedBefore(before, 2), "A full batch: there may be more");
+        assertEquals(2, inboxMessageRepository.purgeProcessedBefore(before, 2));
+        assertEquals(1, inboxMessageRepository.purgeProcessedBefore(before, 2), "A short batch: that was all");
+        assertEquals(0, inboxMessageRepository.purgeProcessedBefore(before, 2));
+
+        entityManager.clear();
+        assertEquals(List.of("failed-old", "late", "received-old", "recent"), ownMessageIds());
+        assertEquals(1, insert("old-0"), "A purged message is forgotten: if it came again it would be the first time");
+    }
+
+    /**
+     * Las fallidas tienen su plazo, contado desde el ultimo fallo, y su purga no toca las aplicadas. Una
+     * fallida purgada que alguien reencola despues se inserta y se reclama como nueva.
+     */
+    @Test
+    void thePurgeForgetsWhatFailedLongAgoByItsLastFailure() {
+        failed("failed-old", "200 days", "200 days");
+        failed("failed-again", "200 days", "10 days");
+        processed("processed-old", "200 days", "200 days");
+        Instant before = Instant.now().minus(Duration.ofDays(90));
+
+        assertEquals(1, inboxMessageRepository.purgeFailedBefore(before, 500));
+
+        entityManager.clear();
+        assertEquals(List.of("failed-again", "processed-old"), ownMessageIds());
+        assertEquals(1, insert("failed-old"));
+        assertEquals(1, inboxMessageRepository.claimForProcessing("failed-old", SOURCE_SERVICE));
+    }
+
+    /** Los mensajes de este test: la base la comparten las demas clases. */
+    private List<String> ownMessageIds() {
+        return inboxMessageRepository.findAll().stream().map(InboxMessage::getMessageId)
+                .filter(id -> id.matches("(old-\\d|late|recent|received-old|processed-old|failed-old|failed-again)")).sorted().toList();
+    }
+
+    private void processed(String messageId, String receivedAgo, String processedAgo) {
+        insert(messageId);
+        inboxMessageRepository.claimForProcessing(messageId, SOURCE_SERVICE);
+        inboxMessageRepository.markProcessed(messageId, SOURCE_SERVICE);
+        age(messageId, receivedAgo);
+        entityManager.createNativeQuery("update inbox_message set processed_at = now() - cast(:ago as interval) where message_id = :id")
+                .setParameter("ago", processedAgo).setParameter("id", messageId).executeUpdate();
+    }
+
+    private void failed(String messageId, String receivedAgo, String failedAgo) {
+        inboxMessageRepository.recordFailure(messageId, SOURCE_SERVICE, "MASTER_DATA_STATION_UPDATED", "station", "42",
+                "mto.master-data.exchange", "mto.master-data.station.updated", "mto.stock.master-data.queue", "9f2c1b0d",
+                PAYLOAD, "java.lang.IllegalStateException: database is down");
+        age(messageId, receivedAgo);
+        entityManager.createNativeQuery("update inbox_message set failed_at = now() - cast(:ago as interval) where message_id = :id")
+                .setParameter("ago", failedAgo).setParameter("id", messageId).executeUpdate();
+    }
+
+    private void age(String messageId, String receivedAgo) {
+        entityManager.createNativeQuery("update inbox_message set received_at = now() - cast(:ago as interval) where message_id = :id")
+                .setParameter("ago", receivedAgo).setParameter("id", messageId).executeUpdate();
+    }
+
     private int insert() {
+        return insert(MESSAGE_ID);
+    }
+
+    private int insert(String messageId) {
         int inserted = inboxMessageRepository.insertIfMissing(
-                MESSAGE_ID,
+                messageId,
                 SOURCE_SERVICE,
                 "MASTER_DATA_STATION_UPDATED",
                 "station",

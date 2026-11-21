@@ -53,6 +53,11 @@ app:
     purge:
       enabled: ${APP_IDEMPOTENCY_PURGE_ENABLED:false}
 
+  # La purga del inbox tampoco corre sola: InboxMessageRepositoryDataJpaTest y BusinessLayerTest la llaman.
+  inbox:
+    purge:
+      enabled: ${APP_INBOX_PURGE_ENABLED:false}
+
 management:
   endpoint:
     health:

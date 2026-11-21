@@ -58,7 +58,10 @@ They are loaded in batches, one statement per kind of association (`hibernate.de
 100, in `application.yaml`), never one per row, and not with an `@EntityGraph` on the list: the paged
 query stays without joins, and the components are a collection, which a fetch join would paginate in
 memory. `InventoryRepositoryDataJpaTest.aPageOfMovementsReservationsOrAssembliesDoesNotTakeAStatementPerRow`
-counts the statements.
+counts the statements. `V12` holds the indexes of the two lists that grow (the ledger in its order and
+per material, the reservations in theirs and per material; `docs/03-database.md`, *Indexes*, with what
+each one measured), asserted in `InventoryRepositoryDataJpaTest`: a new default order or filter of those
+lists needs its index proved the same way.
 
 ### Request errors
 
@@ -203,6 +206,13 @@ consumer uses the message (`app.messaging.signature.secret` — the same value a
 rejected to the DLQ; a message that *cannot* be verified (unsigned, or signed with an algorithm this
 side cannot compute because the secrets differ) is only rejected under `REQUIRED`. The default is
 `OPTIONAL` because `REQUIRED` with mismatched secrets sends every valid message to the DLQ.
+
+`inbox_message` is purged once a day (`InboxPurgeService`, `configuration/inbox`, `app.inbox.*`, the
+piece of `mto-maintenance` with the same names): `PROCESSED` rows after `retention` (30 days, from
+`processed_at`), `FAILED` ones after `failed-retention` (90 days), in batches with `skip locked`; off
+in the tests (`app.inbox.purge.enabled=false`), which call it. A purged message is a forgotten one:
+`InboxMessageServiceImpl.process` inserts again when its claim finds no row, and a late duplicate is
+stopped by the sequence watermark of the project upsert, not by the inbox.
 
 The master-data contract is owned by `mto-configuration` — check `docs/06-messaging.md` (and that
 repository's `README_MESSAGING.md`) before changing anything under `application/dto/messaging`.

@@ -6,7 +6,9 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -225,4 +227,45 @@ public interface InboxMessageRepository extends JpaRepository<InboxMessage, UUID
             @Param("payload") String payload,
             @Param("failureReason") String failureReason
     );
+
+    /**
+     * Borra un lote de mensajes aplicados hace mas de lo que se recuerdan.
+     *
+     * <p>El corte se pide dos veces: {@code received_at} es lo que recorre el indice
+     * {@code idx_inbox_message_status_received_at} (un mensaje no se aplica antes de llegar, asi que
+     * ninguno que cumpla el plazo queda fuera), y {@code processed_at} es el plazo de verdad, para no
+     * olvidar al dia siguiente el que llego hace meses, fallo y se aplico ayer al reencolarlo. No hace
+     * falta otro indice.</p>
+     *
+     * <p>{@code skip locked}: la fila que una entrega esta reclamando en ese momento se deja para la
+     * pasada siguiente, y dos replicas purgando a la vez no se esperan.</p>
+     */
+    @Modifying
+    @Transactional
+    @Query(value = """
+            delete from inbox_message
+             where id in (select id from inbox_message
+                           where status = 'PROCESSED' and received_at < :before and processed_at < :before
+                           order by received_at
+                           limit :batchSize
+                           for update skip locked)
+            """, nativeQuery = true)
+    int purgeProcessedBefore(@Param("before") Instant before, @Param("batchSize") int batchSize);
+
+    /**
+     * Borra un lote de mensajes fallidos cuyo ultimo fallo es anterior al corte. Una fallida no protege
+     * de nada (al reencolarla se reclama otra vez, y si ya no esta se inserta de nuevo): se guarda mas
+     * tiempo solo porque dice por que el mensaje acabo en la DLQ.
+     */
+    @Modifying
+    @Transactional
+    @Query(value = """
+            delete from inbox_message
+             where id in (select id from inbox_message
+                           where status = 'FAILED' and received_at < :before and failed_at < :before
+                           order by received_at
+                           limit :batchSize
+                           for update skip locked)
+            """, nativeQuery = true)
+    int purgeFailedBefore(@Param("before") Instant before, @Param("batchSize") int batchSize);
 }
