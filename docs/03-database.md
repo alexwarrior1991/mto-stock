@@ -37,6 +37,7 @@ never changes anything:
 | `V9__index_idempotent_request_created_at.sql` | `idx_idempotent_request_created_at`, for the purge of expired keys. |
 | `V10__create_outbox_message_table.sql` | `outbox_message` and its sequence: the outbox of the events this service publishes (see below). |
 | `V11__backfill_outputs_of_consumed_reservations.sql` | No schema change. The `OUTPUT` that `POST /reservations/{id}/consume` did not write before: one per `CONSUMED` reservation that had none, with its material, warehouse, project and quantity, `occurred_at = released_at` and written by whoever consumed it (`updated_by`). Idempotent; `inventory_balance` is not touched, because it had already been lowered. |
+| `V12__index_ledger_and_reservation_lists.sql` | The indexes of the two lists that grow: `idx_stock_movement_occurred_at`, `idx_stock_movement_material_occurred_at`, `idx_reservation_reserved_at`, `idx_reservation_material_id`. Drops `idx_inventory_balance_material_id` and `idx_inventory_balance_material_warehouse`, which repeated the unique key. |
 
 A migration that changes a column on one of the seven audited tables has to change its `_aud` twin in
 the same migration, or the application stops booting under `validate`.
@@ -385,6 +386,12 @@ The guarantee is `uq_inbox_message_message_id_source`, not any check in code: `I
 claims and marks with conditional native `UPDATE`s and an `on conflict` insert — the same idiom as
 `inventory_balance` — because a read-then-write lets two concurrent deliveries through.
 
+The table is purged once a day (`InboxPurgeService`, `app.inbox.*`): `PROCESSED` rows
+`app.inbox.retention` (30 days) after `processed_at`, `FAILED` ones `app.inbox.failed-retention`
+(90 days) after `failed_at`, in batches of 500 with `for update skip locked`, each its own transaction.
+Both statements walk `idx_inbox_message_status_received_at` (a message is never applied before it
+arrives), so the purge needed no index. A purged message is a forgotten one: see `06-messaging.md`.
+
 #### `idempotent_request`
 
 Added in `V8__create_idempotent_request_table.sql`. The writes made with an `Idempotency-Key`
@@ -536,15 +543,19 @@ the entity maps it with `@JdbcTypeCode(SqlTypes.NAMED_ENUM)`, so a `varchar` her
 ### Indexes
 
 - Unique indexes on `material.code`, `supplier.code`, `warehouse.code`, `project.code`, and `assembly.code` support fast lookup by business key.
-- `idx_stock_movement_material_warehouse_occurred_at` supports stock aggregation and movement history per material and warehouse.
+- `idx_stock_movement_occurred_at` `(occurred_at DESC, id)` is the whole ledger in its order (`GET /movements` without a material, a warehouse or a type, or only with dates). Without it every page read and sorted the table: 283 ms → 0.4 ms on 2.1 M movements.
+- `idx_stock_movement_material_occurred_at` `(material_id, occurred_at DESC, id)` is the ledger of one material without a warehouse. The index below has the warehouse in the middle and cannot give that order (81 ms for a material with 200 000 movements), and with the ledger's index alone the planner walks the whole ledger looking for the material: 541 ms for one whose movements are all old. With it, 0.2 ms.
+- `idx_stock_movement_material_warehouse_occurred_at` supports the movement history of a material in a warehouse and the "materials that passed through a warehouse" filter.
 - `idx_stock_movement_warehouse_occurred_at` supports warehouse history screens.
 - `idx_stock_movement_type_occurred_at` supports filtering by movement type and time windows.
 - `idx_stock_movement_supplier_id`, `idx_stock_movement_project_id`, `idx_stock_movement_reservation_id`, and `idx_stock_movement_related_movement_id` support traceability queries.
+- `idx_reservation_reserved_at` `(reserved_at DESC, id)` is the reservation list in its order (106 ms → 0.4 ms on 500 000 reservations), and `idx_reservation_material_id` the reservations of a material in any status (49 ms → 0.2 ms): the partial index below only holds the active ones.
 - `idx_reservation_active_material_warehouse` is a partial index for active-reservation subtraction from available stock.
 - `idx_reservation_project_status` supports project reservation views.
 - `idx_assembly_component_assembly_id` supports loading BOMs.
 - `idx_assembly_component_material_id` supports impact analysis when a material changes.
-- `idx_inventory_balance_material_id`, `idx_inventory_balance_warehouse_id` and `idx_inventory_balance_material_warehouse` support the three shapes of stock read: one material everywhere, one warehouse's inventory, and the exact pair every conditional balance update goes through.
+- `uq_inventory_balance_material_warehouse` serves every stock read and write by material (one material everywhere is its prefix, one material in one warehouse the whole key), and `idx_inventory_balance_warehouse_id` the warehouse's foreign key. `V12` dropped `idx_inventory_balance_material_id` and `idx_inventory_balance_material_warehouse`, which repeated that key: every plan that used them came out the same on the unique index.
+- The indexes of `V12` are plain `CREATE INDEX IF NOT EXISTS` inside Flyway's transaction. Applied to a table that is already large they would block its writes while they build: create each one by hand first with `CREATE INDEX CONCURRENTLY` and the same name, and the migration does nothing.
 - `idx_inbox_message_status_received_at` and `idx_inbox_message_received_at` support the operational queries — "what failed", "what arrived in this window". There is deliberately **no** standalone index on `message_id`: `uq_inbox_message_message_id_source` already indexes it as the leading column, and an extra one would only make every insert dearer on a table that takes one insert per incoming message.
 - `idx_idempotent_request_created_at` supports the purge of expired keys, which filters and orders by `created_at`. The lookup of a previous request goes by the full key, which `uq_idempotent_request_key` already indexes.
 - `idx_<table>_aud_id_rev` on each audit twin supports the query that is actually made — "history of this entity" — which filters on `id`, while the primary key `(rev, id)` leads with `rev`.
