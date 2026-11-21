@@ -1913,6 +1913,64 @@ class BusinessLayerTest {
         assertThrows(ValidationException.class, () -> service.process(withoutKey, () -> { }));
     }
 
+    /**
+     * La purga corta los aplicados por {@code app.inbox.retention} y los fallidos por
+     * {@code app.inbox.failed-retention}, repite cada borrado mientras el lote salga lleno y cuenta lo
+     * que borro.
+     */
+    @Test
+    void theInboxPurgeDeletesInBatchesUntilAShortOneWithEachRetention() {
+        InboxMessageRepository repository = mock(InboxMessageRepository.class);
+        io.micrometer.core.instrument.simple.SimpleMeterRegistry meters = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        com.alejandro.mtostock.configuration.inbox.InboxProperties properties =
+                new com.alejandro.mtostock.configuration.inbox.InboxProperties(Duration.ofDays(30), null,
+                        new com.alejandro.mtostock.configuration.inbox.InboxProperties.Purge(2));
+        when(repository.purgeProcessedBefore(any(), eq(2))).thenReturn(2, 2, 1);
+        when(repository.purgeFailedBefore(any(), eq(2))).thenReturn(0);
+        Instant before = Instant.now();
+
+        com.alejandro.mtostock.application.service.InboxPurgeService.Purged purged =
+                new InboxPurgeServiceImpl(repository, properties, meters).purge();
+
+        assertEquals(new com.alejandro.mtostock.application.service.InboxPurgeService.Purged(5, 0), purged);
+        ArgumentCaptor<Instant> processedBefore = ArgumentCaptor.forClass(Instant.class);
+        verify(repository, times(3)).purgeProcessedBefore(processedBefore.capture(), eq(2));
+        assertFalse(processedBefore.getValue().isBefore(before.minus(Duration.ofDays(30))));
+        assertFalse(processedBefore.getValue().isAfter(Instant.now().minus(Duration.ofDays(30))));
+        ArgumentCaptor<Instant> failedBefore = ArgumentCaptor.forClass(Instant.class);
+        verify(repository, times(1)).purgeFailedBefore(failedBefore.capture(), eq(2));
+        assertFalse(failedBefore.getValue().isAfter(Instant.now().minus(Duration.ofDays(90))), "The default: 90 days for the failed ones");
+        assertEquals(5.0, meters.counter(InboxPurgeServiceImpl.PURGED_METER, "status", "PROCESSED").count());
+        assertEquals(0.0, meters.counter(InboxPurgeServiceImpl.PURGED_METER, "status", "FAILED").count());
+        assertEquals(Duration.ofDays(30), new com.alejandro.mtostock.configuration.inbox.InboxProperties(Duration.ZERO, null, null).retention(),
+                "Never forgotten at once");
+    }
+
+    /**
+     * La purga borra la fila de un mensaje justo cuando vuelve a llegar: la reclamacion, que espero a su
+     * bloqueo, no encuentra nada. No es un duplicado ya aplicado sino un mensaje olvidado, asi que se
+     * inserta otra vez y se aplica. El duplicado de verdad (la fila sigue ahi) se salta como siempre.
+     */
+    @Test
+    void aMessagePurgedWhileItIsDeliveredAgainIsAppliedAndARealDuplicateIsStillSkipped() {
+        InboxMessageRepository repository = mock(InboxMessageRepository.class);
+        InboxMessageServiceImpl inbox = new InboxMessageServiceImpl(repository);
+        AtomicInteger applied = new AtomicInteger();
+
+        when(repository.insertIfMissing(eq(MESSAGE_ID), eq(SOURCE_SERVICE), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(0, 1);
+        when(repository.claimForProcessing(MESSAGE_ID, SOURCE_SERVICE)).thenReturn(0, 1);
+        when(repository.markProcessed(MESSAGE_ID, SOURCE_SERVICE)).thenReturn(1);
+        assertEquals(InboxProcessingResult.PROCESSED, inbox.process(inboxCommand(), applied::incrementAndGet));
+        assertEquals(1, applied.get());
+
+        when(repository.insertIfMissing(eq(MESSAGE_ID), eq(SOURCE_SERVICE), any(), any(), any(), any(), any(), any(), any(), any()))
+                .thenReturn(0);
+        when(repository.claimForProcessing(MESSAGE_ID, SOURCE_SERVICE)).thenReturn(0);
+        assertEquals(InboxProcessingResult.DUPLICATE_SKIPPED, inbox.process(inboxCommand(), applied::incrementAndGet));
+        assertEquals(1, applied.get());
+    }
+
     /** El motivo se recorta: el mensaje de una excepcion puede arrastrar un payload entero. */
     @Test
     void inboxTruncatesAVeryLongFailureReason() {

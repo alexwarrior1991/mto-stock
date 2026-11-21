@@ -246,6 +246,7 @@ class MtoStockApplicationTests extends PostgreSQLTestContainer {
                 EntityAuditService.class,
                 IdempotentRequestService.class,
                 InboxMessageService.class,
+                com.alejandro.mtostock.application.service.InboxPurgeService.class,
                 InventoryBalanceService.class,
                 InventoryValidationService.class,
                 MasterDataEventProcessor.class,

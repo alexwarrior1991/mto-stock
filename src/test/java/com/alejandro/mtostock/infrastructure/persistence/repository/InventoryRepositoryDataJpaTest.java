@@ -359,6 +359,38 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
     }
 
     /**
+     * Los indices de {@code V12}, con su definicion: el del libro en su orden, el del libro de un
+     * material sin almacen, los dos de la lista de reservas, y que los dos de {@code inventory_balance}
+     * que repetian su clave unica ya no estan (la clave unica y el de la clave ajena del almacen, si).
+     */
+    @Test
+    void theListsThatGrowHaveTheirIndexesAndTheBalanceKeepsOnlyTheOnesItNeeds() {
+        java.util.Map<String, String> indexes = new java.util.HashMap<>();
+        for (Object row : entityManager.createNativeQuery("""
+                select indexname, indexdef from pg_indexes
+                 where schemaname = current_schema()
+                   and tablename in ('stock_movement', 'reservation', 'inventory_balance')
+                """).getResultList()) {
+            Object[] columns = (Object[]) row;
+            indexes.put((String) columns[0], (String) columns[1]);
+        }
+
+        assertTrue(indexes.get("idx_stock_movement_occurred_at").endsWith("(occurred_at DESC, id)"), indexes.get("idx_stock_movement_occurred_at"));
+        assertTrue(indexes.get("idx_stock_movement_material_occurred_at").endsWith("(material_id, occurred_at DESC, id)"),
+                indexes.get("idx_stock_movement_material_occurred_at"));
+        assertTrue(indexes.containsKey("idx_stock_movement_material_warehouse_occurred_at"), "Still the one of a material in a warehouse");
+        assertTrue(indexes.get("idx_reservation_reserved_at").endsWith("(reserved_at DESC, id)"), indexes.get("idx_reservation_reserved_at"));
+        assertTrue(indexes.get("idx_reservation_material_id").endsWith("(material_id)"), indexes.get("idx_reservation_material_id"));
+        assertFalse(indexes.get("idx_reservation_material_id").contains("WHERE"), "Every status, not only the active ones");
+
+        assertFalse(indexes.containsKey("idx_inventory_balance_material_id"));
+        assertFalse(indexes.containsKey("idx_inventory_balance_material_warehouse"));
+        assertTrue(indexes.get("uq_inventory_balance_material_warehouse").contains("UNIQUE"));
+        assertTrue(indexes.get("uq_inventory_balance_material_warehouse").endsWith("(material_id, warehouse_id)"));
+        assertTrue(indexes.containsKey("idx_inventory_balance_warehouse_id"));
+    }
+
+    /**
      * La busqueda por texto de los catalogos: codigo o nombre, sin distinguir mayusculas, y en
      * blanco no filtra nada. Un solo helper para los cinco, asi que se prueban los cinco.
      */

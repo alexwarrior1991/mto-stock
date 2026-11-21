@@ -35,9 +35,7 @@ import java.math.BigDecimal;
                 columnNames = {"material_id", "warehouse_id"}
         ),
         indexes = {
-                @Index(name = "idx_inventory_balance_material_id", columnList = "material_id"),
-                @Index(name = "idx_inventory_balance_warehouse_id", columnList = "warehouse_id"),
-                @Index(name = "idx_inventory_balance_material_warehouse", columnList = "material_id, warehouse_id")
+                @Index(name = "idx_inventory_balance_warehouse_id", columnList = "warehouse_id")
         }
 )
 @Getter

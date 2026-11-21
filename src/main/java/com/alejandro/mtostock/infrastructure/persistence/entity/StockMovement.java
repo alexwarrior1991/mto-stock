@@ -41,7 +41,9 @@ import java.util.Objects;
                 @Index(name = "idx_stock_movement_supplier_id", columnList = "supplier_id"),
                 @Index(name = "idx_stock_movement_project_id", columnList = "project_id"),
                 @Index(name = "idx_stock_movement_reservation_id", columnList = "reservation_id"),
-                @Index(name = "idx_stock_movement_related_movement_id", columnList = "related_movement_id")
+                @Index(name = "idx_stock_movement_related_movement_id", columnList = "related_movement_id"),
+                @Index(name = "idx_stock_movement_occurred_at", columnList = "occurred_at, id"),
+                @Index(name = "idx_stock_movement_material_occurred_at", columnList = "material_id, occurred_at, id")
         }
 )
 @Getter

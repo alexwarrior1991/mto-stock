@@ -300,6 +300,26 @@ actually applied. A message can be in both — dead-lettered after its retries a
 `FAILED` with the reason — and each answers a different question: the DLQ says "this is pending",
 the inbox says "this is what happened to it".
 
+### The inbox forgets
+
+Without a purge `inbox_message` only grows: a row per consumed event, with its JSON. `InboxPurgeService`
+(`configuration/inbox`, `app.inbox.*`; the same piece as `mto-maintenance`) deletes once a day
+(`app.inbox.purge.cron`, 03:43, on the pool of `SchedulingConfiguration`) the `PROCESSED` rows applied
+more than `app.inbox.retention` ago (30 days, counted from `processed_at`) and the `FAILED` ones whose
+last failure is older than `app.inbox.failed-retention` (90 days), in batches of 500 with `skip locked`,
+each in its own transaction; `inbox.messages.purged{status}` counts them. The tests switch it off
+(`app.inbox.purge.enabled=false`) and call it.
+
+The row of an applied message is only needed while the message can come again with the same id: a
+redelivery of the broker (seconds), a retry of the publisher's outbox (a bit over an hour) or something
+requeued by hand from the DLQ (days). A republication carries a new id. **A purged message is a
+forgotten one**: if it came again it would be applied as new, and what stops it then is not this table
+but the sequence watermark inside the project's upsert and deactivation (`project.source_sequence_number`,
+*Ordering* below), the only thing an event writes here; the other eight entities are ignored. A message
+without a `sequenceNumber` has no such protection, as before the purge: it is applied and keeps the
+stored watermark. `InboxMessageServiceImpl.process` inserts again when its claim finds no row (the
+purge deleted it between the two statements): that delivery is the first one, not a duplicate.
+
 ### Payload
 
 The `payload` column stores the JSON exactly as it arrived, character for character. It is `json`

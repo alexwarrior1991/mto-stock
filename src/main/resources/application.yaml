@@ -360,3 +360,20 @@ app:
       # Una vez al dia, de madrugada; en el minuto 17 para no coincidir con lo que se programa en punto.
       cron: "${APP_IDEMPOTENCY_PURGE_CRON:0 17 3 * * *}"
 
+  # El inbox de los eventos de datos maestros. La fila de un mensaje aplicado solo hace falta mientras
+  # pueda volver a llegar con el mismo identificador: una reentrega del broker (segundos), un reintento
+  # del outbox del emisor (algo mas de una hora) o un mensaje que alguien reencola a mano, que es lo
+  # unico que tarda dias. Un republicado lleva identificador nuevo. Pasado el plazo, a un duplicado lo
+  # para la marca de agua de la secuencia del upsert del proyecto.
+  inbox:
+    retention: ${APP_INBOX_RETENTION:30d}
+    # Una fallida no protege de nada (se reclama otra vez al reencolarla): dice por que acabo en la DLQ.
+    failed-retention: ${APP_INBOX_FAILED_RETENTION:90d}
+    purge:
+      # Con esto en false inbox_message crece con cada evento consumido, con su JSON entero.
+      enabled: ${APP_INBOX_PURGE_ENABLED:true}
+      # Una vez al dia, de madrugada, en la zona del servidor.
+      cron: "${APP_INBOX_PURGE_CRON:0 43 3 * * *}"
+      # Por lotes, cada uno en su transaccion.
+      batch-size: 500
+
