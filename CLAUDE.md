@@ -58,9 +58,9 @@ They are loaded in batches, one statement per kind of association (`hibernate.de
 100, in `application.yaml`), never one per row, and not with an `@EntityGraph` on the list: the paged
 query stays without joins, and the components are a collection, which a fetch join would paginate in
 memory. `InventoryRepositoryDataJpaTest.aPageOfMovementsReservationsOrAssembliesDoesNotTakeAStatementPerRow`
-counts the statements. `V12` holds the indexes of the two lists that grow (the ledger in its order and
-per material, the reservations in theirs and per material; `docs/03-database.md`, *Indexes*, with what
-each one measured), asserted in `InventoryRepositoryDataJpaTest`: a new default order or filter of those
+counts the statements. `V12` and `V13` hold the indexes of the two lists that grow (the ledger in its order,
+per material and per project, the reservations in theirs, per material and per project;
+`docs/03-database.md`, *Indexes*, with what each filter measured and why the `user` text filter has none), asserted in `InventoryRepositoryDataJpaTest`: a new default order or filter of those
 lists needs its index proved the same way.
 
 ### Request errors

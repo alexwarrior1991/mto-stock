@@ -361,7 +361,9 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
     /**
      * Los indices de {@code V12}, con su definicion: el del libro en su orden, el del libro de un
      * material sin almacen, los dos de la lista de reservas, y que los dos de {@code inventory_balance}
-     * que repetian su clave unica ya no estan (la clave unica y el de la clave ajena del almacen, si).
+     * que repetian su clave unica ya no estan (la clave unica y el de la clave ajena del almacen, si). Y
+     * los de {@code V13}: el libro y las reservas de un proyecto en su orden; el del proyecto a secas
+     * del libro, que el nuevo cubre, ya no esta.
      */
     @Test
     void theListsThatGrowHaveTheirIndexesAndTheBalanceKeepsOnlyTheOnesItNeeds() {
@@ -382,6 +384,14 @@ class InventoryRepositoryDataJpaTest extends PostgreSQLTestContainer {
         assertTrue(indexes.get("idx_reservation_reserved_at").endsWith("(reserved_at DESC, id)"), indexes.get("idx_reservation_reserved_at"));
         assertTrue(indexes.get("idx_reservation_material_id").endsWith("(material_id)"), indexes.get("idx_reservation_material_id"));
         assertFalse(indexes.get("idx_reservation_material_id").contains("WHERE"), "Every status, not only the active ones");
+
+        assertTrue(indexes.get("idx_stock_movement_project_occurred_at")
+                        .endsWith("(project_id, occurred_at DESC, id) WHERE (project_id IS NOT NULL)"),
+                indexes.get("idx_stock_movement_project_occurred_at"));
+        assertFalse(indexes.containsKey("idx_stock_movement_project_id"), "Covered by the one above");
+        assertTrue(indexes.get("idx_reservation_project_reserved_at").endsWith("(project_id, reserved_at DESC, id)"),
+                indexes.get("idx_reservation_project_reserved_at"));
+        assertTrue(indexes.containsKey("idx_reservation_project_status"), "Still the one of a project in a status");
 
         assertFalse(indexes.containsKey("idx_inventory_balance_material_id"));
         assertFalse(indexes.containsKey("idx_inventory_balance_material_warehouse"));
